@@ -29,6 +29,8 @@ trading-dashboard/
 │   ├── tests/
 │   ├── rules.yaml        # límites de riesgo (editable)
 │   ├── screener.yaml     # universo y parámetros del radar de oportunidades
+│   ├── start_dashboard.py # lanzador: crea .env de prueba, detecta IP LAN, QR
+│   ├── start_windows.bat  # doble click en Windows -> instala y abre todo
 │   └── .env.example
 └── frontend/
     └── index.html        # dashboard (vanilla JS, sin build step)
@@ -133,6 +135,24 @@ arriesgar capital real.
 
 ### 2. Backend
 
+#### Opción rápida (Windows, sin terminal)
+
+Doble click en `backend/start_windows.bat`. La primera vez instala todo solo
+(crea el entorno, instala dependencias, genera un `.env` de prueba si no
+existe) y después siempre abre el dashboard. La ventana negra que aparece
+muestra:
+
+- la dirección para abrir el dashboard desde la misma laptop, y
+- un código QR + dirección para abrirlo desde tu tablet/celular conectado a
+  la misma WiFi (sin tener que escribir IPs a mano).
+
+Dejá esa ventana abierta mientras usás el dashboard; cerrarla lo apaga. El
+`.env` de prueba que se crea automáticamente queda en modo `paper` y sin
+`API_KEY` real — para conectar IBKR de verdad o pasar a `live`, editalo como
+se explica en el resto de este README.
+
+#### Manual (cualquier sistema)
+
 ```bash
 cd trading-dashboard/backend
 python3 -m venv .venv && source .venv/bin/activate
@@ -143,6 +163,9 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 Abre `http://localhost:8000` — el dashboard se sirve desde el mismo backend.
+Para acceder desde otro dispositivo en la misma red (ej. una tablet), corré
+`uvicorn app.main:app --host 0.0.0.0 --port 8000` y usá la IP local de la
+laptop en vez de `localhost`.
 
 ### 3. Tests
 
