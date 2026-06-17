@@ -33,6 +33,7 @@ screener_config = ScreenerConfig.load(settings.screener_path)
 screener = MomentumScreener(screener_config)
 
 state: dict = {
+    "mode": settings.trading_mode,
     "halted": False,
     "connected": False,
     "pending_orders": {},  # id -> PendingOrder
@@ -97,11 +98,11 @@ app.add_middleware(
 @app.get("/api/status")
 def status():
     return {
-        "mode": settings.trading_mode,
+        "mode": state["mode"],
         "connected": state["connected"],
         "halted": state["halted"],
-        "ib_host": settings.ib_host,
-        "ib_port": settings.ib_port,
+        "ib_host": broker.host,
+        "ib_port": broker.port,
     }
 
 
@@ -110,6 +111,59 @@ def set_halt(value: bool, _: None = Depends(require_api_key)):
     state["halted"] = value
     audit.record("halt_toggle", {"value": value}, {})
     return {"halted": state["halted"]}
+
+
+class ModeUpdate(BaseModel):
+    mode: str
+
+
+@app.post("/api/mode")
+async def set_mode(body: ModeUpdate, _: None = Depends(require_api_key)):
+    """Cambia entre paper y live reconectando a IBKR en el puerto correspondiente.
+
+    Requiere que el backend haya arrancado con LIVE_CONFIRM definido en el
+    .env: ese flag se sigue pidiendo una sola vez, al desplegar el backend,
+    para habilitar la posibilidad de operar en live en este servidor. Una vez
+    habilitado, este endpoint permite alternar entre paper y live sin
+    reiniciar. Por seguridad, cada cambio de modo deja el trading pausado
+    (kill switch) hasta que se reanude manualmente desde el dashboard.
+    """
+    mode = body.mode.strip().lower()
+    if mode not in ("paper", "live"):
+        raise HTTPException(status_code=422, detail="mode debe ser 'paper' o 'live'.")
+    if mode == state["mode"]:
+        return {"mode": state["mode"], "connected": state["connected"], "halted": state["halted"]}
+
+    if mode == "live" and not settings.live_confirm:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Este servidor no tiene habilitado el modo live. Define "
+                "LIVE_CONFIRM=I-UNDERSTAND-THIS-USES-REAL-MONEY en el .env y "
+                "reinicia el backend una vez para habilitarlo; despues vas a "
+                "poder alternar entre paper y live desde este boton sin reiniciar."
+            ),
+        )
+
+    target_port = settings.ib_port_live if mode == "live" else settings.ib_port_paper
+    if target_port is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Define IB_PORT_LIVE en el .env (puerto de tu cuenta live en TWS/IB Gateway) antes de activar modo live.",
+        )
+
+    try:
+        await broker.reconnect(settings.ib_host, target_port, settings.ib_client_id)
+    except IBKRConnectionError as exc:
+        state["connected"] = False
+        audit.record("mode_switch_failed", {"target_mode": mode}, {"error": str(exc)})
+        raise HTTPException(status_code=502, detail=f"No se pudo conectar en modo {mode}: {exc}")
+
+    state["mode"] = mode
+    state["connected"] = True
+    state["halted"] = True
+    audit.record("mode_switched", {"mode": mode}, {"ib_port": target_port})
+    return {"mode": state["mode"], "connected": state["connected"], "halted": state["halted"]}
 
 
 @app.get("/api/account")

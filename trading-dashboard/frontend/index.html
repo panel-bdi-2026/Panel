@@ -30,6 +30,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(
 .btn{padding:7px 15px;border-radius:var(--r2);border:none;cursor:pointer;font-size:12px;
   font-weight:700;font-family:inherit}
 .btn-halt{background:#F97316;color:#fff}.btn-halt.on{background:#dc2626}
+.btn-mode{background:#0073CF;color:#fff}.btn-mode.danger{background:#dc2626}
 .btn-ghost{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.3)}
 .main{padding:22px 28px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
 .banner{padding:11px 16px;border-radius:var(--r2);font-size:13px;font-weight:600;display:none}
@@ -93,6 +94,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
   <div class="hdr-r">
     <span class="conn" id="connBadge"><span class="dot off" id="connDot"></span><span id="connTxt">sin datos</span></span>
     <span class="badge paper" id="modeBadge">PAPER</span>
+    <button class="btn btn-mode" id="modeBtn" onclick="toggleMode()">🔴 Activar modo LIVE</button>
     <button class="btn btn-halt" id="haltBtn" onclick="toggleHalt()">⏸ Pausar trading</button>
     <button class="btn btn-ghost" onclick="openApiKeyPrompt()">🔑 API Key</button>
   </div>
@@ -276,9 +278,26 @@ async function refreshStatus(){
     const haltBtn = document.getElementById('haltBtn');
     haltBtn.textContent = s.halted ? '▶ Reanudar trading' : '⏸ Pausar trading';
     haltBtn.classList.toggle('on', s.halted);
+    const modeBtn = document.getElementById('modeBtn');
+    modeBtn.textContent = s.mode === 'live' ? '🔵 Volver a modo PAPER' : '🔴 Activar modo LIVE';
+    modeBtn.classList.toggle('danger', s.mode !== 'live');
     return s;
   }catch(e){
     document.getElementById('connTxt').textContent = 'Backend no responde';
+  }
+}
+
+async function toggleMode(){
+  const s = await api('/api/status');
+  const target = s.mode === 'live' ? 'paper' : 'live';
+  const verb = target === 'live' ? 'ACTIVAR el modo LIVE (dinero real)' : 'volver al modo PAPER (simulación)';
+  if(!confirm(`¿Seguro que querés ${verb}?\n\nEl trading va a quedar pausado después del cambio hasta que lo reanudes a mano.`)) return;
+  try{
+    await api('/api/mode', { method:'POST', auth:true, body:{ mode: target } });
+    toast(target === 'live' ? '🔴 Modo LIVE activado — trading pausado, reanudalo cuando quieras operar.' : '🔵 Modo PAPER activado.');
+    refreshStatus();
+  }catch(e){
+    toast('Error: ' + (e.message || 'no se pudo cambiar de modo. Revisa tu API key.'));
   }
 }
 

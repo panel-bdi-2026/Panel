@@ -47,6 +47,21 @@ class IBKRBroker:
         if self.ib.isConnected():
             self.ib.disconnect()
 
+    async def reconnect(self, host: str, port: int, client_id: int) -> None:
+        """Cierra la conexion actual y abre una nueva en otro host/puerto.
+
+        Usado para cambiar entre paper y live sin reiniciar el backend: cada
+        modo corre como una sesion distinta de TWS/IB Gateway en su propio
+        puerto, asi que cambiar de modo implica reconectar, no solo cambiar
+        una bandera en memoria.
+        """
+        self.disconnect()
+        self.host = host
+        self.port = port
+        self.client_id = client_id
+        self.ib = IB()
+        await self.connect()
+
     def is_connected(self) -> bool:
         return self.ib.isConnected()
 

@@ -43,9 +43,15 @@ solo con este backend (REST + WebSocket), nunca directo con IBKR.
 ## Modelo de seguridad
 
 1. **Paper primero, siempre.** `TRADING_MODE` por defecto es `paper` y el
-   puerto por defecto (`7497`) es el de TWS Paper Trading. Para pasar a `live`
-   hay que definir además `LIVE_CONFIRM=I-UNDERSTAND-THIS-USES-REAL-MONEY` en
-   el `.env` — un solo flag no alcanza, es a propósito.
+   puerto por defecto (`7497`) es el de TWS Paper Trading. Habilitar la
+   *posibilidad* de operar en live requiere definir
+   `LIVE_CONFIRM=I-UNDERSTAND-THIS-USES-REAL-MONEY` en el `.env` y reiniciar
+   el backend — un paso único, deliberado, que se hace en el servidor, no
+   desde el dashboard. Una vez habilitado, el botón "Activar modo LIVE" del
+   dashboard permite alternar entre paper y live sin reiniciar (pide
+   confirmación y `X-API-Key`, y pausa el trading automáticamente después de
+   cada cambio hasta que lo reanudás a mano). Ver "Pasar a cuenta real" más
+   abajo.
 2. **Toda orden pasa por el `RulesEngine`** (`backend/app/rules.py`) antes de
    llegar a IBKR. Si una sola regla falla, la orden se rechaza con el detalle
    de qué regla y por qué.
@@ -180,14 +186,32 @@ API_KEY=test-key python3 -m pytest tests/ -v
 ## Pasar a cuenta real (`live`)
 
 No lo hagas hasta haber probado el flujo completo en paper por un tiempo
-razonable. Cuando estés listo:
+razonable. El cambio tiene dos pasos: uno único en el servidor (habilitar que
+este backend pueda operar en live) y, a partir de ahí, un botón en el
+dashboard para alternar entre paper y live cuando quieras, sin reiniciar.
 
-1. Cambia `IB_PORT` al puerto de tu cuenta live en TWS/IB Gateway (`7496` o
-   `4001`).
-2. En `.env`: `TRADING_MODE=live` y
-   `LIVE_CONFIRM=I-UNDERSTAND-THIS-USES-REAL-MONEY`.
-3. Revisa `rules.yaml` con números conservadores antes de arrancar.
-4. El dashboard muestra un banner rojo permanente mientras `mode=live`.
+### Paso único: habilitar live en el `.env`
+
+1. Define en `.env`: `LIVE_CONFIRM=I-UNDERSTAND-THIS-USES-REAL-MONEY` y,
+   si tu cuenta live usa un puerto distinto al de paper (lo normal),
+   `IB_PORT_LIVE` con ese puerto (`7496` en TWS, `4001` en IB Gateway).
+2. Revisa `rules.yaml` con números conservadores antes de arrancar.
+3. Reinicia el backend una vez para que tome el nuevo `.env`.
+
+Sin `LIVE_CONFIRM` definido, el botón de modo live del dashboard no hace
+nada (devuelve un error explicando qué falta) — sigue siendo imposible
+activar live por accidente con un solo click sin haber tocado el `.env`
+antes, a propósito.
+
+### Desde ahí: botón "Activar modo LIVE" en el dashboard
+
+Una vez habilitado el paso anterior, el botón rojo del header alterna entre
+paper y live reconectando a IBKR en el puerto correspondiente, sin reiniciar
+el backend. Pide confirmación (un popup) antes de cambiar, y requiere tu
+`X-API-Key`. Por seguridad, **cada cambio de modo deja el trading pausado**
+(kill switch activado) — tenés que reanudarlo a mano desde "Pausar/Reanudar
+trading" cuando quieras que vuelva a operar. El dashboard muestra un banner
+rojo permanente mientras `mode=live`.
 
 ## Limitaciones conocidas
 
