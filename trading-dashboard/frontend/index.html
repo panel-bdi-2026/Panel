@@ -438,7 +438,9 @@ function renderFunds(funds){
   else{
     body.innerHTML = funds.map(f => {
       const totalValue = fundMarketValue(f);
-      const pnlTotal = totalValue - f.initial_capital_usd;
+      const netContributed = f.net_contributed_capital;
+      const pnlTotal = totalValue - netContributed;
+      const roiPct = netContributed > 0 ? (pnlTotal / netContributed * 100) : 0;
       const posCount = Object.keys(f.positions || {}).length;
       return `
       <div class="pending-item" style="border-color:var(--border);background:var(--bg)">
@@ -451,8 +453,14 @@ function renderFunds(funds){
         </div>
         <div class="muted-sm" style="margin-top:4px">
           Valor estimado ${fmtUsd(totalValue)} (cash ${fmtUsd(f.cash_usd)} · ${posCount} posición(es))
-          · PnL total <span style="color:${pnlTotal>=0?'var(--green)':'var(--red)'}">${fmtUsd(pnlTotal)}</span>
+          · Aportado neto ${fmtUsd(netContributed)}
+          · PnL total <span style="color:${pnlTotal>=0?'var(--green)':'var(--red)'}">${fmtUsd(pnlTotal)} (${roiPct>=0?'+':''}${roiPct.toFixed(1)}%)</span>
           · PnL realizado ${fmtUsd(f.realized_pnl_total)}
+        </div>
+        <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
+          <input type="number" id="flow-amount-${f.id}" placeholder="Monto USD" style="flex:1;min-width:0" min="0" step="100">
+          <button onclick="adjustFundCapital('${f.id}', 1)" title="Aportar capital adicional a este fondo">+ Aportar</button>
+          <button onclick="adjustFundCapital('${f.id}', -1)" title="Retirar capital de este fondo (no puede superar el cash disponible)">− Retirar</button>
         </div>
       </div>`;
     }).join('');
@@ -476,6 +484,20 @@ async function createFund(){
     document.getElementById('fund-name').value = '';
     document.getElementById('fund-capital').value = '';
     toast(`✓ Fondo "${name}" creado`);
+    refreshFunds();
+  }catch(e){ toast('Error: ' + e.message); }
+}
+
+async function adjustFundCapital(fundId, sign){
+  const input = document.getElementById(`flow-amount-${fundId}`);
+  const raw = parseFloat(input.value);
+  if(!raw || raw <= 0){ toast('Ingresa un monto mayor a 0'); return; }
+  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
+  const amount = raw * sign;
+  try{
+    await api(`/api/funds/${fundId}/capital-flows`, { method:'POST', auth:true, body:{ amount } });
+    input.value = '';
+    toast(sign > 0 ? `✓ Aporte de ${fmtUsd(raw)} registrado` : `✓ Retiro de ${fmtUsd(raw)} registrado`);
     refreshFunds();
   }catch(e){ toast('Error: ' + e.message); }
 }

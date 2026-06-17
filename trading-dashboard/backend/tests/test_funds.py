@@ -12,10 +12,17 @@ def store(tmp_path) -> FundsStore:
 def test_create_fund_starts_with_full_cash_and_no_positions(store):
     fund = store.create("Test 1 semana", 5000)
     assert fund.cash_usd == 5000
-    assert fund.initial_capital_usd == 5000
+    assert fund.net_contributed_capital() == 5000
     assert fund.auto_trading_enabled is False
     assert fund.positions == {}
     assert fund.owned_quantity("AAPL") == 0.0
+
+
+def test_create_fund_registers_initial_capital_as_first_flow(store):
+    fund = store.create("Test", 5000)
+    assert len(fund.capital_flows) == 1
+    assert fund.capital_flows[0].amount == 5000
+    assert fund.capital_flows[0].note == "Capital inicial"
 
 
 def test_buy_reduces_cash_and_opens_position(store):
@@ -86,10 +93,42 @@ def test_persists_across_store_reload(tmp_path):
     store1 = FundsStore(path)
     fund = store1.create("Test", 5000)
     store1.record_fill(fund.id, "AAPL", Side.BUY, 10, 100)
+    store1.apply_capital_flow(fund.id, 1000, note="Aporte extra")
 
     store2 = FundsStore(path)
     reloaded = store2.get(fund.id)
     assert reloaded is not None
-    assert reloaded.cash_usd == 4000
+    assert reloaded.cash_usd == 5000
     assert reloaded.owned_quantity("AAPL") == 10
     assert len(reloaded.trades) == 1
+    assert reloaded.net_contributed_capital() == 6000
+    assert len(reloaded.capital_flows) == 2
+
+
+def test_apply_capital_flow_increases_cash_and_net_contributed(store):
+    fund = store.create("Test", 5000)
+    store.apply_capital_flow(fund.id, 2000, note="Aporte adicional")
+    fund = store.get(fund.id)
+    assert fund.cash_usd == 7000
+    assert fund.net_contributed_capital() == 7000
+    assert len(fund.capital_flows) == 2
+
+
+def test_apply_capital_flow_negative_amount_withdraws_cash(store):
+    fund = store.create("Test", 5000)
+    store.apply_capital_flow(fund.id, -1000, note="Retiro")
+    fund = store.get(fund.id)
+    assert fund.cash_usd == 4000
+    assert fund.net_contributed_capital() == 4000
+
+
+def test_apply_capital_flow_unknown_fund_returns_none(store):
+    assert store.apply_capital_flow("no-existe", 1000) is None
+
+
+def test_total_allocated_cash_sums_across_funds(store):
+    fund1 = store.create("Fondo 1", 5000)
+    fund2 = store.create("Fondo 2", 3000)
+    assert store.total_allocated_cash() == 8000
+    assert store.total_allocated_cash(exclude_fund_id=fund1.id) == 3000
+    assert store.total_allocated_cash(exclude_fund_id=fund2.id) == 5000

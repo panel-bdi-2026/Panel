@@ -108,6 +108,11 @@ solo con este backend (REST + WebSocket), nunca directo con IBKR.
     cuánto haya realmente en la cuenta de IBKR. Así, holdings preexistentes o
     de otro fondo en el mismo símbolo quedan protegidos automáticamente: ese
     fondo simplemente no los "ve" como suyos.
+15. **Sin sobre-asignación de cash entre fondos.** Cada aporte de capital a un
+    fondo (al crearlo o después) se valida contra el cash real de la cuenta
+    de IBKR: la suma de `cash_usd` de todos los fondos nunca puede superar
+    ese cash real. Sin esto, dos fondos podrían "creer" tener disponible el
+    mismo dinero real, rompiendo la separación que el ledger promete.
 
 Ninguna de estas reglas reemplaza tu propio criterio. Esto no es una
 recomendación de inversión ni una garantía de que una orden "aprobada" sea una
@@ -259,10 +264,35 @@ cualquier otro fondo. Pensado para casos como "le doy a la herramienta $5.000
 ficticios y quiero ver claramente cómo le va a esos $5.000", sin que se mezcle
 con el resto de la cuenta (que en IBKR siempre se ve consolidada).
 
-- **Crear un fondo**: `POST /api/funds` con `{name, initial_capital_usd}`.
-  `cash_usd` arranca igual a `initial_capital_usd` y se mueve con cada
-  compra/venta atada a ese fondo (nunca se lee el cash real de IBKR para
-  esto: es contabilidad puramente interna).
+- **Mecánica de capital**: "darle" dinero a un fondo nunca mueve nada real en
+  IBKR — el dinero real ya está depositado en la cuenta por fuera de esta
+  herramienta. Asignarlo a un fondo es puramente un asiento contable interno
+  (`Fund.capital_flows`): la creación de un fondo es, en este modelo, solo su
+  primer aporte.
+  - **Crear un fondo**: `POST /api/funds` con `{name, initial_capital_usd}`.
+    `cash_usd` arranca igual a `initial_capital_usd` (registrado como el
+    primer `CapitalFlow`) y se mueve con cada compra/venta atada a ese fondo
+    (nunca se lee el cash real de IBKR para esto: es contabilidad puramente
+    interna).
+  - **Aportar o retirar capital después de creado**: `POST
+    /api/funds/{id}/capital-flows` con `{amount, note?}` (`amount > 0` aporta,
+    `amount < 0` retira). Un retiro no puede superar el `cash_usd` disponible
+    del fondo (no se puede retirar plata que está en posiciones abiertas; hay
+    que vender primero).
+  - **Guardrail contra sobre-asignación**: cada aporte (al crear o después)
+    se valida contra el cash real de la cuenta de IBKR
+    (`broker.get_account_summary().cash`): la suma de `cash_usd` de *todos*
+    los fondos nunca puede superar ese cash real. Sin este chequeo, la
+    separación entre fondos sería una ilusión — un fondo podría "creer" que
+    tiene plata que en realidad ya está asignada a otro fondo o no existe en
+    la cuenta.
+  - **PnL/ROI correctos al aportar o retirar plata**: el PnL se mide contra
+    `Fund.net_contributed_capital()` (la suma de todos los `capital_flows`),
+    no contra un capital inicial fijo — así, aportar o retirar plata más
+    adelante no infla ni desinfla artificialmente el rendimiento. Es una
+    medida "dollar-weighted" simple (no pondera por cuánto tiempo estuvo cada
+    peso invertido, a diferencia de un *time-weighted return*, que podría
+    agregarse más adelante si se necesita más rigor).
 - **Atar una orden a un fondo**: `OrderRequest.fund_id` (opcional). Si se
   especifica, además de pasar por `RulesEngine.evaluate()` (igual que
   cualquier orden), se valida contra el fondo:

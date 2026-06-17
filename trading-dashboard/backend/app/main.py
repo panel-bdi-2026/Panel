@@ -651,7 +651,32 @@ class FundCreate(BaseModel):
 
 
 def _fund_view(fund) -> dict:
-    return {**fund.model_dump(), "realized_pnl_total": round(fund.realized_pnl_total(), 2)}
+    return {
+        **fund.model_dump(),
+        "realized_pnl_total": round(fund.realized_pnl_total(), 2),
+        "net_contributed_capital": round(fund.net_contributed_capital(), 2),
+    }
+
+
+def _validate_capital_allocation(
+    amount: float, current_fund_cash: float = 0.0, exclude_fund_id: str | None = None
+) -> None:
+    """Valida que asignarle `amount` adicional a un fondo no haga que la suma
+    de cash_usd de todos los fondos supere el cash real de la cuenta de
+    IBKR. Sin esto, la separacion entre fondos seria una ilusion: un fondo
+    podria "creer" que tiene plata que en realidad ya esta asignada a otro
+    fondo o no existe en la cuenta real."""
+    real_cash = broker.get_account_summary().cash
+    already_allocated = funds_store.total_allocated_cash(exclude_fund_id=exclude_fund_id)
+    if already_allocated + current_fund_cash + amount > real_cash:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"La cuenta de IBKR tiene ${real_cash:,.2f} de cash real, de los cuales "
+                f"${already_allocated + current_fund_cash:,.2f} ya estan asignados a fondos. "
+                f"No se puede asignar ${amount:,.2f} mas sin superar el cash real disponible."
+            ),
+        )
 
 
 @app.get("/api/funds")
@@ -668,6 +693,9 @@ def create_fund(body: FundCreate, _: None = Depends(require_api_key)):
     holdings que no se registraron en el."""
     if body.initial_capital_usd <= 0:
         raise HTTPException(status_code=422, detail="initial_capital_usd debe ser mayor a 0.")
+    if not state["connected"]:
+        raise HTTPException(status_code=503, detail="No conectado a IBKR.")
+    _validate_capital_allocation(body.initial_capital_usd)
     fund = funds_store.create(body.name.strip(), body.initial_capital_usd, body.auto_trading_enabled)
     audit.record("fund_created", body.model_dump(), {"id": fund.id})
     return _fund_view(fund)
@@ -679,6 +707,42 @@ def get_fund(fund_id: str, _: None = Depends(require_api_key)):
     if fund is None:
         raise HTTPException(status_code=404, detail="Fondo no encontrado.")
     return _fund_view(fund)
+
+
+class CapitalFlowCreate(BaseModel):
+    amount: float
+    note: Optional[str] = None
+
+
+@app.post("/api/funds/{fund_id}/capital-flows")
+def create_capital_flow(fund_id: str, body: CapitalFlowCreate, _: None = Depends(require_api_key)):
+    """Aporta (amount > 0) o retira (amount < 0) capital virtual de un fondo
+    ya existente -- mismas validaciones que la creacion (ver
+    _validate_capital_allocation), mas el chequeo de que un retiro no deje
+    cash_usd negativo (no se puede retirar plata que esta en posiciones
+    abiertas; hay que vender primero)."""
+    fund = funds_store.get(fund_id)
+    if fund is None:
+        raise HTTPException(status_code=404, detail="Fondo no encontrado.")
+    if body.amount == 0:
+        raise HTTPException(status_code=422, detail="El monto no puede ser cero.")
+    if body.amount < 0:
+        if -body.amount > fund.cash_usd:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"El fondo '{fund.name}' solo tiene ${fund.cash_usd:,.2f} de cash "
+                    "disponibles para retirar (no se puede retirar plata que esta en "
+                    "posiciones abiertas; vende primero)."
+                ),
+            )
+    else:
+        if not state["connected"]:
+            raise HTTPException(status_code=503, detail="No conectado a IBKR.")
+        _validate_capital_allocation(body.amount, current_fund_cash=fund.cash_usd, exclude_fund_id=fund_id)
+    funds_store.apply_capital_flow(fund_id, body.amount, body.note)
+    audit.record("fund_capital_flow", {"fund_id": fund_id, **body.model_dump()}, {})
+    return _fund_view(funds_store.get(fund_id))
 
 
 class FundAutoTradingUpdate(BaseModel):

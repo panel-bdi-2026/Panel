@@ -26,23 +26,42 @@ class FundTrade(BaseModel):
     realized_pnl: Optional[float] = None  # solo se completa en ventas
 
 
+class CapitalFlow(BaseModel):
+    """Un aporte (amount > 0) o retiro (amount < 0) de capital virtual de un
+    fondo. No mueve nada en IBKR: el dinero real ya esta en la cuenta
+    (depositado/retirado por fuera de esta herramienta), esto solo registra
+    cuanto de ese cash le "asignas" al fondo. La creacion de un fondo es, en
+    este modelo, simplemente su primer aporte."""
+
+    id: str
+    amount: float
+    created_at: datetime
+    note: Optional[str] = None
+
+
 class Fund(BaseModel):
     """Una porcion de capital con su propia contabilidad, separada de la vista
     consolidada de IBKR y de cualquier otro fondo.
 
     cash_usd es puramente virtual: el backend nunca lee el cash real de IBKR
     para un fondo, solo lo mueve internamente con cada compra/venta atada a
-    ese fund_id (arranca en initial_capital_usd). `positions` es la unica
-    fuente de verdad de "cuanto de cada simbolo es de este fondo": una venta
-    atada a un fund_id nunca puede superar la cantidad que figura aqui, sin
-    importar cuanto haya en la cuenta real de IBKR. Eso es lo que protege
+    ese fund_id, y con cada aporte/retiro (capital_flows). `positions` es la
+    unica fuente de verdad de "cuanto de cada simbolo es de este fondo": una
+    venta atada a un fund_id nunca puede superar la cantidad que figura aqui,
+    sin importar cuanto haya en la cuenta real de IBKR. Eso es lo que protege
     holdings preexistentes (o de otro fondo) que nunca se registraron en este
     ledger: aunque comparta simbolo, este fondo no puede tocarlos.
+
+    El PnL/ROI se mide contra `net_contributed_capital()` (la suma de
+    capital_flows), no contra un capital inicial fijo: asi, aportar o retirar
+    plata mas adelante no infla ni desinfla artificialmente el rendimiento.
+    Es una medida "dollar-weighted" simple: no pondera por cuanto tiempo
+    estuvo cada peso invertido (a diferencia de un time-weighted return, que
+    podria agregarse mas adelante si se necesita mas rigor).
     """
 
     id: str
     name: str
-    initial_capital_usd: float
     cash_usd: float
     # Si esta en True, el motor proactivo podra ejecutar compras/ventas en
     # este fondo sin pasar por aprobacion manual. Por ahora el campo solo se
@@ -52,6 +71,7 @@ class Fund(BaseModel):
     created_at: datetime
     positions: dict[str, FundPosition] = Field(default_factory=dict)
     trades: list[FundTrade] = Field(default_factory=list)
+    capital_flows: list[CapitalFlow] = Field(default_factory=list)
 
     def owned_quantity(self, symbol: str) -> float:
         pos = self.positions.get(symbol)
@@ -62,6 +82,24 @@ class Fund(BaseModel):
 
     def realized_pnl_total(self) -> float:
         return sum(t.realized_pnl for t in self.trades if t.realized_pnl is not None)
+
+    def net_contributed_capital(self) -> float:
+        return sum(f.amount for f in self.capital_flows)
+
+    def apply_capital_flow(self, amount: float, note: Optional[str] = None) -> CapitalFlow:
+        """Aporta (amount > 0) o retira (amount < 0) capital virtual. No
+        valida nada (cash real disponible en la cuenta, cash_usd suficiente
+        para retirar): esas validaciones corren ANTES, en main.py -- mismo
+        patron que record_fill()."""
+        self.cash_usd += amount
+        flow = CapitalFlow(
+            id=str(uuid.uuid4()),
+            amount=amount,
+            created_at=datetime.now(timezone.utc),
+            note=note,
+        )
+        self.capital_flows.append(flow)
+        return flow
 
     def record_fill(self, symbol: str, side: Side, quantity: float, price: float) -> FundTrade:
         """Aplica una compra/venta ya ejecutada en el broker a la contabilidad
@@ -131,11 +169,11 @@ class FundsStore:
         fund = Fund(
             id=str(uuid.uuid4()),
             name=name,
-            initial_capital_usd=initial_capital_usd,
-            cash_usd=initial_capital_usd,
+            cash_usd=0.0,
             auto_trading_enabled=auto_trading_enabled,
             created_at=datetime.now(timezone.utc),
         )
+        fund.apply_capital_flow(initial_capital_usd, note="Capital inicial")
         self.funds[fund.id] = fund
         self.save()
         return fund
@@ -146,6 +184,12 @@ class FundsStore:
     def list(self) -> list[Fund]:
         return list(self.funds.values())
 
+    def total_allocated_cash(self, exclude_fund_id: str | None = None) -> float:
+        """Suma de cash_usd de todos los fondos (opcionalmente excluyendo
+        uno) -- se usa para validar que un aporte no haga que la suma de
+        todos los fondos supere el cash real de la cuenta de IBKR."""
+        return sum(f.cash_usd for fid, f in self.funds.items() if fid != exclude_fund_id)
+
     def set_auto_trading(self, fund_id: str, enabled: bool) -> Fund | None:
         fund = self.funds.get(fund_id)
         if fund is None:
@@ -153,6 +197,14 @@ class FundsStore:
         fund.auto_trading_enabled = enabled
         self.save()
         return fund
+
+    def apply_capital_flow(self, fund_id: str, amount: float, note: Optional[str] = None) -> CapitalFlow | None:
+        fund = self.funds.get(fund_id)
+        if fund is None:
+            return None
+        flow = fund.apply_capital_flow(amount, note)
+        self.save()
+        return flow
 
     def record_fill(
         self, fund_id: str, symbol: str, side: Side, quantity: float, price: float
