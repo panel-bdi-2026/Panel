@@ -66,3 +66,46 @@ class PendingOrder(BaseModel):
     decision: OrderDecision
     created_at: datetime
     status: str = "pending"  # pending | approved | rejected | executed
+
+
+class SignalResult(BaseModel):
+    symbol: str
+    as_of: datetime
+    last_price: float
+    score: float
+    momentum_3m_pct: float
+    momentum_1m_pct: float
+    trend_ok: bool
+    rsi: float
+    avg_volume: float
+    pct_from_52w_high: Optional[float] = None
+    suggested_stop_loss_price: float
+    suggested_stop_loss_pct: float
+    passes_filters: bool
+    notes: list[str] = []
+
+
+class BacktestTrade(BaseModel):
+    symbol: str
+    entry_date: datetime
+    exit_date: datetime
+    entry_price: float
+    exit_price: float
+    return_pct: float
+    exit_reason: str  # stop_loss | max_holding_days | trend_break
+
+
+class BacktestSummary(BaseModel):
+    start_date: datetime
+    end_date: datetime
+    total_trades: int
+    win_rate_pct: float
+    avg_return_pct: float
+    avg_win_pct: float
+    avg_loss_pct: float
+    profit_factor: Optional[float] = None
+    expectancy_pct: float
+    strategy_cumulative_return_pct: float
+    benchmark_cumulative_return_pct: float
+    max_drawdown_pct: float
+    trades: list[BacktestTrade] = []

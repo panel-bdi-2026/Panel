@@ -21,8 +21,14 @@ trading-dashboard/
 │   │   ├── audit.py     # bitácora SQLite de todo lo que toca dinero
 │   │   ├── broker.py    # adaptador a IBKR vía ib_async
 │   │   └── main.py      # API FastAPI + WebSocket + sirve el frontend
-│   ├── tests/test_rules.py
+│   │   ├── indicators.py # SMA, RSI, ROC, ATR — funciones puras, sin red
+│   │   ├── market_data.py# datos de precios (Yahoo Finance via yfinance, gratis)
+│   │   ├── screener.py   # MomentumScreener: rankea candidatos del universo
+│   │   ├── screener_config.py # universo + parametros de la estrategia
+│   │   └── backtest.py   # backtest simplificado de la estrategia momentum
+│   ├── tests/
 │   ├── rules.yaml        # límites de riesgo (editable)
+│   ├── screener.yaml     # universo y parámetros del radar de oportunidades
 │   └── .env.example
 └── frontend/
     └── index.html        # dashboard (vanilla JS, sin build step)
@@ -80,6 +86,41 @@ buena idea — solo que respeta los límites que tú configuraste.
 Puedes editar el archivo directamente (requiere reiniciar el backend) o vía
 `PUT /api/rules` con tu `X-API-Key`.
 
+## Radar de oportunidades (`backend/screener.yaml`)
+
+Capa opcional de análisis que **rankea candidatos de un universo de acciones
+por una estrategia momentum/técnica** (tendencia + fuerza relativa vs. el
+mercado + RSI + liquidez), pensada para swing trading (días-semanas) en
+acciones de EEUU. No ejecuta nada por su cuenta: solo sugiere. Cualquier orden
+que decidas enviar a partir de un candidato pasa exactamente por el mismo
+`RulesEngine` que cualquier otra orden — whitelist, stop-loss, límites de
+tamaño, todo aplica igual.
+
+- **Datos**: precios diarios via [`yfinance`](https://github.com/ranaroussi/yfinance)
+  (Yahoo Finance no oficial, gratis, con límites de uso). Se cachean 15 min
+  por símbolo para no agotar la cuota en cada refresh del dashboard.
+- **Señal**: combina momentum a 3 y 1 meses, fuerza relativa contra `SPY`,
+  filtro de tendencia (precio > SMA20 > SMA50), RSI en una zona "sana" (ni
+  sobrecomprado ni rompiendo a la baja) y un piso de liquidez. El stop-loss
+  sugerido se calcula con ATR(14).
+- **Backtest** (`GET /api/signals/backtest`): corre la misma lógica de
+  entrada/salida sobre la historia del universo configurado y devuelve
+  métricas (win rate, profit factor, retorno acumulado vs. `SPY`, max
+  drawdown). Es deliberadamente simple — no modela comisiones ni slippage, y
+  la curva de equity asume capital igualmente repartido entre operaciones de
+  forma secuencial, no concurrencia real. Sirve para validar la dirección de
+  la idea, no como promesa de resultados futuros.
+- **Endpoints**: `GET /api/signals/scan` (lista rankeada, cacheada),
+  `GET /api/signals/backtest`, `GET/PUT /api/signals/config` (el `PUT`
+  requiere `X-API-Key`, igual que `/api/rules`).
+- Edita `universe`, las ventanas de momentum/RSI/SMA, el multiplicador de ATR
+  para el stop, etc. en `screener.yaml` (o vía `PUT /api/signals/config`).
+
+Esto no es una recomendación de inversión ni un sistema que garantice ganarle
+al mercado — es una herramienta de screening con una metodología transparente
+que tú puedes auditar, ajustar y poner a prueba con el backtest antes de
+arriesgar capital real.
+
 ## Instalación
 
 ### 1. Interactive Brokers
@@ -105,8 +146,8 @@ Abre `http://localhost:8000` — el dashboard se sirve desde el mismo backend.
 
 ### 3. Tests
 
-Los tests cubren el motor de reglas (lógica pura, sin necesitar IBKR
-conectado):
+Los tests cubren el motor de reglas y los indicadores/screener/backtest
+(lógica pura sobre datos sintéticos, sin necesitar IBKR ni internet):
 
 ```bash
 cd trading-dashboard/backend
@@ -127,9 +168,16 @@ razonable. Cuando estés listo:
 
 ## Limitaciones conocidas
 
-- No incluye señales ni estrategias de trading — es un gateway de ejecución
-  con reglas, tú decides qué orden enviar.
+- El radar de oportunidades es un screener con metodología transparente, no
+  una garantía de rendimiento — ninguna señal se ejecuta sola, sigue siendo
+  el `RulesEngine` quien aprueba o rechaza cada orden.
 - El precio de referencia para validar órdenes usa datos demorados (`delayed`)
   si no tienes suscripción de market data en tiempo real con IBKR.
+- Los datos del screener/backtest vienen de Yahoo Finance via `yfinance`: no
+  oficial, gratis, con límites de uso y sin SLA. Si falla o te quedas sin
+  cuota, el dashboard lo informa en vez de inventar datos.
+- El backtest es simplificado (sin comisiones/slippage, sin concurrencia real
+  de posiciones) — útil para validar la dirección de la idea, no para
+  proyectar retornos.
 - Pensado para uso personal/un solo usuario; no implementa multiusuario ni
   roles.

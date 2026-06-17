@@ -13,10 +13,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .audit import AuditLog
+from .backtest import BacktestError, run_backtest
 from .broker import IBKRBroker, IBKRConnectionError
 from .config import settings
+from .market_data import MarketDataError
 from .models import OrderRequest, PendingOrder
 from .rules import RulesConfig, RulesEngine
+from .screener import MomentumScreener
+from .screener_config import ScreenerConfig
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 
@@ -25,12 +29,18 @@ rules_engine = RulesEngine(rules_config)
 audit = AuditLog(settings.audit_db_path)
 broker = IBKRBroker(settings.ib_host, settings.ib_port, settings.ib_client_id)
 
+screener_config = ScreenerConfig.load(settings.screener_path)
+screener = MomentumScreener(screener_config)
+
 state: dict = {
     "halted": False,
     "connected": False,
     "pending_orders": {},  # id -> PendingOrder
 }
 clients: list[WebSocket] = []
+
+SIGNAL_CACHE_TTL_SECONDS = 900  # evita re-escanear el mercado en cada refresh
+signal_cache: dict = {"as_of": None, "results": []}
 
 
 def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
@@ -138,6 +148,57 @@ def update_rules(body: RulesUpdate, _: None = Depends(require_api_key)):
 @app.get("/api/audit")
 def get_audit(limit: int = 100):
     return audit.recent(limit)
+
+
+@app.get("/api/signals/config")
+def get_screener_config():
+    return screener_config.model_dump()
+
+
+class ScreenerUpdate(BaseModel):
+    config: dict
+
+
+@app.put("/api/signals/config")
+def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_key)):
+    global screener_config
+    screener_config = ScreenerConfig(**body.config)
+    screener_config.save(settings.screener_path)
+    screener.reload(screener_config)
+    audit.record("screener_config_updated", body.config, {})
+    return screener_config.model_dump()
+
+
+@app.get("/api/signals/scan")
+def scan_signals(force: bool = False):
+    """Radar de oportunidades momentum/tecnico. No es una recomendacion de
+    inversion ni ejecuta nada: solo rankea candidatos del universo configurado
+    en screener.yaml. Cacheado para no agotar la cuota de la API gratuita de
+    datos en cada refresh del dashboard."""
+    now = datetime.now(timezone.utc)
+    cached_at = signal_cache["as_of"]
+    if not force and cached_at and (now - cached_at).total_seconds() < SIGNAL_CACHE_TTL_SECONDS:
+        return {"as_of": cached_at, "cached": True, "results": signal_cache["results"]}
+    try:
+        results = screener.scan()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Error al escanear el mercado: {exc}")
+    signal_cache["as_of"] = now
+    signal_cache["results"] = [r.model_dump() for r in results]
+    return {"as_of": now, "cached": False, "results": signal_cache["results"]}
+
+
+@app.get("/api/signals/backtest")
+def backtest_strategy():
+    """Backtest simplificado de la estrategia momentum sobre el universo
+    configurado. Ver docstring de run_backtest() para las simplificaciones
+    asumidas (sin comisiones/slippage, curva de equity aproximada)."""
+    try:
+        return run_backtest(screener_config)
+    except BacktestError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except MarketDataError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @app.get("/api/orders/pending")

@@ -122,6 +122,28 @@ td{padding:8px;border-bottom:1px solid var(--border)}
       </div>
 
       <div class="card">
+        <div class="card-hdr">Radar de oportunidades (momentum)
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="scanSignals(true)">↻ Escanear</button>
+            <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="runBacktest()">📊 Backtest</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <p class="muted-sm" style="margin-bottom:10px">
+            No es una recomendación de inversión: rankea candidatos del universo en
+            <code>screener.yaml</code> por momentum/técnico. Toda orden que envíes desde
+            aquí pasa igual por el motor de reglas (<code>rules.yaml</code>).
+          </p>
+          <table>
+            <thead><tr><th>Símbolo</th><th>Score</th><th>Precio</th><th>3M%</th><th>1M%</th><th>RSI</th><th>Stop sugerido</th><th></th></tr></thead>
+            <tbody id="signalsBody"><tr><td colspan="8" class="empty">Sin escanear aún</td></tr></tbody>
+          </table>
+          <div id="signalsMeta" class="muted-sm" style="margin-top:8px"></div>
+          <div id="backtestBox" class="muted-sm" style="margin-top:10px;display:none;background:var(--bg);padding:10px;border-radius:var(--r2)"></div>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-hdr">Órdenes pendientes de aprobación manual</div>
         <div class="card-body" id="pendingBody">
           <div class="empty">No hay órdenes pendientes</div>
@@ -381,6 +403,66 @@ async function submitOrder(){
   }
 }
 
+let lastSignals = {};
+
+async function scanSignals(force=false){
+  const body = document.getElementById('signalsBody');
+  const meta = document.getElementById('signalsMeta');
+  body.innerHTML = '<tr><td colspan="8" class="empty">Escaneando…</td></tr>';
+  try{
+    const data = await api(`/api/signals/scan${force ? '?force=true' : ''}`);
+    lastSignals = {};
+    if(!data.results.length){
+      body.innerHTML = '<tr><td colspan="8" class="empty">Sin candidatos que pasen los filtros configurados</td></tr>';
+    } else {
+      data.results.forEach(r => lastSignals[r.symbol] = r);
+      body.innerHTML = data.results.map(r => `
+        <tr>
+          <td><b>${r.symbol}</b>${r.passes_filters ? '' : ' <span class="muted-sm">(no pasa filtros)</span>'}</td>
+          <td>${r.score.toFixed(1)}</td>
+          <td>${fmtUsd(r.last_price)}</td>
+          <td style="color:${r.momentum_3m_pct>=0?'var(--green)':'var(--red)'}">${r.momentum_3m_pct.toFixed(1)}%</td>
+          <td style="color:${r.momentum_1m_pct>=0?'var(--green)':'var(--red)'}">${r.momentum_1m_pct.toFixed(1)}%</td>
+          <td>${r.rsi.toFixed(0)}</td>
+          <td>${fmtUsd(r.suggested_stop_loss_price)} (-${r.suggested_stop_loss_pct.toFixed(1)}%)</td>
+          <td><button class="btn-approve" onclick="useSignal('${r.symbol}')">Usar</button></td>
+        </tr>`).join('');
+    }
+    meta.textContent = `Actualizado: ${new Date(data.as_of).toLocaleString()}${data.cached ? ' (cache)' : ''} · ${data.results.length} símbolos con datos`;
+  }catch(e){
+    body.innerHTML = `<tr><td colspan="8" class="empty">${e.message}</td></tr>`;
+  }
+}
+
+function useSignal(symbol){
+  const r = lastSignals[symbol];
+  if(!r) return;
+  setSide('BUY');
+  document.getElementById('f-symbol').value = r.symbol;
+  document.getElementById('f-type').value = 'LMT';
+  onTypeChange();
+  document.getElementById('f-limit').value = r.last_price;
+  document.getElementById('f-stop').value = r.suggested_stop_loss_price;
+  toast(`${r.symbol} cargado en el ticket de orden. Revisa cantidad y confirma.`);
+}
+
+async function runBacktest(){
+  const box = document.getElementById('backtestBox');
+  box.style.display = 'block';
+  box.textContent = 'Corriendo backtest (puede tardar; depende de la API gratuita de datos)…';
+  try{
+    const r = await api('/api/signals/backtest');
+    box.innerHTML = `
+      <b>Backtest ${new Date(r.start_date).toLocaleDateString()} → ${new Date(r.end_date).toLocaleDateString()}</b><br>
+      ${r.total_trades} operaciones · win rate ${r.win_rate_pct}% · profit factor ${r.profit_factor ?? '∞'}<br>
+      Retorno estrategia (aprox.): ${r.strategy_cumulative_return_pct}% vs benchmark (${r.benchmark_cumulative_return_pct}%)<br>
+      Max drawdown: ${r.max_drawdown_pct}%
+      <p class="muted-sm" style="margin-top:6px">Backtest simplificado (sin comisiones/slippage); resultados pasados no garantizan resultados futuros.</p>`;
+  }catch(e){
+    box.textContent = 'Error al correr el backtest: ' + e.message;
+  }
+}
+
 function connectWs(){
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   try{
@@ -411,6 +493,7 @@ async function refreshAll(){
 
 onTypeChange();
 refreshAll();
+scanSignals(false);
 connectWs();
 setInterval(refreshAll, 8000);
 </script>

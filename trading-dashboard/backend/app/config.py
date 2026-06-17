@@ -22,6 +22,7 @@ class Settings:
         self.api_key = os.getenv("API_KEY", "")
 
         self.rules_path = Path(os.getenv("RULES_PATH", str(BASE_DIR / "rules.yaml")))
+        self.screener_path = Path(os.getenv("SCREENER_PATH", str(BASE_DIR / "screener.yaml")))
         self.audit_db_path = Path(os.getenv("AUDIT_DB_PATH", str(BASE_DIR / "audit.db")))
         self.poll_interval_seconds = float(os.getenv("POLL_INTERVAL_SECONDS", "5"))
 

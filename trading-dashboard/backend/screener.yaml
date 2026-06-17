@@ -1,0 +1,75 @@
+# Configuracion del radar de oportunidades (screener momentum/tecnico).
+# Esto NO ejecuta ordenes: solo rankea candidatos. Cualquier orden que decidas
+# enviar a partir de un candidato pasa igual por rules.yaml / RulesEngine.
+# Ver README.md para el detalle de cada parametro.
+
+# Universo de simbolos a escanear. Cortalo o ampliarlo segun tu criterio; uno
+# mas largo tarda mas y consume mas cuota de la API gratuita de datos.
+universe:
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+  - META
+  - AVGO
+  - AMD
+  - CRM
+  - ADBE
+  - NFLX
+  - COST
+  - TSLA
+  - V
+  - MA
+  - UNH
+  - JPM
+  - XOM
+  - CAT
+  - DE
+  - LIN
+  - HD
+  - LOW
+  - NKE
+  - DIS
+  - PEP
+  - KO
+  - WMT
+  - ORCL
+  - QCOM
+
+# Simbolo contra el que se mide la fuerza relativa (momentum vs el mercado).
+benchmark_symbol: SPY
+
+# Dias de historia (calendario aprox.) que se piden para el scan en vivo.
+lookback_days: 400
+
+# Filtro de tendencia: solo se considera "en tendencia" si precio > SMA rapida > SMA lenta.
+sma_fast: 20
+sma_slow: 50
+
+# Momentum: retorno (%) en cada ventana, en dias de trading.
+momentum_lookback_days: 63   # ~3 meses
+momentum_short_days: 21      # ~1 mes
+
+# RSI(periodo) y rango "saludable" para considerar continuacion de tendencia
+# (evita comprar sobrecompra extrema o nombres ya rompiendo a la baja).
+rsi_period: 14
+rsi_min: 40
+rsi_max: 75
+
+# Liquidez minima (volumen promedio 20 dias) para no proponer nombres ilíquidos.
+min_avg_volume: 1000000
+
+# Cuantos candidatos como maximo se consideran "top" en cada scan/backtest.
+top_n: 10
+
+# ATR (Average True Range) usado para sugerir el stop-loss de cada candidato.
+atr_period: 14
+stop_loss_atr_multiplier: 1.5
+
+# Maximo de dias en una posicion antes de cerrarla por tiempo (swing trading:
+# dias a semanas, no mantiene posiciones indefinidamente).
+max_holding_days: 20
+
+# Anos de historia usados al correr un backtest de la estrategia.
+backtest_years: 3
