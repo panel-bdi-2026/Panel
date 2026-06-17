@@ -81,3 +81,117 @@ def test_backtest_raises_when_no_trades_generated(monkeypatch):
     config = ScreenerConfig(universe=["MISSING"], benchmark_symbol="SPY")
     with pytest.raises(BacktestError):
         run_backtest(config)
+
+
+def test_backtest_includes_sharpe_ratio_when_enough_trades(patched_market_data):
+    config = ScreenerConfig(universe=["MOM", "FLAT"], benchmark_symbol="SPY", backtest_years=1)
+    summary = run_backtest(config)
+    assert summary.total_trades >= 2
+    assert summary.sharpe_ratio is not None
+
+
+def test_backtest_sharpe_ratio_is_none_with_fewer_than_two_trades(monkeypatch):
+    # Un solo pico de tendencia y despues una caida plana que nunca vuelve a
+    # disparar una entrada: una sola operacion en todo el periodo.
+    n_spike, n_flat = 60, 400
+    spike = [100.0 + i for i in range(n_spike)]
+    flat = [spike[-1] - 5 - 0.001 * i for i in range(n_flat)]
+    bars = _bars(spike + flat)
+    bench_bars = _bars([100.0] * (n_spike + n_flat))
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol == "SPY":
+            return bench_bars
+        if symbol == "ONE":
+            return bars
+        raise MarketDataError("no data")
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+    config = ScreenerConfig(universe=["ONE"], benchmark_symbol="SPY", backtest_years=1, regime_filter_enabled=False)
+    summary = run_backtest(config)
+    assert summary.total_trades == 1
+    assert summary.sharpe_ratio is None
+
+
+def test_costs_reduce_returns_vs_zero_cost_baseline():
+    from app.backtest import _simulate_symbol
+    from app.indicators import rate_of_change
+
+    bars = FAKE_BARS["MOM"]
+    bench_bars = FAKE_BARS["SPY"]
+    base_kwargs = dict(universe=["MOM"], benchmark_symbol="SPY", backtest_years=1, regime_filter_enabled=False)
+    cfg_no_cost = ScreenerConfig(**base_kwargs, commission_per_trade_usd=0.0, slippage_pct=0.0)
+    cfg_with_cost = ScreenerConfig(**base_kwargs, commission_per_trade_usd=1.0, slippage_pct=0.05)
+
+    benchmark_roc = rate_of_change(bench_bars["Close"], cfg_no_cost.momentum_lookback_days)
+    regime_ok = pd.Series(True, index=bars.index)
+
+    trades_no_cost = _simulate_symbol("MOM", bars, cfg_no_cost, benchmark_roc, regime_ok)
+    trades_with_cost = _simulate_symbol("MOM", bars, cfg_with_cost, benchmark_roc, regime_ok)
+
+    assert len(trades_no_cost) > 0
+    assert [t.entry_date for t in trades_no_cost] == [t.entry_date for t in trades_with_cost]
+    for t_no_cost, t_cost in zip(trades_no_cost, trades_with_cost):
+        assert t_cost.return_pct < t_no_cost.return_pct
+
+
+def test_stop_loss_triggers_on_intraday_low_not_close():
+    from app.backtest import _simulate_symbol
+    from app.indicators import rate_of_change
+
+    closes = [100.0 + i for i in range(30)]
+    bars = _bars(closes)
+    bars.loc[bars.index[9], "Low"] = 50.0  # mecha intradiaria que perfora el stop sin que cierre por debajo
+
+    bench_bars = _bars([100.0] * 30)
+
+    cfg = ScreenerConfig(
+        universe=["MOM"],
+        benchmark_symbol="SPY",
+        sma_fast=3,
+        sma_slow=5,
+        momentum_lookback_days=5,
+        momentum_short_days=2,
+        rsi_period=3,
+        rsi_min=0,
+        rsi_max=100,
+        atr_period=3,
+        stop_loss_atr_multiplier=1.0,
+        max_holding_days=50,
+        regime_filter_enabled=False,
+        top_n=10,
+    )
+
+    benchmark_roc = rate_of_change(bench_bars["Close"], cfg.momentum_lookback_days)
+    regime_ok = pd.Series(True, index=bars.index)
+
+    trades = _simulate_symbol("MOM", bars, cfg, benchmark_roc, regime_ok)
+
+    assert trades[0].exit_reason == "stop_loss"
+    assert trades[0].exit_date == bars.index[9]
+    assert bars["Close"].iloc[9] > trades[0].exit_price  # el cierre nunca perforo el stop, solo el minimo intradiario
+
+
+def test_regime_filter_blocks_entries_when_benchmark_below_regime_sma(monkeypatch):
+    n = 300
+    closes = [100.0 + 0.12 * i + 4 * np.sin(i / 5) for i in range(n)]
+    bars = _bars(closes)
+    # Benchmark en clara tendencia bajista y por debajo de su SMA de regimen
+    # durante todo el periodo: ninguna entrada larga deberia activarse.
+    bench_closes = [200.0 - 0.3 * i for i in range(n)]
+    bench_bars = _bars(bench_closes)
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol == "SPY":
+            return bench_bars
+        if symbol == "MOM":
+            return bars
+        raise MarketDataError("no data")
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+    config = ScreenerConfig(
+        universe=["MOM"], benchmark_symbol="SPY", backtest_years=1,
+        regime_filter_enabled=True, regime_sma_period=50,
+    )
+    with pytest.raises(BacktestError):
+        run_backtest(config)

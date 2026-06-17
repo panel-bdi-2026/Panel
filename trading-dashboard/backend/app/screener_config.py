@@ -42,7 +42,28 @@ class ScreenerConfig(BaseModel):
     stop_loss_atr_multiplier: float = 1.5
     max_holding_days: int = 20
 
+    # Filtro de regimen de mercado: no se sugieren entradas largas si el
+    # benchmark esta por debajo de su propia SMA de regimen (mercado en
+    # tendencia bajista de fondo). Una estrategia long-only de momentum tiende
+    # a funcionar mal en ese contexto aunque el papel individual pase los
+    # demas filtros.
+    regime_filter_enabled: bool = True
+    regime_sma_period: int = 200
+
+    # Dias antes de la fecha estimada de earnings en los que NO se sugieren
+    # nuevas entradas: un gap por sorpresa de resultados puede saltarse un
+    # stop-loss basado en ATR sin ejecutarse al precio sugerido.
+    earnings_blackout_days: int = 5
+
     backtest_years: int = 3
+    # Costos de transaccion asumidos en el backtest (antes no se modelaban, lo
+    # que infla artificialmente los retornos reportados respecto a la
+    # operatoria real). backtest_assumed_capital_usd es solo una referencia
+    # para convertir commission_per_trade_usd en % por operacion: el backtest
+    # no rastrea dolares reales, solo retornos %.
+    backtest_assumed_capital_usd: float = 100_000
+    commission_per_trade_usd: float = 1.0
+    slippage_pct: float = 0.05
 
     @classmethod
     def load(cls, path: Path) -> "ScreenerConfig":

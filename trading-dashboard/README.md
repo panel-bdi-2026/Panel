@@ -105,9 +105,20 @@ buena idea — solo que respeta los límites que tú configuraste.
 | `allow_short_selling` | Si es `false` (default), rechaza órdenes que dejarían una posición en negativo. |
 | `manual_approval_threshold_usd` | Por encima de este monto, la orden queda pendiente de tu aprobación. |
 | `allow_extended_hours` / `trading_hours_*` | Restringe operar a horario regular de mercado. |
+| `risk_per_trade_pct` | % del equity que se está dispuesto a perder si se toca el stop-loss. Solo se usa para *sugerir* una cantidad (ver abajo); no rechaza órdenes por sí solo — el tamaño final igual queda limitado por `max_position_pct_of_equity` y `max_order_value_usd`. |
 
 Puedes editar el archivo directamente (requiere reiniciar el backend) o vía
 `PUT /api/rules` con tu `X-API-Key`.
+
+### Sugerencia de cantidad por riesgo
+
+El botón **"📐 Sugerir"** junto al campo de cantidad del formulario de orden
+llama a `GET /api/orders/size-suggestion` (requiere `X-API-Key`) y completa el
+campo con la cantidad calculada para que, si se toca el stop-loss ingresado,
+la pérdida no supere `risk_per_trade_pct` del equity actual — recortada
+además por `max_position_pct_of_equity` y `max_order_value_usd` para no
+sugerir algo que el `RulesEngine` rechazaría de todas formas. Es una
+sugerencia editable: no se aplica sola ni se envía ninguna orden por esto.
 
 ## Radar de oportunidades (`backend/screener.yaml`)
 
@@ -129,13 +140,33 @@ tamaño, todo aplica igual.
   acciones — así una acción barata no pasa el filtro solo por moverse en
   volúmenes altos de acciones baratas). El stop-loss sugerido se calcula con
   ATR(14).
+- **Filtro de régimen** (`regime_filter_enabled`, `regime_sma_period`): no se
+  sugieren entradas nuevas si el benchmark (`SPY` por defecto) está por
+  debajo de su propia SMA de largo plazo (200 días por defecto) — evita
+  proponer compras "momentum" cuando el mercado de fondo está en tendencia
+  bajista. Si no hay suficiente historia para calcular la SMA, el filtro no
+  bloquea (asume régimen favorable en vez de fallar el scan por falta de
+  dato).
+- **Blackout de earnings** (`earnings_blackout_days`): no se sugieren
+  entradas nuevas dentro de esa cantidad de días antes de la próxima fecha de
+  earnings estimada (gap risk que el stop-loss basado en ATR no cubre). La
+  fecha se obtiene de Yahoo Finance vía `yfinance`; si no se puede determinar,
+  el filtro no bloquea (dato secundario, best-effort).
 - **Backtest** (`GET /api/signals/backtest`): corre la misma lógica de
   entrada/salida sobre la historia del universo configurado y devuelve
   métricas (win rate, profit factor, retorno acumulado vs. `SPY`, max
-  drawdown). Es deliberadamente simple — no modela comisiones ni slippage, y
-  la curva de equity asume capital igualmente repartido entre operaciones de
-  forma secuencial, no concurrencia real. Sirve para validar la dirección de
-  la idea, no como promesa de resultados futuros.
+  drawdown, Sharpe ratio aproximado). Modela comisión y slippage estimados
+  (`commission_per_trade_usd`, `slippage_pct`) y un fill de stop-loss
+  realista: el stop se chequea contra el **mínimo intradiario**, no el
+  cierre, y si hubo un gap por debajo del stop el fill asumido es el precio
+  de apertura (peor que el stop), no el cierre del día. El `sharpe_ratio` se
+  aproxima a partir de los retornos por operación (no de una curva de equity
+  diaria), así que no es comparable 1:1 con un Sharpe calculado sobre
+  retornos diarios; es `None` si hay menos de 2 operaciones. Sigue siendo
+  deliberadamente simple en otros aspectos — la curva de equity asume capital
+  igualmente repartido entre operaciones de forma secuencial, no concurrencia
+  real de posiciones. Sirve para validar la dirección de la idea, no como
+  promesa de resultados futuros.
 - **Endpoints**: `GET /api/signals/scan` (lista rankeada, cacheada),
   `GET /api/signals/backtest`, `GET/PUT /api/signals/config` (el `PUT`
   requiere `X-API-Key`, igual que `/api/rules`).
@@ -241,8 +272,11 @@ rojo permanente mientras `mode=live`.
 - Los datos del screener/backtest vienen de Yahoo Finance via `yfinance`: no
   oficial, gratis, con límites de uso y sin SLA. Si falla o te quedas sin
   cuota, el dashboard lo informa en vez de inventar datos.
-- El backtest es simplificado (sin comisiones/slippage, sin concurrencia real
-  de posiciones) — útil para validar la dirección de la idea, no para
-  proyectar retornos.
+- El backtest es simplificado: aunque modela comisión, slippage y un fill de
+  stop-loss realista (mínimo intradiario, no el cierre), no rastrea
+  concurrencia real de posiciones (asume capital repartido secuencialmente
+  entre operaciones) y su Sharpe ratio es una aproximación por operación, no
+  el cálculo estándar sobre una curva de equity diaria — útil para validar la
+  dirección de la idea, no para proyectar retornos.
 - Pensado para uso personal/un solo usuario; no implementa multiusuario ni
   roles.

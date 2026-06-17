@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import yfinance as yf
@@ -10,6 +10,11 @@ import yfinance as yf
 # Finance en cada refresh del dashboard o cada simbolo de un scan.
 _CACHE_TTL_SECONDS = 900  # 15 min
 _cache: dict[tuple[str, int], tuple[float, pd.DataFrame]] = {}
+
+# La fecha de earnings no cambia de un minuto a otro: cache mas largo que el
+# de las barras de precio para no consumir cuota de la API en cada scan.
+_EARNINGS_CACHE_TTL_SECONDS = 24 * 3600
+_earnings_cache: dict[str, tuple[float, "date | None"]] = {}
 
 
 class MarketDataError(RuntimeError):
@@ -50,3 +55,24 @@ def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.D
     df = df.rename(columns=str.title)
     _cache[key] = (now, df)
     return df
+
+
+def get_next_earnings_date(symbol: str, force: bool = False) -> "date | None":
+    """Proxima fecha de earnings estimada para `symbol`, o None si no se pudo
+    determinar (simbolo sin cobertura, limite de la API gratuita, etc.). El
+    filtro de earnings del screener trata None como "sin dato, no bloquea" en
+    vez de fallar el scan completo por un dato secundario y best-effort."""
+    key = symbol.upper()
+    now = time.time()
+    cached = _earnings_cache.get(key)
+    if not force and cached and now - cached[0] < _EARNINGS_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    try:
+        dates = yf.Ticker(symbol).get_earnings_dates(limit=1)
+        next_date = dates.index[0].date() if dates is not None and len(dates) else None
+    except Exception:
+        next_date = None
+
+    _earnings_cache[key] = (now, next_date)
+    return next_date

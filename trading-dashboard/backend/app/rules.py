@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -7,13 +8,18 @@ from zoneinfo import ZoneInfo
 import yaml
 from pydantic import BaseModel
 
-from .models import AccountSummary, OrderDecision, OrderRequest, RuleViolation, Side
+from .models import AccountSummary, OrderDecision, OrderRequest, PositionSizeSuggestion, RuleViolation, Side
 
 
 class RulesConfig(BaseModel):
     symbol_whitelist: list[str] = []
     max_order_value_usd: float = 5000
     max_position_pct_of_equity: float = 10
+    # Riesgo maximo a arriesgar por operacion, como % del equity, si se toca el
+    # stop-loss. Se usa solo para sugerir un tamano de posicion (no rechaza
+    # ordenes por si solo): el tamano final igual queda limitado tambien por
+    # max_position_pct_of_equity y max_order_value_usd.
+    risk_per_trade_pct: float = 1
     daily_loss_limit_pct: float = 2
     max_trades_per_day: int = 10
     require_stop_loss_on_buy: bool = True
@@ -191,4 +197,45 @@ class RulesEngine:
             requires_manual_approval=requires_manual_approval,
             violations=violations,
             estimated_value_usd=estimated_value,
+        )
+
+    def suggested_quantity(
+        self,
+        account: AccountSummary,
+        current_position_qty: float,
+        entry_price: float,
+        stop_loss_price: float,
+    ) -> PositionSizeSuggestion:
+        """Sugiere una cantidad para una compra en base al riesgo, no a un monto
+        fijo arbitrario: el tamano se calcula para que, si se toca el
+        stop-loss, la perdida no supere risk_per_trade_pct del equity. Se
+        recorta ademas por max_position_pct_of_equity y max_order_value_usd
+        para no sugerir una cantidad que el motor de reglas rechazaria de
+        todas formas al enviarla. Es solo una sugerencia editable, no se
+        aplica sola.
+        """
+        risk_per_share = entry_price - stop_loss_price
+        if entry_price <= 0 or account.net_liquidation <= 0 or risk_per_share <= 0:
+            return PositionSizeSuggestion(quantity=0.0, risk_usd=0.0, limited_by=None)
+
+        risk_budget_usd = account.net_liquidation * self.config.risk_per_trade_pct / 100
+        qty_by_risk = risk_budget_usd / risk_per_share
+
+        max_position_value = account.net_liquidation * self.config.max_position_pct_of_equity / 100
+        remaining_value = max(0.0, max_position_value - current_position_qty * entry_price)
+        qty_by_position_pct = remaining_value / entry_price
+
+        qty_by_order_value = self.config.max_order_value_usd / entry_price
+
+        qty_raw, limited_by = min(
+            (qty_by_risk, None),
+            (qty_by_position_pct, "max_position_pct_of_equity"),
+            (qty_by_order_value, "max_order_value_usd"),
+            key=lambda pair: pair[0],
+        )
+        qty = max(0.0, float(math.floor(qty_raw)))
+        return PositionSizeSuggestion(
+            quantity=qty,
+            risk_usd=round(qty * risk_per_share, 2),
+            limited_by=limited_by,
         )

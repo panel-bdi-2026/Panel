@@ -132,3 +132,38 @@ def test_allows_short_selling_when_enabled():
     order = buy_order(side=Side.SELL, stop_loss_price=None, quantity=1)
     decision = engine.evaluate(order, make_account(), 0, 200, 0, False)
     assert decision.approved
+
+
+def test_suggested_quantity_limited_by_risk():
+    config = RulesConfig(max_order_value_usd=1_000_000, max_position_pct_of_equity=100, risk_per_trade_pct=1)
+    engine = RulesEngine(config)
+    suggestion = engine.suggested_quantity(make_account(net_liq=100_000), 0, entry_price=200, stop_loss_price=150)
+    assert suggestion.quantity == 20
+    assert suggestion.risk_usd == 1000.0
+    assert suggestion.limited_by is None
+
+
+def test_suggested_quantity_limited_by_max_position_pct_of_equity():
+    config = RulesConfig(max_order_value_usd=1_000_000, max_position_pct_of_equity=5, risk_per_trade_pct=50)
+    engine = RulesEngine(config)
+    suggestion = engine.suggested_quantity(make_account(net_liq=100_000), 0, entry_price=200, stop_loss_price=190)
+    assert suggestion.quantity == 25
+    assert suggestion.limited_by == "max_position_pct_of_equity"
+
+
+def test_suggested_quantity_limited_by_max_order_value_usd(engine):
+    suggestion = engine.suggested_quantity(make_account(net_liq=100_000), 0, entry_price=200, stop_loss_price=190)
+    assert suggestion.quantity == 25
+    assert suggestion.limited_by == "max_order_value_usd"
+
+
+def test_suggested_quantity_zero_when_no_equity(engine):
+    suggestion = engine.suggested_quantity(make_account(net_liq=0), 0, entry_price=200, stop_loss_price=190)
+    assert suggestion.quantity == 0.0
+    assert suggestion.risk_usd == 0.0
+    assert suggestion.limited_by is None
+
+
+def test_suggested_quantity_zero_when_stop_not_below_entry(engine):
+    suggestion = engine.suggested_quantity(make_account(), 0, entry_price=200, stop_loss_price=200)
+    assert suggestion.quantity == 0.0

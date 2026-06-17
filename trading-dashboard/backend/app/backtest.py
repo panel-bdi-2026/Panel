@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import statistics
+
 import pandas as pd
 
 from .indicators import atr, rate_of_change, rsi, sma
@@ -13,14 +15,25 @@ class BacktestError(RuntimeError):
 
 
 def _simulate_symbol(
-    symbol: str, bars: pd.DataFrame, cfg: ScreenerConfig, benchmark_roc: pd.Series
+    symbol: str,
+    bars: pd.DataFrame,
+    cfg: ScreenerConfig,
+    benchmark_roc: pd.Series,
+    benchmark_regime_ok: pd.Series,
 ) -> list[BacktestTrade]:
     """Simula la misma logica de entrada/salida del screener sobre historia.
 
     Entra cuando se cumplen los mismos filtros que en `scan()` (tendencia,
-    momentum, RSI, fuerza relativa vs benchmark). Sale por stop-loss (basado en
-    ATR, igual que la sugerencia en vivo), por ruptura de tendencia, o por
-    tiempo maximo en la posicion. Una sola posicion por simbolo a la vez.
+    momentum, RSI, fuerza relativa vs benchmark, regimen de mercado). Sale por
+    stop-loss (basado en ATR, igual que la sugerencia en vivo), por ruptura de
+    tendencia, o por tiempo maximo en la posicion. Una sola posicion por
+    simbolo a la vez.
+
+    El stop-loss se chequea contra el minimo intradiario (no el cierre): si el
+    precio perfora el stop durante el dia, en la realidad se sale ahi (o peor,
+    si abre con un gap por debajo del stop), no se espera al cierre. Tambien
+    se restan comision y slippage estimados, para no inflar los retornos
+    respecto a la operatoria real.
     """
     close = bars["Close"]
     sma_fast_s = sma(close, cfg.sma_fast)
@@ -29,6 +42,8 @@ def _simulate_symbol(
     roc_1m = rate_of_change(close, cfg.momentum_short_days)
     rsi_s = rsi(close, cfg.rsi_period)
     atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
+
+    notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
 
     trades: list[BacktestTrade] = []
     in_position = False
@@ -41,21 +56,35 @@ def _simulate_symbol(
     for i in range(start_idx, len(bars)):
         date = bars.index[i]
         price = float(close.iloc[i])
+        low_price = float(bars["Low"].iloc[i])
+        open_price = float(bars["Open"].iloc[i])
 
         if in_position:
             held_days = i - entry_idx
-            hit_stop = price <= stop_price
+            hit_stop = low_price <= stop_price
             timed_out = held_days >= cfg.max_holding_days
             trend_broke = price < sma_fast_s.iloc[i]
             if hit_stop or timed_out or trend_broke:
                 exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "trend_break")
-                ret_pct = (price - entry_price) / entry_price * 100
+                # Si hubo gap por debajo del stop, el fill realista es el open
+                # (peor que el stop); si no, se asume fill al precio del stop.
+                raw_exit_price = min(open_price, stop_price) if hit_stop else price
+
+                entry_fill = entry_price * (1 + cfg.slippage_pct / 100)
+                exit_fill = raw_exit_price * (1 - cfg.slippage_pct / 100)
+                commission_pct = (
+                    (2 * cfg.commission_per_trade_usd / notional_per_trade) * 100
+                    if notional_per_trade
+                    else 0.0
+                )
+                ret_pct = (exit_fill - entry_fill) / entry_fill * 100 - commission_pct
+
                 trades.append(BacktestTrade(
                     symbol=symbol,
                     entry_date=entry_date,
                     exit_date=date,
                     entry_price=round(entry_price, 2),
-                    exit_price=round(price, 2),
+                    exit_price=round(raw_exit_price, 2),
                     return_pct=round(ret_pct, 2),
                     exit_reason=exit_reason,
                 ))
@@ -70,8 +99,9 @@ def _simulate_symbol(
         bench_roc = benchmark_roc.iloc[i] if i < len(benchmark_roc) and not pd.isna(benchmark_roc.iloc[i]) else None
         rel_strength_ok = bench_roc is None or roc_3m.iloc[i] > bench_roc
         momentum_ok = roc_3m.iloc[i] > 0 and (pd.isna(roc_1m.iloc[i]) or roc_1m.iloc[i] > 0)
+        regime_ok = bool(benchmark_regime_ok.iloc[i]) if i < len(benchmark_regime_ok) else True
 
-        if trend_ok and rsi_ok and rel_strength_ok and momentum_ok:
+        if trend_ok and rsi_ok and rel_strength_ok and momentum_ok and regime_ok:
             in_position = True
             entry_price = price
             entry_idx = i
@@ -84,11 +114,15 @@ def _simulate_symbol(
 def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     """Backtest simplificado de la estrategia momentum sobre el universo configurado.
 
-    Simplificaciones explicitas (no es un backtester de produccion): no modela
-    comisiones ni slippage, y la curva de equity asume que cada operacion ocupa
-    1/top_n del capital de forma secuencial (no rastrea solapamiento real de
-    posiciones concurrentes). Sirve para validar la direccion de la idea antes
-    de arriesgar capital real, no como promesa de resultados futuros.
+    Simplificaciones explicitas que siguen sin modelarse (no es un backtester
+    de produccion): la curva de equity asume que cada operacion ocupa 1/top_n
+    del capital de forma secuencial (no rastrea solapamiento real de
+    posiciones concurrentes), y el sharpe_ratio se aproxima a partir de los
+    retornos por operacion (no de una curva de equity diaria), asi que no es
+    comparable 1:1 con un Sharpe calculado sobre retornos diarios. Si modela
+    comision/slippage estimados y un fill de stop-loss realista (minimo
+    intradiario, no el cierre). Sirve para validar la direccion de la idea
+    antes de arriesgar capital real, no como promesa de resultados futuros.
     """
     history_days = int(cfg.backtest_years * 365)
 
@@ -99,6 +133,12 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
 
     benchmark_roc = rate_of_change(bench_bars["Close"], cfg.momentum_lookback_days)
 
+    if cfg.regime_filter_enabled:
+        bench_regime_sma = sma(bench_bars["Close"], cfg.regime_sma_period)
+        benchmark_regime_ok = (bench_bars["Close"] > bench_regime_sma) | bench_regime_sma.isna()
+    else:
+        benchmark_regime_ok = pd.Series(True, index=bench_bars.index)
+
     all_trades: list[BacktestTrade] = []
     for symbol in cfg.universe:
         try:
@@ -108,7 +148,8 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
         if len(bars) < cfg.sma_slow + cfg.momentum_lookback_days:
             continue
         aligned_bench_roc = benchmark_roc.reindex(bars.index, method="ffill")
-        all_trades.extend(_simulate_symbol(symbol, bars, cfg, aligned_bench_roc))
+        aligned_regime_ok = benchmark_regime_ok.reindex(bars.index, method="ffill").fillna(True)
+        all_trades.extend(_simulate_symbol(symbol, bars, cfg, aligned_bench_roc, aligned_regime_ok))
 
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
@@ -139,6 +180,15 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
 
     benchmark_cumulative = float(bench_bars["Close"].iloc[-1] / bench_bars["Close"].iloc[0] - 1) * 100
 
+    sharpe_ratio = None
+    returns_decimal = [r / 100 for r in returns]
+    if len(returns_decimal) >= 2:
+        std_r = statistics.pstdev(returns_decimal)
+        if std_r > 0:
+            span_days = max((all_trades[-1].exit_date - all_trades[0].entry_date).days, 1)
+            trades_per_year = len(all_trades) / (span_days / 365.25)
+            sharpe_ratio = (statistics.mean(returns_decimal) / std_r) * (trades_per_year ** 0.5)
+
     return BacktestSummary(
         start_date=all_trades[0].entry_date,
         end_date=all_trades[-1].exit_date,
@@ -152,5 +202,6 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
         strategy_cumulative_return_pct=round(cumulative_return, 2),
         benchmark_cumulative_return_pct=round(benchmark_cumulative, 2),
         max_drawdown_pct=round(max_drawdown, 2),
+        sharpe_ratio=round(sharpe_ratio, 2) if sharpe_ratio is not None else None,
         trades=all_trades[-50:],
     )

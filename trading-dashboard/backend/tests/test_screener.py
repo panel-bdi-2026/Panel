@@ -53,7 +53,11 @@ def patched_market_data(monkeypatch):
             raise MarketDataError(f"sin datos sinteticos para {symbol}")
         return FAKE_BARS[symbol]
 
+    def fake_get_next_earnings_date(symbol, force=False):
+        return None
+
     monkeypatch.setattr(screener_module, "get_daily_bars", fake_get_daily_bars)
+    monkeypatch.setattr(screener_module, "get_next_earnings_date", fake_get_next_earnings_date)
     return fake_get_daily_bars
 
 
@@ -115,3 +119,45 @@ def test_scan_raises_when_no_symbol_has_data(monkeypatch):
     s = MomentumScreener(config)
     with pytest.raises(MarketDataError):
         s.scan()
+
+
+def test_regime_filter_blocks_symbol_when_benchmark_below_regime_sma(screener):
+    result = screener.evaluate_symbol("MOM", benchmark_roc_3m=5.0, regime_ok=False)
+    assert result.trend_ok
+    assert not result.passes_filters
+    assert any("regimen" in note.lower() for note in result.notes)
+
+
+def test_regime_filter_does_not_block_when_benchmark_above_regime_sma(screener):
+    result = screener.evaluate_symbol("MOM", benchmark_roc_3m=5.0, regime_ok=True)
+    assert result.passes_filters
+
+
+def test_earnings_blackout_blocks_symbol_when_earnings_within_window(monkeypatch, patched_market_data):
+    from datetime import date, timedelta
+
+    soon = date.today() + timedelta(days=2)
+    monkeypatch.setattr(screener_module, "get_next_earnings_date", lambda symbol, force=False: soon)
+    config = ScreenerConfig(universe=["MOM"], benchmark_symbol="SPY", earnings_blackout_days=5)
+    s = MomentumScreener(config)
+    results = s.scan()
+    by_symbol = {r.symbol: r for r in results}
+    assert not by_symbol["MOM"].passes_filters
+    assert any("earnings" in note.lower() for note in by_symbol["MOM"].notes)
+
+
+def test_earnings_blackout_does_not_block_when_earnings_outside_window(monkeypatch, patched_market_data):
+    from datetime import date, timedelta
+
+    far = date.today() + timedelta(days=30)
+    monkeypatch.setattr(screener_module, "get_next_earnings_date", lambda symbol, force=False: far)
+    config = ScreenerConfig(universe=["MOM"], benchmark_symbol="SPY", earnings_blackout_days=5)
+    s = MomentumScreener(config)
+    results = s.scan()
+    by_symbol = {r.symbol: r for r in results}
+    assert by_symbol["MOM"].passes_filters
+
+
+def test_earnings_blackout_does_not_block_when_no_earnings_date_known(screener):
+    result = screener.evaluate_symbol("MOM", benchmark_roc_3m=5.0, regime_ok=True)
+    assert result.passes_filters

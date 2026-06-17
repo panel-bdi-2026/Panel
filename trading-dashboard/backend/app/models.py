@@ -43,6 +43,12 @@ class OrderDecision(BaseModel):
     estimated_value_usd: Optional[float] = None
 
 
+class PositionSizeSuggestion(BaseModel):
+    quantity: float
+    risk_usd: float
+    limited_by: Optional[str] = None
+
+
 class AccountSummary(BaseModel):
     net_liquidation: float
     cash: float
@@ -108,4 +114,5 @@ class BacktestSummary(BaseModel):
     strategy_cumulative_return_pct: float
     benchmark_cumulative_return_pct: float
     max_drawdown_pct: float
+    sharpe_ratio: Optional[float] = None
     trades: list[BacktestTrade] = []

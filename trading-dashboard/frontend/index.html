@@ -177,7 +177,10 @@ td{padding:8px;border-bottom:1px solid var(--border)}
         <div class="frow">
           <div class="fg">
             <label class="fl">Cantidad</label>
-            <input id="f-qty" class="fi" type="number" min="0" step="any">
+            <div style="display:flex;gap:6px">
+              <input id="f-qty" class="fi" type="number" min="0" step="any">
+              <button type="button" class="btn btn-ghost" style="background:var(--bg);color:var(--muted);white-space:nowrap" onclick="suggestQuantity()">📐 Sugerir</button>
+            </div>
           </div>
           <div class="fg">
             <label class="fl">Tipo</label>
@@ -460,6 +463,21 @@ async function scanSignals(force=false){
   }
 }
 
+async function suggestQuantity(){
+  const symbol = document.getElementById('f-symbol').value.trim().toUpperCase();
+  const entryPrice = parseFloat(document.getElementById('f-limit').value);
+  const stopPrice = parseFloat(document.getElementById('f-stop').value);
+  if(!symbol || !entryPrice || !stopPrice){ toast('Completa símbolo, precio límite y stop-loss primero'); return; }
+  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
+  try{
+    const s = await api(`/api/orders/size-suggestion?symbol=${encodeURIComponent(symbol)}&entry_price=${entryPrice}&stop_loss_price=${stopPrice}`, { auth:true });
+    document.getElementById('f-qty').value = s.quantity;
+    toast(`Cantidad sugerida: ${s.quantity} · riesgo ≈ ${fmtUsd(s.risk_usd)}${s.limited_by ? ' (limitado por ' + s.limited_by + ')' : ''}`);
+  }catch(e){
+    toast('Error: ' + (e.message || 'no se pudo calcular la sugerencia.'));
+  }
+}
+
 function useSignal(symbol){
   const r = lastSignals[symbol];
   if(!r) return;
@@ -480,10 +498,10 @@ async function runBacktest(){
     const r = await api('/api/signals/backtest');
     box.innerHTML = `
       <b>Backtest ${new Date(r.start_date).toLocaleDateString()} → ${new Date(r.end_date).toLocaleDateString()}</b><br>
-      ${r.total_trades} operaciones · win rate ${r.win_rate_pct}% · profit factor ${r.profit_factor ?? '∞'}<br>
-      Retorno estrategia (aprox.): ${r.strategy_cumulative_return_pct}% vs benchmark (${r.benchmark_cumulative_return_pct}%)<br>
+      ${r.total_trades} operaciones · win rate ${r.win_rate_pct}% · profit factor ${r.profit_factor ?? '∞'} · Sharpe ${r.sharpe_ratio ?? '—'}<br>
+      Retorno estrategia (neto de comisión/slippage estimados): ${r.strategy_cumulative_return_pct}% vs benchmark (${r.benchmark_cumulative_return_pct}%)<br>
       Max drawdown: ${r.max_drawdown_pct}%
-      <p class="muted-sm" style="margin-top:6px">Backtest simplificado (sin comisiones/slippage); resultados pasados no garantizan resultados futuros.</p>`;
+      <p class="muted-sm" style="margin-top:6px">Backtest simplificado: incluye comisión/slippage estimados, stop-loss con fill realista (mínimo intradiario) y filtro de régimen de mercado; el Sharpe es aproximado a partir de retornos por operación, no de una curva de equity diaria. Resultados pasados no garantizan resultados futuros.</p>`;
   }catch(e){
     box.textContent = 'Error al correr el backtest: ' + e.message;
   }

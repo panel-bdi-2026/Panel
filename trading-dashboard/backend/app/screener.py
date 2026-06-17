@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from .indicators import atr, pct_from_high, rate_of_change, rsi, sma
-from .market_data import MarketDataError, get_daily_bars
+from .market_data import MarketDataError, get_daily_bars, get_next_earnings_date
 from .models import SignalResult
 from .screener_config import ScreenerConfig
 
@@ -25,16 +25,39 @@ class MomentumScreener:
     def reload(self, config: ScreenerConfig) -> None:
         self.config = config
 
-    def _benchmark_roc(self, force: bool = False) -> float | None:
+    def _benchmark_context(self, force: bool = False) -> tuple[float | None, bool]:
+        """Retorna (roc_3m, regime_ok) del benchmark.
+
+        roc_3m es el momentum usado para la fuerza relativa de cada simbolo.
+        regime_ok indica si el benchmark esta por encima de su propia SMA de
+        regimen (mercado en tendencia alcista de fondo); si no hay suficiente
+        historia para calcularla, se asume regime_ok=True en vez de bloquear
+        todo el scan por falta de dato.
+        """
         try:
             bars = get_daily_bars(self.config.benchmark_symbol, self.config.lookback_days, force=force)
         except MarketDataError:
-            return None
-        roc = rate_of_change(bars["Close"], self.config.momentum_lookback_days)
+            return None, True
+        close = bars["Close"]
+        roc = rate_of_change(close, self.config.momentum_lookback_days)
         value = roc.iloc[-1] if len(roc) else None
-        return float(value) if value is not None and not pd.isna(value) else None
+        roc_3m = float(value) if value is not None and not pd.isna(value) else None
 
-    def evaluate_symbol(self, symbol: str, benchmark_roc_3m: float | None, force: bool = False) -> SignalResult | None:
+        regime_ok = True
+        if self.config.regime_filter_enabled and len(close):
+            regime_sma = sma(close, self.config.regime_sma_period)
+            last_sma = regime_sma.iloc[-1]
+            if not pd.isna(last_sma):
+                regime_ok = bool(close.iloc[-1] > last_sma)
+        return roc_3m, regime_ok
+
+    def evaluate_symbol(
+        self,
+        symbol: str,
+        benchmark_roc_3m: float | None,
+        regime_ok: bool = True,
+        force: bool = False,
+    ) -> SignalResult | None:
         cfg = self.config
         try:
             bars = get_daily_bars(symbol, cfg.lookback_days, force=force)
@@ -73,6 +96,10 @@ class MomentumScreener:
         liquidity_ok = last_avg_dollar_vol >= cfg.min_avg_dollar_volume
         rsi_ok = cfg.rsi_min <= last_rsi <= cfg.rsi_max
 
+        earnings_date = get_next_earnings_date(symbol, force=force)
+        days_to_earnings = (earnings_date - datetime.now(timezone.utc).date()).days if earnings_date else None
+        earnings_ok = days_to_earnings is None or not (0 <= days_to_earnings <= cfg.earnings_blackout_days)
+
         notes: list[str] = []
         if not liquidity_ok:
             notes.append("Volumen promedio por debajo del minimo de liquidez configurado.")
@@ -80,6 +107,10 @@ class MomentumScreener:
             notes.append(f"RSI {last_rsi:.1f} fuera del rango configurado ({cfg.rsi_min}-{cfg.rsi_max}).")
         if not trend_ok:
             notes.append("No cumple el filtro de tendencia (precio > SMA rapida > SMA lenta).")
+        if not regime_ok:
+            notes.append("Filtro de regimen: el benchmark esta por debajo de su SMA de regimen.")
+        if not earnings_ok:
+            notes.append(f"Earnings estimados en {days_to_earnings} dia(s): dentro de la ventana de blackout.")
 
         relative_strength = last_roc_3m - benchmark_roc_3m if benchmark_roc_3m is not None else 0.0
 
@@ -107,15 +138,15 @@ class MomentumScreener:
             pct_from_52w_high=round(last_from_high, 2) if last_from_high is not None else None,
             suggested_stop_loss_price=round(stop_loss_price, 2),
             suggested_stop_loss_pct=round(stop_loss_pct, 2),
-            passes_filters=trend_ok and liquidity_ok and rsi_ok,
+            passes_filters=trend_ok and liquidity_ok and rsi_ok and regime_ok and earnings_ok,
             notes=notes,
         )
 
     def scan(self, force: bool = False) -> list[SignalResult]:
-        benchmark_roc = self._benchmark_roc(force=force)
+        benchmark_roc, regime_ok = self._benchmark_context(force=force)
         results = []
         for symbol in self.config.universe:
-            result = self.evaluate_symbol(symbol, benchmark_roc, force=force)
+            result = self.evaluate_symbol(symbol, benchmark_roc, regime_ok=regime_ok, force=force)
             if result is not None:
                 results.append(result)
         if self.config.universe and not results:

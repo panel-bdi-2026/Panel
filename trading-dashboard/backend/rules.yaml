@@ -11,6 +11,12 @@ max_order_value_usd: 5000
 # Tamano maximo de una posicion como % del equity total (NetLiquidation).
 max_position_pct_of_equity: 10
 
+# Riesgo maximo a arriesgar por operacion, como % del equity, si se toca el
+# stop-loss. Solo se usa para sugerir un tamano de posicion (boton "Sugerir"
+# en el ticket de orden); el tamano sugerido igual queda recortado por
+# max_position_pct_of_equity y max_order_value_usd.
+risk_per_trade_pct: 1
+
 # Si la perdida del dia alcanza este % del equity, se bloquean nuevas ordenes (kill switch).
 daily_loss_limit_pct: 2
 
