@@ -8,6 +8,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from .atomic_io import atomic_write_text
 from .models import Side
 
 
@@ -180,7 +181,8 @@ class FundsStore:
         return {fid: Fund(**f) for fid, f in data.items()}
 
     def save(self) -> None:
-        self.path.write_text(
+        atomic_write_text(
+            self.path,
             json.dumps({fid: f.model_dump() for fid, f in self.funds.items()}, default=str, indent=2),
             encoding="utf-8",
         )

@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import yaml
 from pydantic import BaseModel
 
+from .atomic_io import atomic_write_text
 from .models import AccountSummary, OrderDecision, OrderRequest, PositionSizeSuggestion, RuleViolation, Side
 
 
@@ -41,7 +42,7 @@ class RulesConfig(BaseModel):
         return cls(**data)
 
     def save(self, path: Path) -> None:
-        path.write_text(yaml.safe_dump(self.model_dump(), sort_keys=False))
+        atomic_write_text(path, yaml.safe_dump(self.model_dump(), sort_keys=False))
 
 
 def _parse_hhmm(value: str) -> dtime:

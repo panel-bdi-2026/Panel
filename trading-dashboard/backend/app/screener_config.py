@@ -5,6 +5,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel
 
+from .atomic_io import atomic_write_text
+
 # Universo de partida: S&P 500 completo, para que el screener identifique
 # oportunidades de forma autonoma en todo el indice en vez de depender de una
 # lista corta armada a mano. Tickers con clase de accion (ej. BRK.B) usan guion
@@ -158,4 +160,4 @@ class ScreenerConfig(BaseModel):
         return cls(**data)
 
     def save(self, path: Path) -> None:
-        path.write_text(yaml.safe_dump(self.model_dump(), sort_keys=False))
+        atomic_write_text(path, yaml.safe_dump(self.model_dump(), sort_keys=False))

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .atomic_io import atomic_write_text
+
 
 def load_state(path: Path) -> dict:
     """Lee el estado persistido (halted, mode, pending_orders). Si el archivo
@@ -18,4 +20,4 @@ def load_state(path: Path) -> dict:
 
 
 def save_state(path: Path, data: dict) -> None:
-    path.write_text(json.dumps(data, default=str, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(data, default=str, indent=2), encoding="utf-8")
