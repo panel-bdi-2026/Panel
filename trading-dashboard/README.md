@@ -162,8 +162,11 @@ llama a `GET /api/orders/size-suggestion` (requiere `X-API-Key`) y completa el
 campo con la cantidad calculada para que, si se toca el stop-loss ingresado,
 la pérdida no supere `risk_per_trade_pct` del equity actual — recortada
 además por `max_position_pct_of_equity` y `max_order_value_usd` para no
-sugerir algo que el `RulesEngine` rechazaría de todas formas. Es una
-sugerencia editable: no se aplica sola ni se envía ninguna orden por esto.
+sugerir algo que el `RulesEngine` rechazaría de todas formas. Si el formulario
+tiene un fondo seleccionado, el endpoint recibe su `fund_id` y dimensiona
+contra el `equity_estimate()` de ese fondo en vez del equity de toda la
+cuenta. Es una sugerencia editable: no se aplica sola ni se envía ninguna
+orden por esto.
 
 ## Radar de oportunidades (`backend/screener.yaml`)
 
@@ -370,10 +373,12 @@ trading autónomo con dinero real.
     primero por orden de creación que no tenga ya posición en ese símbolo y
     pueda afrontar al menos 1 unidad. Evita que varios fondos compitan por el
     mismo símbolo a la vez y simplifica el monitoreo de salida.
-  - El tamaño se calcula igual que el borrador manual
-    (`RulesEngine.suggested_quantity`, sizing por riesgo contra el equity de
-    toda la cuenta), pero además se recorta a lo que el `cash_usd` de ese
-    fondo puede pagar.
+  - El tamaño se calcula con `RulesEngine.suggested_quantity`, igual que el
+    borrador manual, pero sizeado por riesgo contra el `equity_estimate()` de
+    ESE fondo (no el equity de toda la cuenta de IBKR) para que un fondo
+    chico no reciba una posición dimensionada como si tuviera detrás el
+    capital de todos los demás fondos juntos. Además se recorta a lo que el
+    `cash_usd` de ese fondo puede pagar.
   - La orden igual pasa por `RulesEngine.evaluate()` — las mismas reglas duras
     que cualquier otra orden (whitelist, stop-loss, límites de tamaño,
     horario, kill switch, etc.). Si la rechaza, no se ejecuta nada. A

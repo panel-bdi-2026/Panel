@@ -202,7 +202,7 @@ class RulesEngine:
 
     def suggested_quantity(
         self,
-        account: AccountSummary,
+        equity: float,
         current_position_qty: float,
         entry_price: float,
         stop_loss_price: float,
@@ -214,15 +214,22 @@ class RulesEngine:
         para no sugerir una cantidad que el motor de reglas rechazaria de
         todas formas al enviarla. Es solo una sugerencia editable, no se
         aplica sola.
+
+        `equity` es el capital contra el que se dimensiona: el equity de toda
+        la cuenta de IBKR para ordenes sin fondo asociado, o el
+        equity_estimate() de un fondo puntual cuando la orden esta atada a
+        uno (ver _try_auto_trade_entry y order_size_suggestion en main.py) --
+        asi un fondo chico no recibe una posicion sizeada como si tuviera
+        detras el capital de toda la cuenta.
         """
         risk_per_share = entry_price - stop_loss_price
-        if entry_price <= 0 or account.net_liquidation <= 0 or risk_per_share <= 0:
+        if entry_price <= 0 or equity <= 0 or risk_per_share <= 0:
             return PositionSizeSuggestion(quantity=0.0, risk_usd=0.0, limited_by=None)
 
-        risk_budget_usd = account.net_liquidation * self.config.risk_per_trade_pct / 100
+        risk_budget_usd = equity * self.config.risk_per_trade_pct / 100
         qty_by_risk = risk_budget_usd / risk_per_share
 
-        max_position_value = account.net_liquidation * self.config.max_position_pct_of_equity / 100
+        max_position_value = equity * self.config.max_position_pct_of_equity / 100
         remaining_value = max(0.0, max_position_value - current_position_qty * entry_price)
         qty_by_position_pct = remaining_value / entry_price
 

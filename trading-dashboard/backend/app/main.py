@@ -158,7 +158,7 @@ def _draft_order_from_signal(result: SignalResult) -> PendingOrder | None:
 
     account_summary = broker.get_account_summary()
     sizing = rules_engine.suggested_quantity(
-        account_summary, position_qty, result.last_price, result.suggested_stop_loss_price
+        account_summary.net_liquidation, position_qty, result.last_price, result.suggested_stop_loss_price
     )
     if sizing.quantity <= 0:
         return None
@@ -214,15 +214,15 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
 
     account_summary = broker.get_account_summary()
     position_qty = broker.get_position_qty(symbol)
-    sizing = rules_engine.suggested_quantity(
-        account_summary, position_qty, result.last_price, result.suggested_stop_loss_price
-    )
-    if sizing.quantity <= 0:
-        return
 
     fund = None
     quantity = 0.0
     for candidate in candidates:
+        sizing = rules_engine.suggested_quantity(
+            candidate.equity_estimate(), position_qty, result.last_price, result.suggested_stop_loss_price
+        )
+        if sizing.quantity <= 0:
+            continue
         affordable_qty = math.floor(candidate.cash_usd / result.last_price)
         qty = min(sizing.quantity, affordable_qty)
         if qty > 0:
@@ -716,18 +716,29 @@ def order_size_suggestion(
     symbol: str,
     entry_price: float,
     stop_loss_price: float,
+    fund_id: str | None = None,
     _: None = Depends(require_api_key),
 ):
     """Sugiere una cantidad para una compra en base al riesgo (ver
     RulesEngine.suggested_quantity). No es una orden ni se aplica sola: el
     usuario la ve en el ticket de orden y puede ajustarla antes de enviar, y
     de todas formas pasa por rules_engine.evaluate() al enviarse como
-    cualquier otra orden."""
+    cualquier otra orden.
+
+    Si se pasa fund_id, el sizing se dimensiona contra el equity_estimate()
+    de ese fondo en vez del equity de toda la cuenta de IBKR -- mismo motivo
+    que en _try_auto_trade_entry."""
     if not state["connected"]:
         raise HTTPException(status_code=503, detail="No conectado a IBKR.")
-    account_summary = broker.get_account_summary()
     position_qty = broker.get_position_qty(symbol.strip().upper())
-    return rules_engine.suggested_quantity(account_summary, position_qty, entry_price, stop_loss_price)
+    if fund_id:
+        fund = funds_store.get(fund_id)
+        if fund is None:
+            raise HTTPException(status_code=404, detail="Fondo no encontrado.")
+        equity = fund.equity_estimate()
+    else:
+        equity = broker.get_account_summary().net_liquidation
+    return rules_engine.suggested_quantity(equity, position_qty, entry_price, stop_loss_price)
 
 
 @app.get("/api/orders/pending")

@@ -111,9 +111,11 @@ def test_auto_trade_entry_skips_when_fund_already_owns_symbol():
     assert fund.owned_quantity("AAPL") == 5  # no se sumo una segunda compra
 
 
-def test_auto_trade_entry_skips_when_sizing_is_zero(monkeypatch):
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account(net_liq=0))
-    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+def test_auto_trade_entry_skips_when_sizing_is_zero():
+    # Sizing se dimensiona contra el equity del propio fondo: un fondo sin
+    # capital (equity_estimate() == 0) da sizing cero sin importar el equity
+    # de la cuenta consolidada.
+    fund = main_module.funds_store.create("Fondo", 0, auto_trading_enabled=True)
     asyncio.run(main_module._try_auto_trade_entry(make_signal()))
     fund = main_module.funds_store.get(fund.id)
     assert fund.owned_quantity("AAPL") == 0

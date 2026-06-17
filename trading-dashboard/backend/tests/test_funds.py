@@ -72,6 +72,27 @@ def test_owned_quantity_does_not_see_holdings_never_bought_by_this_fund(store):
     assert not fund.can_afford(5001)
 
 
+def test_equity_estimate_with_only_cash(store):
+    fund = store.create("Test", 5000)
+    assert fund.equity_estimate() == 5000
+
+
+def test_equity_estimate_includes_open_position_at_avg_cost(store):
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100)
+    fund = store.get(fund.id)
+    assert fund.cash_usd == 4000
+    assert fund.equity_estimate() == fund.cash_usd + 10 * fund.positions["AAPL"].avg_cost
+
+
+def test_equity_estimate_reflects_realized_gains_after_sell(store):
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100)
+    store.record_fill(fund.id, "AAPL", Side.SELL, 10, 150)  # realiza una ganancia de 500
+    fund = store.get(fund.id)
+    assert fund.equity_estimate() == 5500
+
+
 def test_set_auto_trading_toggle(store):
     fund = store.create("Test", 5000)
     assert fund.auto_trading_enabled is False

@@ -89,6 +89,20 @@ class Fund(BaseModel):
     def can_afford(self, estimated_cost_usd: float) -> bool:
         return estimated_cost_usd <= self.cash_usd
 
+    def equity_estimate(self) -> float:
+        """Estima el capital total del fondo (cash + valor de sus posiciones
+        abiertas) sin consultar precios de mercado en vivo: usa el costo
+        promedio de cada posicion como aproximacion. Es la base que usa el
+        motor de auto-trading para dimensionar nuevas entradas en proporcion
+        al capital propio de ESTE fondo (ver RulesEngine.suggested_quantity),
+        en vez del equity de toda la cuenta de IBKR -- un fondo chico no debe
+        recibir una posicion sizeada como si tuviera detras el capital de
+        todos los demas fondos juntos. No reemplaza fundMarketValue() del
+        frontend, que usa precios en vivo cuando los tiene para mostrar PnL
+        no realizado; aca alcanza con una aproximacion para el sizing."""
+        positions_value = sum(p.quantity * p.avg_cost for p in self.positions.values())
+        return self.cash_usd + positions_value
+
     def realized_pnl_total(self) -> float:
         return sum(t.realized_pnl for t in self.trades if t.realized_pnl is not None)
 

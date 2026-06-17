@@ -640,8 +640,11 @@ async function suggestQuantity(){
   const stopPrice = parseFloat(document.getElementById('f-stop').value);
   if(!symbol || !entryPrice || !stopPrice){ toast('Completa símbolo, precio límite y stop-loss primero'); return; }
   if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
+  const fundId = document.getElementById('f-fund').value;
   try{
-    const s = await api(`/api/orders/size-suggestion?symbol=${encodeURIComponent(symbol)}&entry_price=${entryPrice}&stop_loss_price=${stopPrice}`, { auth:true });
+    let url = `/api/orders/size-suggestion?symbol=${encodeURIComponent(symbol)}&entry_price=${entryPrice}&stop_loss_price=${stopPrice}`;
+    if(fundId) url += `&fund_id=${encodeURIComponent(fundId)}`;
+    const s = await api(url, { auth:true });
     document.getElementById('f-qty').value = s.quantity;
     toast(`Cantidad sugerida: ${s.quantity} · riesgo ≈ ${fmtUsd(s.risk_usd)}${s.limited_by ? ' (limitado por ' + s.limited_by + ')' : ''}`);
   }catch(e){
