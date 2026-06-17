@@ -132,3 +132,46 @@ def test_total_allocated_cash_sums_across_funds(store):
     assert store.total_allocated_cash() == 8000
     assert store.total_allocated_cash(exclude_fund_id=fund1.id) == 3000
     assert store.total_allocated_cash(exclude_fund_id=fund2.id) == 5000
+
+
+def test_buy_opening_position_sets_opened_at_and_stop_loss(store):
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100, stop_loss_price=90)
+    fund = store.get(fund.id)
+    pos = fund.positions["AAPL"]
+    assert pos.opened_at is not None
+    assert pos.stop_loss_price == 90
+
+
+def test_buy_topping_up_open_position_keeps_original_opened_at_and_stop_loss(store):
+    fund = store.create("Test", 10_000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100, stop_loss_price=90)
+    fund = store.get(fund.id)
+    original_opened_at = fund.positions["AAPL"].opened_at
+
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 120, stop_loss_price=110)
+    fund = store.get(fund.id)
+    pos = fund.positions["AAPL"]
+    assert pos.opened_at == original_opened_at
+    assert pos.stop_loss_price == 90
+
+
+def test_sell_closing_position_clears_opened_at_and_stop_loss(store):
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100, stop_loss_price=90)
+    store.record_fill(fund.id, "AAPL", Side.SELL, 10, 120)
+    fund = store.get(fund.id)
+    pos = fund.positions["AAPL"]
+    assert pos.opened_at is None
+    assert pos.stop_loss_price is None
+
+
+def test_partial_sell_keeps_opened_at_and_stop_loss(store):
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100, stop_loss_price=90)
+    original_opened_at = store.get(fund.id).positions["AAPL"].opened_at
+
+    store.record_fill(fund.id, "AAPL", Side.SELL, 4, 150)
+    pos = store.get(fund.id).positions["AAPL"]
+    assert pos.opened_at == original_opened_at
+    assert pos.stop_loss_price == 90

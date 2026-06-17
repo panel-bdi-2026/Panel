@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import secrets
 import uuid
 from contextlib import asynccontextmanager
@@ -18,7 +19,8 @@ from .backtest import BacktestError, run_backtest
 from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
 from .funds import FundsStore
-from .market_data import MarketDataError
+from .indicators import sma
+from .market_data import MarketDataError, get_daily_bars
 from .models import OrderRequest, OrderType, PendingOrder, SignalResult, Side
 from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
@@ -172,6 +174,74 @@ def _draft_order_from_signal(result: SignalResult) -> PendingOrder | None:
     return pending
 
 
+async def _try_auto_trade_entry(result: SignalResult) -> None:
+    """Para fondos con auto_trading_enabled, ejecuta la compra de inmediato
+    (sin aprobacion manual) en vez de dejarla en borrador. Solo corre en modo
+    paper: el auto-trading nunca opera en live, sin importar el toggle del
+    fondo. La senal se asigna a un solo fondo (el primero con cupo, por orden
+    de creacion, que pueda afrontar al menos 1 unidad) para que varios fondos
+    no compitan por el mismo simbolo a la vez."""
+    if state["mode"] != "paper" or result.last_price <= 0:
+        return
+    symbol = result.symbol
+    candidates = [f for f in funds_store.list() if f.auto_trading_enabled and f.owned_quantity(symbol) == 0]
+    if not candidates:
+        return
+
+    account_summary = broker.get_account_summary()
+    position_qty = broker.get_position_qty(symbol)
+    sizing = rules_engine.suggested_quantity(
+        account_summary, position_qty, result.last_price, result.suggested_stop_loss_price
+    )
+    if sizing.quantity <= 0:
+        return
+
+    fund = None
+    quantity = 0.0
+    for candidate in candidates:
+        affordable_qty = math.floor(candidate.cash_usd / result.last_price)
+        qty = min(sizing.quantity, affordable_qty)
+        if qty > 0:
+            fund = candidate
+            quantity = qty
+            break
+    if fund is None:
+        return
+
+    order = OrderRequest(
+        symbol=symbol,
+        side=Side.BUY,
+        quantity=quantity,
+        order_type=OrderType.LMT,
+        limit_price=result.last_price,
+        stop_loss_price=result.suggested_stop_loss_price,
+        fund_id=fund.id,
+    )
+    trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
+    decision = rules_engine.evaluate(
+        order=order,
+        account=account_summary,
+        current_position_qty=position_qty,
+        reference_price=result.last_price,
+        trades_today=trades_today,
+        halted=state["halted"],
+    )
+    if not decision.approved:
+        audit.record("auto_trade_rejected", order.model_dump(), decision.model_dump())
+        return
+
+    try:
+        result_payload = await broker.place_order(order)
+    except StopLossRejectedError as exc:
+        audit.record("auto_trade_stop_loss_rejected", order.model_dump(), {"error": str(exc)})
+        return
+
+    funds_store.record_fill(
+        fund.id, symbol, Side.BUY, quantity, result.last_price, stop_loss_price=result.suggested_stop_loss_price
+    )
+    audit.record("auto_trade_executed", order.model_dump(), {"fund_id": fund.id, **result_payload})
+
+
 async def _run_signal_scan_cycle() -> None:
     """Un ciclo del escaneo proactivo: corre el screener, detecta simbolos que
     recien empiezan a pasar los filtros (transicion no-pasa -> pasa) y les
@@ -211,6 +281,14 @@ async def _run_signal_scan_cycle() -> None:
     # (contando lo que ya esta pendiente), para no sobre-asignar la cartera de
     # un golpe. Errar hacia MENOS ordenes automaticas es el lado seguro.
     new_signals = [r for r in top_results if r.symbol in new_symbols]
+
+    # Intenta primero la entrada automatica por fondo (ver _try_auto_trade_entry):
+    # se ejecuta antes del draft manual y usa el mismo tope por ciclo, asi que si
+    # un fondo auto-trading ya tomo la señal, el draft manual de abajo la salta
+    # solo (chequea la posicion real en el broker, que ya quedo en no-cero).
+    for r in new_signals[: screener_config.max_auto_drafts_per_cycle]:
+        await _try_auto_trade_entry(r)
+
     free_slots = max(0, screener_config.top_n - len(state["pending_orders"]))
     cap = min(screener_config.max_auto_drafts_per_cycle, free_slots)
     new_signals = new_signals[:cap]
@@ -253,6 +331,108 @@ async def _risk_monitor_loop() -> None:
                 f"[KILL SWITCH] Perdida diaria {account.daily_pnl_pct:.2f}% "
                 "alcanzo el limite. Trading pausado automaticamente."
             )
+
+
+async def _check_fund_exit(fund_id: str, symbol: str) -> None:
+    """Evalua si una posicion abierta por el motor de auto-trading debe
+    cerrarse, y si corresponde la vende entera (siempre atada a ese fund_id).
+
+    Tres motivos posibles, en este orden:
+    1. Reconciliacion: si la cantidad real en el broker es menor a la que
+       registra el ledger del fondo, el stop-loss que se coloco como orden
+       bracket al abrir la posicion (ver broker.place_order) ya se ejecuto
+       del lado de IBKR sin pasar por record_fill. Se reconcilia la
+       diferencia para que el fondo no quede con una posicion fantasma. El
+       precio exacto del fill no esta disponible sin consultar el historial
+       de ejecuciones de IBKR; se aproxima con el stop_loss_price registrado
+       al abrir la posicion (misma simplificacion ya documentada en el resto
+       del ledger de fondos).
+    2. max_holding_days: misma regla que ya se simula en backtest.py, ahora
+       aplicada en vivo sobre la fecha real de apertura.
+    3. trend_break: el precio cierra por debajo de la SMA rapida del
+       screener, igual que en backtest.py.
+    """
+    fund = funds_store.get(fund_id)
+    if fund is None:
+        return
+    position = fund.positions.get(symbol)
+    if position is None or position.quantity <= 0:
+        return
+
+    broker_qty = broker.get_position_qty(symbol)
+    if broker_qty < position.quantity:
+        closed_qty = position.quantity - max(broker_qty, 0.0)
+        fill_price = position.stop_loss_price or position.avg_cost
+        funds_store.record_fill(fund_id, symbol, Side.SELL, closed_qty, fill_price)
+        audit.record(
+            "auto_trade_stop_loss_reconciled",
+            {"fund_id": fund_id, "symbol": symbol},
+            {"quantity": closed_qty, "price": fill_price},
+        )
+        fund = funds_store.get(fund_id)
+        position = fund.positions.get(symbol) if fund else None
+        if position is None or position.quantity <= 0:
+            return
+
+    held_days = (datetime.now(timezone.utc) - position.opened_at).days if position.opened_at else 0
+    timed_out = held_days >= screener_config.max_holding_days
+
+    trend_broke = False
+    try:
+        bars = await asyncio.to_thread(get_daily_bars, symbol, screener_config.sma_fast + 5)
+        sma_fast_s = sma(bars["Close"], screener_config.sma_fast)
+        if len(sma_fast_s) and not bool(sma_fast_s.isna().iloc[-1]):
+            trend_broke = float(bars["Close"].iloc[-1]) < float(sma_fast_s.iloc[-1])
+    except MarketDataError:
+        pass
+
+    if not (timed_out or trend_broke):
+        return
+
+    reference_price = await broker.get_reference_price(symbol)
+    if not reference_price:
+        return
+
+    order = OrderRequest(
+        symbol=symbol, side=Side.SELL, quantity=position.quantity, order_type=OrderType.MKT, fund_id=fund_id
+    )
+    try:
+        result_payload = await broker.place_order(order)
+    except StopLossRejectedError as exc:
+        audit.record("auto_trade_exit_failed", order.model_dump(), {"error": str(exc)})
+        return
+
+    funds_store.record_fill(fund_id, symbol, Side.SELL, position.quantity, reference_price)
+    reason = "max_holding_days" if timed_out else "trend_break"
+    audit.record("auto_trade_exit", order.model_dump(), {"reason": reason, **result_payload})
+    await _broadcast({"type": "auto_trade_exit", "fund_id": fund_id, "symbol": symbol, "reason": reason})
+
+
+async def _run_auto_exit_monitor_cycle() -> None:
+    """Revisa, para cada fondo con auto-trading activado, sus posiciones
+    abiertas y las cierra si corresponde (ver _check_fund_exit). Solo en modo
+    paper y con la cuenta conectada y sin halt, igual que la entrada
+    automatica."""
+    if state["mode"] != "paper" or state["halted"] or not state["connected"]:
+        return
+    for fund in funds_store.list():
+        if not fund.auto_trading_enabled:
+            continue
+        for symbol in list(fund.positions.keys()):
+            try:
+                await _check_fund_exit(fund.id, symbol)
+            except Exception as exc:
+                audit.record("auto_trade_exit_check_failed", {"fund_id": fund.id, "symbol": symbol}, {"error": str(exc)})
+
+
+async def _auto_exit_monitor_loop() -> None:
+    """Monitoreo de salida en background, a la misma cadencia que el escaneo
+    proactivo de entradas: las señales (trend-break, max-holding-days) se
+    basan en cierres diarios, asi que chequear mas seguido no aporta nada y
+    solo gastaria cuota de la API de datos de mercado."""
+    while True:
+        await asyncio.sleep(screener_config.auto_scan_interval_minutes * 60)
+        await _run_auto_exit_monitor_cycle()
 
 
 async def _restore_persisted_mode() -> None:
@@ -298,10 +478,12 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(_broadcast_loop())
     risk_task = asyncio.create_task(_risk_monitor_loop())
     signal_task = asyncio.create_task(_signal_scan_loop())
+    exit_monitor_task = asyncio.create_task(_auto_exit_monitor_loop())
     yield
     task.cancel()
     risk_task.cancel()
     signal_task.cancel()
+    exit_monitor_task.cancel()
     broker.disconnect()
 
 
@@ -751,9 +933,10 @@ class FundAutoTradingUpdate(BaseModel):
 
 @app.put("/api/funds/{fund_id}/auto-trading")
 def set_fund_auto_trading(fund_id: str, body: FundAutoTradingUpdate, _: None = Depends(require_api_key)):
-    """Prende/apaga el toggle de auto-trading del fondo. Por ahora el toggle
-    solo se persiste: el motor proactivo todavia no lo lee para operar sin
-    aprobacion manual (eso llega en una fase posterior, ver README)."""
+    """Prende/apaga el toggle de auto-trading del fondo. Con enabled=true, el
+    motor proactivo (ver _try_auto_trade_entry / _check_fund_exit en este
+    mismo modulo) compra y vende dentro de este fondo sin aprobacion manual,
+    pero solo en modo paper (ver README)."""
     fund = funds_store.set_auto_trading(fund_id, body.enabled)
     if fund is None:
         raise HTTPException(status_code=404, detail="Fondo no encontrado.")

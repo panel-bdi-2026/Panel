@@ -86,12 +86,16 @@ solo con este backend (REST + WebSocket), nunca directo con IBKR.
 10. **El estado (`halted`, `mode`, órdenes pendientes) persiste en
     `state.json`** y sobrevive a un reinicio del backend — un reinicio no
     vuelve a dejar el trading activo silenciosamente si lo habías pausado.
-11. **El escaneo proactivo nunca ejecuta nada por sí solo.** Si lo habilitás
-    (`auto_scan_enabled` en `screener.yaml`), detecta señales nuevas en
-    background y arma órdenes de compra en *borrador* — pasan por el mismo
-    `RulesEngine` que cualquier orden y siempre quedan en la cola de
-    aprobación manual, sin importar su valor estimado. Ver "Escaneo proactivo
-    y órdenes en borrador automáticas" más abajo.
+11. **El escaneo proactivo nunca ejecuta nada por sí solo, salvo en fondos con
+    auto-trading activado.** Si lo habilitás (`auto_scan_enabled` en
+    `screener.yaml`), detecta señales nuevas en background y arma órdenes de
+    compra en *borrador* — pasan por el mismo `RulesEngine` que cualquier
+    orden y quedan en la cola de aprobación manual, sin importar su valor
+    estimado. La única excepción deliberada es un fondo con
+    `auto_trading_enabled = true`: ahí la compra/venta se ejecuta sin
+    aprobación manual, pero solo en modo `paper` (ver punto 16 y "Motor de
+    auto-trading por fondo" más abajo). Ver también "Escaneo proactivo y
+    órdenes en borrador automáticas".
 12. **Símbolos validados estrictamente.** El símbolo de toda orden se valida
     contra `^[A-Z0-9.\-]{1,12}$` antes de guardarse o mostrarse, y el frontend
     escapa todo texto dinámico antes de renderizarlo. Sin esto, un "símbolo"
@@ -113,6 +117,12 @@ solo con este backend (REST + WebSocket), nunca directo con IBKR.
     de IBKR: la suma de `cash_usd` de todos los fondos nunca puede superar
     ese cash real. Sin esto, dos fondos podrían "creer" tener disponible el
     mismo dinero real, rompiendo la separación que el ledger promete.
+16. **El motor de auto-trading por fondo nunca opera en `live`.** Tanto la
+    entrada automática como el monitor de salida chequean explícitamente que
+    el modo activo sea `paper` antes de hacer nada, sin importar el toggle
+    `auto_trading_enabled` del fondo — para activar trading sin aprobación
+    manual con dinero real haría falta cambiar ese chequeo a propósito en el
+    código, no alcanza con un toggle del dashboard.
 
 Ninguna de estas reglas reemplaza tu propio criterio. Esto no es una
 recomendación de inversión ni una garantía de que una orden "aprobada" sea una
@@ -314,14 +324,73 @@ con el resto de la cuenta (que en IBKR siempre se ve consolidada).
   de transparente que las simplificaciones ya documentadas en
   `backtest.py`).
 - **Toggle de auto-trading por fondo**: `PUT /api/funds/{id}/auto-trading`
-  con `{enabled}`. Por ahora el campo solo se persiste — ningún motor lo lee
-  todavía para operar sin aprobación manual. Existe desde ya para que el
-  toggle esté disponible en el dashboard de cara a la fase donde el motor
-  proactivo pueda ejecutar compras/ventas de forma autónoma dentro de un
-  fondo específico (ver discusión de roadmap; no implementado en esta
-  versión).
-- El escaneo proactivo (sección anterior) sigue siendo independiente de los
-  fondos por ahora: sus borradores no quedan atados a ningún `fund_id`.
+  con `{enabled}`. Con `enabled: true`, ese fondo compra y vende dentro del
+  escaneo proactivo **sin pasar por la cola de aprobación manual** (ver motor
+  de auto-trading abajo). El escaneo proactivo en sí sigue armando borradores
+  manuales sin `fund_id` para todo lo que no se asigne a un fondo
+  auto-trading.
+
+### Motor de auto-trading por fondo (solo modo paper, sin aprobación manual)
+
+Con `Fund.auto_trading_enabled = true`, ese fondo opera de forma autónoma
+dentro del mismo ciclo del escaneo proactivo (sección anterior), en vez de
+quedar en un borrador a la espera de aprobación. Es **solo para modo
+`paper`**: tanto la entrada como el monitor de salida chequean
+`state["mode"] == "paper"` y no hacen nada si el backend está en `live`, sin
+importar el toggle del fondo — un error de configuración nunca puede activar
+trading autónomo con dinero real.
+
+- **Entrada**: cuando una señal nueva pasa los filtros (la misma transición
+  no-pasa → pasa de la sección anterior), antes de armar el borrador manual
+  se intenta una entrada automática (`_try_auto_trade_entry`):
+  - **Un solo fondo por señal**: si hay más de un fondo con auto-trading
+    activado y cupo para comprar, la señal se asigna a un único fondo — el
+    primero por orden de creación que no tenga ya posición en ese símbolo y
+    pueda afrontar al menos 1 unidad. Evita que varios fondos compitan por el
+    mismo símbolo a la vez y simplifica el monitoreo de salida.
+  - El tamaño se calcula igual que el borrador manual
+    (`RulesEngine.suggested_quantity`, sizing por riesgo contra el equity de
+    toda la cuenta), pero además se recorta a lo que el `cash_usd` de ese
+    fondo puede pagar.
+  - La orden igual pasa por `RulesEngine.evaluate()` — las mismas reglas duras
+    que cualquier otra orden (whitelist, stop-loss, límites de tamaño,
+    horario, kill switch, etc.). Si la rechaza, no se ejecuta nada. A
+    diferencia del borrador manual, aquí sí importa solo `decision.approved`
+    (no `requires_manual_approval`): saltarse la aprobación manual es
+    justamente el propósito del toggle.
+  - Si se ejecuta, el fill se registra en el ledger del fondo
+    (`FundsStore.record_fill`) con el `stop_loss_price` sugerido, que abre la
+    posición (`FundPosition.opened_at` / `stop_loss_price`) para que el
+    monitor de salida la pueda evaluar.
+- **Salida**: un segundo loop en background (`_auto_exit_monitor_loop`, misma
+  cadencia que el escaneo proactivo — las señales de salida se basan en
+  cierres diarios, chequear más seguido no aporta nada) revisa, para cada
+  posición abierta por auto-trading, tres motivos de cierre (en este orden):
+  1. **Reconciliación de stop-loss**: toda compra con stop-loss
+     (auto-trading o no) ya coloca en IBKR una orden bracket — padre + hijo
+     `StopOrder` encadenado (ver `broker.place_order`) — así que el stop-loss
+     en sí **ya se ejecuta solo del lado del broker**, sin que este backend
+     tenga que vigilarlo. Lo que faltaba era reconciliar esa salida en el
+     ledger del fondo: si la cantidad real en IBKR es menor a la que registra
+     el fondo, se asume que el stop ya se disparó y se registra la venta
+     (precio aproximado con el `stop_loss_price` guardado al abrir la
+     posición — misma simplificación ya documentada para el resto del
+     ledger).
+  2. **`max_holding_days`**: igual regla que ya se simulaba en `backtest.py`,
+     ahora aplicada en vivo sobre la fecha real de apertura
+     (`FundPosition.opened_at`).
+  3. **Ruptura de tendencia**: el cierre más reciente queda por debajo de la
+     SMA rápida del screener (`sma_fast`), igual que en `backtest.py`.
+  - Si corresponde cerrar, vende la posición completa con una orden MKT atada
+    al fondo y registra el fill. Si no se puede obtener un precio de
+    referencia, o IBKR rechaza la orden, la posición se deja abierta para
+    reintentar en el próximo ciclo (no se fuerza una venta sin precio).
+- Cada paso (entrada ejecutada/rechazada, salida por cada motivo,
+  reconciliación) queda en el audit log (`auto_trade_executed`,
+  `auto_trade_rejected`, `auto_trade_stop_loss_rejected`,
+  `auto_trade_stop_loss_reconciled`, `auto_trade_exit`,
+  `auto_trade_exit_failed`) y la salida además se avisa por WebSocket
+  (`type: "auto_trade_exit"`).
 
 ## Instalación
 
@@ -440,5 +509,11 @@ rojo permanente mientras `mode=live`.
   referencia/límite usado para validar la orden, no el fill real reportado
   por IBKR (`place_order()` no lo espera todavía). Tampoco soportan reglas
   (`rules.yaml`) ni estrategia propias todavía — hoy comparten el mismo
-  `RulesEngine` y el mismo screener que el resto de la cuenta; el toggle de
-  auto-trading por fondo se persiste pero ningún motor lo lee aún.
+  `RulesEngine` y el mismo screener que el resto de la cuenta.
+- Motor de auto-trading: solo opera en modo `paper` (chequeo explícito, nunca
+  en `live`). El monitor de salida corre cada `auto_scan_interval_minutes`
+  (no en tiempo real): un trend-break o un `max_holding_days` puede tardar
+  hasta ese intervalo en detectarse. La reconciliación de un stop-loss ya
+  ejecutado por IBKR aproxima el precio de fill con el `stop_loss_price`
+  registrado al abrir la posición, no con el fill real reportado por el
+  broker (misma simplificación que el resto del ledger de fondos).

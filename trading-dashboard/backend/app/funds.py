@@ -14,6 +14,14 @@ from .models import Side
 class FundPosition(BaseModel):
     quantity: float = 0.0
     avg_cost: float = 0.0
+    # Se completan al ABRIR la posicion (primera compra desde quantity == 0) y
+    # se limpian al cerrarla del todo; compras adicionales sobre una posicion
+    # ya abierta no las modifican (se conserva la apertura original). Las usa
+    # el monitor de salida en vivo del motor de auto-trading (ver main.py)
+    # para max_holding_days y para aproximar el fill de un stop-loss que IBKR
+    # ya ejecuto del lado del broker sin pasar por record_fill.
+    opened_at: Optional[datetime] = None
+    stop_loss_price: Optional[float] = None
 
 
 class FundTrade(BaseModel):
@@ -101,7 +109,14 @@ class Fund(BaseModel):
         self.capital_flows.append(flow)
         return flow
 
-    def record_fill(self, symbol: str, side: Side, quantity: float, price: float) -> FundTrade:
+    def record_fill(
+        self,
+        symbol: str,
+        side: Side,
+        quantity: float,
+        price: float,
+        stop_loss_price: Optional[float] = None,
+    ) -> FundTrade:
         """Aplica una compra/venta ya ejecutada en el broker a la contabilidad
         del fondo: mueve cash_usd, actualiza la posicion (costo promedio en
         compras, PnL realizado en ventas) y la agrega al historial.
@@ -115,6 +130,9 @@ class Fund(BaseModel):
         pos = self.positions.setdefault(symbol, FundPosition())
         realized_pnl = None
         if side == Side.BUY:
+            if pos.quantity == 0:
+                pos.opened_at = datetime.now(timezone.utc)
+                pos.stop_loss_price = stop_loss_price
             new_qty = pos.quantity + quantity
             pos.avg_cost = (
                 (pos.avg_cost * pos.quantity + price * quantity) / new_qty if new_qty else 0.0
@@ -127,6 +145,8 @@ class Fund(BaseModel):
             if pos.quantity <= 0:
                 pos.quantity = 0.0
                 pos.avg_cost = 0.0
+                pos.opened_at = None
+                pos.stop_loss_price = None
             self.cash_usd += price * quantity
 
         trade = FundTrade(
@@ -207,11 +227,17 @@ class FundsStore:
         return flow
 
     def record_fill(
-        self, fund_id: str, symbol: str, side: Side, quantity: float, price: float
+        self,
+        fund_id: str,
+        symbol: str,
+        side: Side,
+        quantity: float,
+        price: float,
+        stop_loss_price: Optional[float] = None,
     ) -> FundTrade | None:
         fund = self.funds.get(fund_id)
         if fund is None:
             return None
-        trade = fund.record_fill(symbol, side, quantity, price)
+        trade = fund.record_fill(symbol, side, quantity, price, stop_loss_price)
         self.save()
         return trade
