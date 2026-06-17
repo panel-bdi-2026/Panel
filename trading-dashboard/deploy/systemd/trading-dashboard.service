@@ -1,0 +1,17 @@
+[Unit]
+Description=Trading dashboard (backend FastAPI)
+After=network-online.target ibgateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trading
+Group=trading
+WorkingDirectory=/opt/panel/trading-dashboard/backend
+EnvironmentFile=/opt/panel/trading-dashboard/backend/.env
+ExecStart=/opt/panel/trading-dashboard/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

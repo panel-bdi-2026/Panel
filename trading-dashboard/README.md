@@ -347,6 +347,17 @@ cd trading-dashboard/backend
 API_KEY=test-key python3 -m pytest tests/ -v
 ```
 
+## Despliegue 24/7 en la nube (sin depender de la laptop)
+
+Para que el motor (en paper o, más adelante, en live) siga corriendo sin
+necesidad de dejar la laptop encendida, ver
+[`deploy/README.md`](deploy/README.md): instala el backend y el login a
+IBKR (vía [IBC](https://github.com/IbcAlpha/IBC)) en un servidor headless
+— se recomienda una VM ARM "Always Free" de Oracle Cloud, gratis para
+siempre — y lo expone solo a tus propios dispositivos mediante una red
+privada de [Tailscale](https://tailscale.com) (gratis para uso personal),
+sin abrir ningún puerto a internet.
+
 ## Pasar a cuenta real (`live`)
 
 No lo hagas hasta haber probado el flujo completo en paper por un tiempo
