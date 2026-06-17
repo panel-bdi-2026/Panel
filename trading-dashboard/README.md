@@ -102,6 +102,12 @@ solo con este backend (REST + WebSocket), nunca directo con IBKR.
     la API de datos y serían un vector de DoS si quedaran abiertos). CORS está
     cerrado por defecto (el dashboard se sirve del mismo origen que la API);
     se abre solo si definís `ALLOWED_ORIGINS` en el `.env`.
+14. **Ledger de fondos basado en propiedad, no en snapshots.** Si una orden se
+    ata a un `fund_id` (ver "Fondos" más abajo), una venta nunca puede superar
+    la cantidad que ese fondo registra como propia en su ledger — sin importar
+    cuánto haya realmente en la cuenta de IBKR. Así, holdings preexistentes o
+    de otro fondo en el mismo símbolo quedan protegidos automáticamente: ese
+    fondo simplemente no los "ve" como suyos.
 
 Ninguna de estas reglas reemplaza tu propio criterio. Esto no es una
 recomendación de inversión ni una garantía de que una orden "aprobada" sea una
@@ -245,6 +251,48 @@ cada `auto_scan_interval_minutes` (30 por defecto):
   `new_signals` y `drafted_orders`) y el dashboard muestra un toast con los
   símbolos detectados y cuántos borradores se crearon.
 
+## Fondos (`backend/funds.json`)
+
+Un fondo es una porción de capital con su propia contabilidad: cash, posiciones
+y PnL realizado, llevados aparte de la cuenta consolidada de IBKR y de
+cualquier otro fondo. Pensado para casos como "le doy a la herramienta $5.000
+ficticios y quiero ver claramente cómo le va a esos $5.000", sin que se mezcle
+con el resto de la cuenta (que en IBKR siempre se ve consolidada).
+
+- **Crear un fondo**: `POST /api/funds` con `{name, initial_capital_usd}`.
+  `cash_usd` arranca igual a `initial_capital_usd` y se mueve con cada
+  compra/venta atada a ese fondo (nunca se lee el cash real de IBKR para
+  esto: es contabilidad puramente interna).
+- **Atar una orden a un fondo**: `OrderRequest.fund_id` (opcional). Si se
+  especifica, además de pasar por `RulesEngine.evaluate()` (igual que
+  cualquier orden), se valida contra el fondo:
+  - **Compra**: el fondo necesita `cash_usd` suficiente para el costo
+    estimado.
+  - **Venta**: la cantidad no puede superar lo que el *ledger* del fondo
+    registra como propio de ese símbolo (`Fund.owned_quantity`). Esto es la
+    capa de seguridad clave para no tocar holdings preexistentes en la
+    cuenta de IBKR (o de otro fondo): un fondo que nunca compró un símbolo
+    tiene cantidad registrada cero en ese símbolo, sin importar cuánto haya
+    realmente en la cuenta — la venta se rechaza con 422 antes de llegar al
+    broker.
+- Tras una ejecución exitosa (inmediata o por aprobación manual), el fill se
+  registra en el ledger del fondo (`Fund.record_fill`): actualiza `cash_usd`,
+  el costo promedio de la posición y el PnL realizado en ventas.
+  Simplificación conocida: como `broker.place_order()` hoy no espera ni
+  devuelve el fill real de IBKR, se usa el precio de referencia/límite ya
+  usado para validar la orden como aproximación del precio de fill (igual
+  de transparente que las simplificaciones ya documentadas en
+  `backtest.py`).
+- **Toggle de auto-trading por fondo**: `PUT /api/funds/{id}/auto-trading`
+  con `{enabled}`. Por ahora el campo solo se persiste — ningún motor lo lee
+  todavía para operar sin aprobación manual. Existe desde ya para que el
+  toggle esté disponible en el dashboard de cara a la fase donde el motor
+  proactivo pueda ejecutar compras/ventas de forma autónoma dentro de un
+  fondo específico (ver discusión de roadmap; no implementado en esta
+  versión).
+- El escaneo proactivo (sección anterior) sigue siendo independiente de los
+  fondos por ahora: sus borradores no quedan atados a ningún `fund_id`.
+
 ## Instalación
 
 ### 1. Interactive Brokers
@@ -347,3 +395,9 @@ rojo permanente mientras `mode=live`.
   útil para validar la dirección de la idea, no para proyectar retornos.
 - Pensado para uso personal/un solo usuario; no implementa multiusuario ni
   roles.
+- Fondos: el precio de fill registrado en el ledger es el precio de
+  referencia/límite usado para validar la orden, no el fill real reportado
+  por IBKR (`place_order()` no lo espera todavía). Tampoco soportan reglas
+  (`rules.yaml`) ni estrategia propias todavía — hoy comparten el mismo
+  `RulesEngine` y el mismo screener que el resto de la cuenta; el toggle de
+  auto-trading por fondo se persiste pero ningún motor lo lee aún.

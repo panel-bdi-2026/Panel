@@ -33,6 +33,10 @@ class OrderRequest(BaseModel):
     order_type: OrderType = OrderType.MKT
     limit_price: Optional[float] = None
     stop_loss_price: Optional[float] = None
+    # Si se especifica, la orden queda atada a un fondo (ver funds.py): la
+    # contabilidad (cash_usd, posiciones, PnL realizado) se actualiza en ese
+    # fondo en vez de mezclarse con el resto. None = cuenta general (sin fondo).
+    fund_id: Optional[str] = None
 
     @field_validator("symbol")
     @classmethod

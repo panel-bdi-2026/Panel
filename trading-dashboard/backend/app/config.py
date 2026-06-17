@@ -46,6 +46,7 @@ class Settings:
         self.screener_path = Path(os.getenv("SCREENER_PATH", str(BASE_DIR / "screener.yaml")))
         self.audit_db_path = Path(os.getenv("AUDIT_DB_PATH", str(BASE_DIR / "audit.db")))
         self.state_path = Path(os.getenv("STATE_PATH", str(BASE_DIR / "state.json")))
+        self.funds_path = Path(os.getenv("FUNDS_PATH", str(BASE_DIR / "funds.json")))
         self.poll_interval_seconds = float(os.getenv("POLL_INTERVAL_SECONDS", "5"))
 
         self._validate()

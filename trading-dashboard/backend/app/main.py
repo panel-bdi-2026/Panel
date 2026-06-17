@@ -17,6 +17,7 @@ from .audit import AuditLog
 from .backtest import BacktestError, run_backtest
 from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
+from .funds import FundsStore
 from .market_data import MarketDataError
 from .models import OrderRequest, OrderType, PendingOrder, SignalResult, Side
 from .rules import RulesConfig, RulesEngine
@@ -33,6 +34,8 @@ broker = IBKRBroker(settings.ib_host, settings.ib_port, settings.ib_client_id)
 
 screener_config = ScreenerConfig.load(settings.screener_path)
 screener = MomentumScreener(screener_config)
+
+funds_store = FundsStore(settings.funds_path)
 
 # Estado persistido (halted, mode, ordenes pendientes) para que sobreviva a un
 # reinicio del backend: sin esto, un reinicio (intencional o por un crash)
@@ -514,6 +517,38 @@ def list_pending_orders(_: None = Depends(require_api_key)):
     return list(state["pending_orders"].values())
 
 
+def _validate_fund_order(order: OrderRequest, reference_price: float) -> None:
+    """Valida una orden atada a un fondo ANTES de que llegue al RulesEngine ni
+    al broker. Esta es la capa que protege holdings que no pertenecen al
+    fondo: una venta nunca puede superar lo que el ledger del fondo dice que
+    posee de ese simbolo, sin importar cuanto haya realmente en la cuenta de
+    IBKR (que puede incluir posiciones preexistentes o de otro fondo)."""
+    fund = funds_store.get(order.fund_id)
+    if fund is None:
+        raise HTTPException(status_code=404, detail="Fondo no encontrado.")
+    if order.side == Side.SELL:
+        owned = fund.owned_quantity(order.symbol)
+        if order.quantity > owned:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"El fondo '{fund.name}' solo tiene {owned:g} de {order.symbol} "
+                    "registradas en su ledger. No se puede vender mas de lo que el "
+                    "fondo posee (esto protege holdings que no pertenecen a este fondo)."
+                ),
+            )
+    else:
+        estimated_cost = reference_price * order.quantity
+        if not fund.can_afford(estimated_cost):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"El fondo '{fund.name}' tiene ${fund.cash_usd:,.2f} disponibles, "
+                    f"insuficiente para esta compra (estimado ${estimated_cost:,.2f})."
+                ),
+            )
+
+
 @app.post("/api/orders")
 async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
     if not state["connected"]:
@@ -529,6 +564,10 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
             status_code=422,
             detail="No se pudo obtener un precio de referencia para validar la orden. Usa una orden LMT con precio definido.",
         )
+
+    if order.fund_id:
+        _validate_fund_order(order, reference_price)
+
     trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
 
     decision = rules_engine.evaluate(
@@ -564,6 +603,11 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
         audit.record("stop_loss_rejected", order.model_dump(), {"error": str(exc)})
         raise HTTPException(status_code=502, detail=str(exc))
     audit.record("order_executed", order.model_dump(), result)
+    if order.fund_id:
+        # reference_price ya se uso para validar/sizear la orden: se reusa como
+        # aproximacion del fill (place_order() no espera ni devuelve el fill
+        # real de IBKR hoy). Documentado como simplificacion, igual que en backtest.py.
+        funds_store.record_fill(order.fund_id, order.symbol, order.side, order.quantity, reference_price)
     return {"status": "executed", "result": result}
 
 
@@ -579,6 +623,14 @@ async def approve_order(order_id: str, _: None = Depends(require_api_key)):
         audit.record("stop_loss_rejected", pending.order.model_dump(), {"error": str(exc)})
         raise HTTPException(status_code=502, detail=str(exc))
     audit.record("order_executed_after_approval", pending.order.model_dump(), result)
+    if pending.order.fund_id:
+        fill_price = pending.order.limit_price
+        if fill_price is None:
+            fill_price = await broker.get_reference_price(pending.order.symbol)
+        if fill_price:
+            funds_store.record_fill(
+                pending.order.fund_id, pending.order.symbol, pending.order.side, pending.order.quantity, fill_price
+            )
     return {"status": "executed", "result": result}
 
 
@@ -590,6 +642,59 @@ def reject_order(order_id: str, _: None = Depends(require_api_key)):
     _persist_state()
     audit.record("order_rejected", pending.order.model_dump(), {"id": order_id})
     return {"status": "rejected"}
+
+
+class FundCreate(BaseModel):
+    name: str
+    initial_capital_usd: float
+    auto_trading_enabled: bool = False
+
+
+def _fund_view(fund) -> dict:
+    return {**fund.model_dump(), "realized_pnl_total": round(fund.realized_pnl_total(), 2)}
+
+
+@app.get("/api/funds")
+def list_funds(_: None = Depends(require_api_key)):
+    return [_fund_view(f) for f in funds_store.list()]
+
+
+@app.post("/api/funds")
+def create_fund(body: FundCreate, _: None = Depends(require_api_key)):
+    """Crea un fondo: una porcion de capital con su propia contabilidad
+    (cash_usd, posiciones, PnL realizado), separada de la cuenta consolidada
+    de IBKR y de cualquier otro fondo. Ver funds.py para el detalle del
+    ledger y de por que una venta atada a un fondo nunca puede tocar
+    holdings que no se registraron en el."""
+    if body.initial_capital_usd <= 0:
+        raise HTTPException(status_code=422, detail="initial_capital_usd debe ser mayor a 0.")
+    fund = funds_store.create(body.name.strip(), body.initial_capital_usd, body.auto_trading_enabled)
+    audit.record("fund_created", body.model_dump(), {"id": fund.id})
+    return _fund_view(fund)
+
+
+@app.get("/api/funds/{fund_id}")
+def get_fund(fund_id: str, _: None = Depends(require_api_key)):
+    fund = funds_store.get(fund_id)
+    if fund is None:
+        raise HTTPException(status_code=404, detail="Fondo no encontrado.")
+    return _fund_view(fund)
+
+
+class FundAutoTradingUpdate(BaseModel):
+    enabled: bool
+
+
+@app.put("/api/funds/{fund_id}/auto-trading")
+def set_fund_auto_trading(fund_id: str, body: FundAutoTradingUpdate, _: None = Depends(require_api_key)):
+    """Prende/apaga el toggle de auto-trading del fondo. Por ahora el toggle
+    solo se persiste: el motor proactivo todavia no lo lee para operar sin
+    aprobacion manual (eso llega en una fase posterior, ver README)."""
+    fund = funds_store.set_auto_trading(fund_id, body.enabled)
+    if fund is None:
+        raise HTTPException(status_code=404, detail="Fondo no encontrado.")
+    audit.record("fund_auto_trading_toggled", {"fund_id": fund_id, "enabled": body.enabled}, {})
+    return _fund_view(fund)
 
 
 @app.websocket("/ws")

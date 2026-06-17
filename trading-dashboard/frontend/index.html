@@ -124,6 +124,31 @@ td{padding:8px;border-bottom:1px solid var(--border)}
       </div>
 
       <div class="card">
+        <div class="card-hdr">Fondos
+          <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="refreshFunds()">↻ Actualizar</button>
+        </div>
+        <div class="card-body">
+          <p class="muted-sm" style="margin-bottom:10px">
+            Cada fondo lleva su propio cash y posiciones, separado de la cuenta consolidada de
+            IBKR y de otros fondos. Una venta atada a un fondo nunca puede superar lo que ese
+            fondo registra como propio (protege holdings que no le pertenecen).
+          </p>
+          <div id="fundsBody"><div class="empty">Sin fondos creados aún</div></div>
+          <div class="frow" style="margin-top:12px">
+            <div class="fg">
+              <label class="fl">Nombre del fondo</label>
+              <input id="fund-name" class="fi" type="text" placeholder="Ej: Test 1 semana">
+            </div>
+            <div class="fg">
+              <label class="fl">Capital inicial (USD)</label>
+              <input id="fund-capital" class="fi" type="number" min="0" step="any" placeholder="5000">
+            </div>
+          </div>
+          <button class="btn-submit" onclick="createFund()">+ Crear fondo</button>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-hdr">Radar de oportunidades (momentum)
           <div style="display:flex;gap:6px">
             <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="scanSignals(true)">↻ Escanear</button>
@@ -173,6 +198,12 @@ td{padding:8px;border-bottom:1px solid var(--border)}
         <div class="fg">
           <label class="fl">Símbolo</label>
           <input id="f-symbol" class="fi" type="text" placeholder="Ej: AAPL">
+        </div>
+        <div class="fg">
+          <label class="fl">Fondo (opcional)</label>
+          <select id="f-fund" class="fs">
+            <option value="">Sin fondo (cuenta general)</option>
+          </select>
         </div>
         <div class="frow">
           <div class="fg">
@@ -232,6 +263,7 @@ function openApiKeyPrompt(){
     // Recien ahora se puede escanear/leer la cuenta: refresca todo con la key.
     refreshAll();
     refreshPositions();
+    refreshFunds();
     scanSignals(false);
   }
 }
@@ -351,8 +383,12 @@ async function refreshAccount(){
   }catch(e){ /* no conectado aún */ }
 }
 
+let lastPositionPrices = {};
+
 function renderPositions(positions){
   const body = document.getElementById('posBody');
+  lastPositionPrices = {};
+  positions.forEach(p => { if(p.market_price) lastPositionPrices[p.symbol] = p.market_price; });
   if(!positions.length){ body.innerHTML = '<tr><td colspan="5" class="empty">Sin posiciones abiertas</td></tr>'; return; }
   body.innerHTML = positions.map(p => `
     <tr>
@@ -371,6 +407,91 @@ async function refreshPositions(){
   }catch(e){ /* no conectado aún */ }
 }
 
+let lastFundsById = {};
+
+function fundMarketValue(fund){
+  // Aproxima el valor del fondo con el precio de mercado mas reciente que
+  // tengamos de cada simbolo (de /api/positions o el WS); si no hay precio
+  // disponible para ese simbolo todavia, usa el costo promedio como fallback.
+  let posValue = 0;
+  for(const [symbol, pos] of Object.entries(fund.positions || {})){
+    const price = lastPositionPrices[symbol] ?? pos.avg_cost;
+    posValue += pos.quantity * price;
+  }
+  return fund.cash_usd + posValue;
+}
+
+function populateFundSelect(funds){
+  const sel = document.getElementById('f-fund');
+  if(!sel) return;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Sin fondo (cuenta general)</option>' +
+    funds.map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('');
+  if(funds.some(f => f.id === current)) sel.value = current;
+}
+
+function renderFunds(funds){
+  lastFundsById = {};
+  funds.forEach(f => { lastFundsById[f.id] = f.name; });
+  const body = document.getElementById('fundsBody');
+  if(!funds.length){ body.innerHTML = '<div class="empty">Sin fondos creados aún</div>'; }
+  else{
+    body.innerHTML = funds.map(f => {
+      const totalValue = fundMarketValue(f);
+      const pnlTotal = totalValue - f.initial_capital_usd;
+      const posCount = Object.keys(f.positions || {}).length;
+      return `
+      <div class="pending-item" style="border-color:var(--border);background:var(--bg)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <b>${esc(f.name)}</b>
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--muted)" title="El motor autónomo todavía no está conectado a este toggle">
+            <input type="checkbox" ${f.auto_trading_enabled ? 'checked' : ''} onchange="toggleFundAutoTrading('${f.id}', this.checked)">
+            Auto-trading
+          </label>
+        </div>
+        <div class="muted-sm" style="margin-top:4px">
+          Valor estimado ${fmtUsd(totalValue)} (cash ${fmtUsd(f.cash_usd)} · ${posCount} posición(es))
+          · PnL total <span style="color:${pnlTotal>=0?'var(--green)':'var(--red)'}">${fmtUsd(pnlTotal)}</span>
+          · PnL realizado ${fmtUsd(f.realized_pnl_total)}
+        </div>
+      </div>`;
+    }).join('');
+  }
+  populateFundSelect(funds);
+}
+
+async function refreshFunds(){
+  try{
+    renderFunds(await api('/api/funds', { auth:true }));
+  }catch(e){ /* sin API key todavia */ }
+}
+
+async function createFund(){
+  const name = document.getElementById('fund-name').value.trim();
+  const capital = parseFloat(document.getElementById('fund-capital').value);
+  if(!name || !capital || capital <= 0){ toast('Completa nombre y capital inicial'); return; }
+  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
+  try{
+    await api('/api/funds', { method:'POST', auth:true, body:{ name, initial_capital_usd: capital } });
+    document.getElementById('fund-name').value = '';
+    document.getElementById('fund-capital').value = '';
+    toast(`✓ Fondo "${name}" creado`);
+    refreshFunds();
+  }catch(e){ toast('Error: ' + e.message); }
+}
+
+async function toggleFundAutoTrading(fundId, enabled){
+  try{
+    await api(`/api/funds/${fundId}/auto-trading`, { method:'PUT', auth:true, body:{ enabled } });
+    toast(enabled
+      ? '🤖 Auto-trading activado (el motor autónomo todavía no opera este fondo, llega en una fase posterior)'
+      : 'Auto-trading desactivado');
+  }catch(e){
+    toast('Error: ' + e.message);
+    refreshFunds();
+  }
+}
+
 async function refreshPending(){
   try{
     const pending = await api('/api/orders/pending', { auth:true });
@@ -379,6 +500,7 @@ async function refreshPending(){
     body.innerHTML = pending.map(p => `
       <div class="pending-item">
         ${p.source === 'signal_engine' ? '<span title="Generada automaticamente por el escaneo proactivo">🤖 Señal automática</span><br>' : ''}
+        ${p.order.fund_id ? `<span class="muted-sm">Fondo: ${esc(lastFundsById[p.order.fund_id] || p.order.fund_id)}</span><br>` : ''}
         <b>${esc(p.order.side)} ${esc(p.order.quantity)} ${esc(p.order.symbol)}</b>
         · valor estimado ${fmtUsd(p.decision.estimated_value_usd)}
         ${p.order.stop_loss_price ? ' · stop-loss ' + fmtUsd(p.order.stop_loss_price) : ''}
@@ -431,6 +553,7 @@ async function submitOrder(){
     order_type: document.getElementById('f-type').value,
     limit_price: document.getElementById('f-limit').value ? parseFloat(document.getElementById('f-limit').value) : null,
     stop_loss_price: document.getElementById('f-stop').value ? parseFloat(document.getElementById('f-stop').value) : null,
+    fund_id: document.getElementById('f-fund').value || null,
   };
   if(!order.symbol || !order.quantity){ toast('Completa símbolo y cantidad'); return; }
   if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
@@ -569,12 +692,14 @@ async function refreshAll(){
   // periodico para no duplicar llamadas al broker.
   await refreshPending();
   await refreshAudit();
+  await refreshFunds();
 }
 
 onTypeChange();
 refreshAll();
 refreshAccount();    // carga inicial; despues el WS la mantiene en vivo
 refreshPositions();  // carga inicial; despues el WS las mantiene en vivo
+refreshFunds();
 scanSignals(false);
 connectWs();
 setInterval(refreshAll, 8000);
