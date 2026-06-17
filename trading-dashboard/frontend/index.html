@@ -446,7 +446,7 @@ function renderFunds(funds){
       <div class="pending-item" style="border-color:var(--border);background:var(--bg)">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <b>${esc(f.name)}</b>
-          <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--muted)" title="El motor autónomo todavía no está conectado a este toggle">
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--muted)" title="Si está activo, el motor autónomo puede abrir y cerrar posiciones en este fondo sin aprobación manual (siempre en modo paper)">
             <input type="checkbox" ${f.auto_trading_enabled ? 'checked' : ''} onchange="toggleFundAutoTrading('${f.id}', this.checked)">
             Auto-trading
           </label>
@@ -506,7 +506,7 @@ async function toggleFundAutoTrading(fundId, enabled){
   try{
     await api(`/api/funds/${fundId}/auto-trading`, { method:'PUT', auth:true, body:{ enabled } });
     toast(enabled
-      ? '🤖 Auto-trading activado (el motor autónomo todavía no opera este fondo, llega en una fase posterior)'
+      ? '🤖 Auto-trading activado: el motor podrá abrir y cerrar posiciones en este fondo sin aprobación manual (modo paper)'
       : 'Auto-trading desactivado');
   }catch(e){
     toast('Error: ' + e.message);
@@ -698,6 +698,12 @@ function connectWs(){
           const draftedCount = msg.drafted_orders.length;
           toast(`🤖 Señal nueva: ${symbols}. ${draftedCount} orden(es) en borrador para tu aprobación.`, 7000);
           refreshPending();
+          refreshAudit();
+        }
+        if(msg.type === 'auto_trade_exit'){
+          const reasonText = msg.reason === 'max_holding_days' ? 'plazo máximo de holding' : 'ruptura de tendencia';
+          toast(`🤖 Salida automática: ${msg.symbol} cerrada en el fondo "${msg.fund_id}" (${reasonText}).`, 7000);
+          refreshFunds();
           refreshAudit();
         }
       }catch(e){}

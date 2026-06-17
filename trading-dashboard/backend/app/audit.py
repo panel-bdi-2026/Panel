@@ -55,6 +55,18 @@ class AuditLog:
             for row in cur.fetchall()
         ]
 
+    # Acciones que representan una operacion realmente ejecutada (mueve
+    # posicion/dinero), manual o autonoma. auto_trade_executed/auto_trade_exit
+    # tienen que entrar aca: si no, el cap de max_trades_per_day no limita en
+    # absoluto la actividad del motor de auto-trading por fondo, que es
+    # justamente el que opera sin que nadie apruebe cada orden a mano.
+    _TRADE_ACTIONS = (
+        "order_executed",
+        "order_executed_after_approval",
+        "auto_trade_executed",
+        "auto_trade_exit",
+    )
+
     def count_trades_today(self, tz_name: str = "America/New_York") -> int:
         """Cuenta ordenes ejecutadas hoy segun el dia de trading en `tz_name`
         (no el dia calendario UTC): ts se guarda en UTC, asi que filtrar por el
@@ -66,9 +78,9 @@ class AuditLog:
         end_local = start_local + timedelta(days=1)
         start_utc = start_local.astimezone(timezone.utc).isoformat()
         end_utc = end_local.astimezone(timezone.utc).isoformat()
+        placeholders = ", ".join("?" for _ in self._TRADE_ACTIONS)
         cur = self._conn.execute(
-            "SELECT COUNT(*) FROM audit_log WHERE action IN "
-            "('order_executed', 'order_executed_after_approval') AND ts >= ? AND ts < ?",
-            (start_utc, end_utc),
+            f"SELECT COUNT(*) FROM audit_log WHERE action IN ({placeholders}) AND ts >= ? AND ts < ?",
+            (*self._TRADE_ACTIONS, start_utc, end_utc),
         )
         return cur.fetchone()[0]

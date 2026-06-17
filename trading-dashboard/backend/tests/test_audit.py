@@ -48,3 +48,14 @@ def test_only_counts_executed_actions(tmp_path):
     _insert_at(audit, "order_submitted", now_utc)
     _insert_at(audit, "order_rejected", now_utc)
     assert audit.count_trades_today("America/New_York") == 0
+
+
+def test_counts_auto_trade_executed_and_auto_trade_exit(tmp_path):
+    # Sin esto, max_trades_per_day no limita en absoluto al motor de
+    # auto-trading por fondo: cada entrada/salida automatica quedaria fuera
+    # del conteo que usa RulesEngine.evaluate() para aplicar el cap diario.
+    audit = make_audit(tmp_path)
+    now_utc = datetime.now(timezone.utc)
+    _insert_at(audit, "auto_trade_executed", now_utc)
+    _insert_at(audit, "auto_trade_exit", now_utc)
+    assert audit.count_trades_today("America/New_York") == 2

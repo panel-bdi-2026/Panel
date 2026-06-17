@@ -71,10 +71,10 @@ class Fund(BaseModel):
     id: str
     name: str
     cash_usd: float
-    # Si esta en True, el motor proactivo podra ejecutar compras/ventas en
-    # este fondo sin pasar por aprobacion manual. Por ahora el campo solo se
-    # persiste: ningun motor lo lee todavia (eso llega en una fase posterior,
-    # ver README). Lo expone desde ya para que el toggle exista en la UI.
+    # Si esta en True, el motor proactivo puede abrir y cerrar posiciones en
+    # este fondo sin pasar por aprobacion manual (ver _try_auto_trade_entry y
+    # _check_fund_exit en main.py). Sigue paper-only sin excepcion: el motor
+    # nunca opera en real sin importar este toggle (ver state["mode"]).
     auto_trading_enabled: bool = False
     created_at: datetime
     positions: dict[str, FundPosition] = Field(default_factory=dict)
