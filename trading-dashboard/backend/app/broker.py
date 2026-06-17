@@ -108,17 +108,28 @@ class IBKRBroker:
         )
 
     async def get_positions(self) -> list[Position]:
+        positions = self.ib.positions()
+        if not positions:
+            return []
+
+        # Un solo reqTickersAsync con todos los contratos en vez de uno por
+        # posicion: N llamadas secuenciales en cada ciclo del broadcast (cada
+        # poll_interval_seconds) desperdicia cuota y puede gatillar pacing
+        # violations de IBKR a medida que crece la cantidad de posiciones.
+        try:
+            tickers = await self.ib.reqTickersAsync(*(p.contract for p in positions))
+        except Exception:
+            tickers = []
+        price_by_conid = {
+            t.contract.conId: t.marketPrice()
+            for t in tickers
+            if t.contract and t.marketPrice() == t.marketPrice()  # not NaN
+        }
+
         out: list[Position] = []
-        for p in self.ib.positions():
-            market_price = None
-            unrealized = None
-            try:
-                tickers = await self.ib.reqTickersAsync(p.contract)
-                if tickers and tickers[0].marketPrice() == tickers[0].marketPrice():  # not NaN
-                    market_price = tickers[0].marketPrice()
-                    unrealized = (market_price - p.avgCost) * p.position
-            except Exception:
-                pass
+        for p in positions:
+            market_price = price_by_conid.get(p.contract.conId)
+            unrealized = (market_price - p.avgCost) * p.position if market_price is not None else None
             out.append(Position(
                 symbol=p.contract.symbol,
                 quantity=p.position,

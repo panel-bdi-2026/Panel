@@ -69,8 +69,17 @@ def get_next_earnings_date(symbol: str, force: bool = False) -> "date | None":
         return cached[1]
 
     try:
-        dates = yf.Ticker(symbol).get_earnings_dates(limit=1)
-        next_date = dates.index[0].date() if dates is not None and len(dates) else None
+        # get_earnings_dates devuelve fechas pasadas y futuras mezcladas, sin
+        # garantia de orden; con limit=1 se podia terminar tomando una fecha
+        # YA PASADA y el blackout nunca se activaba (days_to_earnings quedaba
+        # negativo). Se pide un lote mas grande y se filtra explicitamente por
+        # la mas próxima que sea hoy o futura.
+        dates = yf.Ticker(symbol).get_earnings_dates(limit=12)
+        next_date = None
+        if dates is not None and len(dates):
+            today = datetime.now(timezone.utc).date()
+            future_dates = [ts.date() for ts in dates.index if ts.date() >= today]
+            next_date = min(future_dates) if future_dates else None
     except Exception:
         next_date = None
 

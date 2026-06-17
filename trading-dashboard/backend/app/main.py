@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -62,7 +63,11 @@ def _persist_state() -> None:
 
 
 def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
-    if x_api_key != settings.api_key:
+    # compare_digest en vez de != para no filtrar la API key por timing (una
+    # comparacion de strings comun corta apenas encuentra el primer caracter
+    # distinto, lo que en teoria permite adivinarla caracter por caracter
+    # midiendo tiempos de respuesta).
+    if not x_api_key or not secrets.compare_digest(x_api_key, settings.api_key):
         raise HTTPException(status_code=401, detail="API key invalida.")
 
 
@@ -438,7 +443,7 @@ async def ws_endpoint(websocket: WebSocket, api_key: str = ""):
     # Un navegador no puede mandar headers personalizados en el handshake de
     # un WebSocket, asi que la API key viaja como query param (?api_key=...)
     # en vez del header X-API-Key que usa el resto de los endpoints.
-    if api_key != settings.api_key:
+    if not api_key or not secrets.compare_digest(api_key, settings.api_key):
         await websocket.close(code=1008)
         return
     await websocket.accept()

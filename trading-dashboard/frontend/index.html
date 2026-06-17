@@ -334,19 +334,23 @@ async function refreshAccount(){
   }catch(e){ /* no conectado aún */ }
 }
 
+function renderPositions(positions){
+  const body = document.getElementById('posBody');
+  if(!positions.length){ body.innerHTML = '<tr><td colspan="5" class="empty">Sin posiciones abiertas</td></tr>'; return; }
+  body.innerHTML = positions.map(p => `
+    <tr>
+      <td><b>${p.symbol}</b></td>
+      <td>${p.quantity}</td>
+      <td>${fmtUsd(p.avg_cost)}</td>
+      <td>${p.market_price ? fmtUsd(p.market_price) : '—'}</td>
+      <td style="color:${(p.unrealized_pnl||0)>=0?'var(--green)':'var(--red)'}">${p.unrealized_pnl!=null?fmtUsd(p.unrealized_pnl):'—'}</td>
+    </tr>`).join('');
+}
+
 async function refreshPositions(){
   try{
     const positions = await api('/api/positions', { auth:true });
-    const body = document.getElementById('posBody');
-    if(!positions.length){ body.innerHTML = '<tr><td colspan="5" class="empty">Sin posiciones abiertas</td></tr>'; return; }
-    body.innerHTML = positions.map(p => `
-      <tr>
-        <td><b>${p.symbol}</b></td>
-        <td>${p.quantity}</td>
-        <td>${fmtUsd(p.avg_cost)}</td>
-        <td>${p.market_price ? fmtUsd(p.market_price) : '—'}</td>
-        <td style="color:${(p.unrealized_pnl||0)>=0?'var(--green)':'var(--red)'}">${p.unrealized_pnl!=null?fmtUsd(p.unrealized_pnl):'—'}</td>
-      </tr>`).join('');
+    renderPositions(positions);
   }catch(e){ /* no conectado aún */ }
 }
 
@@ -520,6 +524,9 @@ function connectWs(){
             document.getElementById('kv-cash').textContent = fmtUsd(msg.account.cash);
             document.getElementById('kv-bp').textContent = fmtUsd(msg.account.buying_power);
           }
+          if(msg.positions){
+            renderPositions(msg.positions);
+          }
         }
       }catch(e){}
     };
@@ -530,13 +537,17 @@ function connectWs(){
 async function refreshAll(){
   await refreshStatus();
   await refreshAccount();
-  await refreshPositions();
+  // Las posiciones no se re-piden por REST en cada ciclo: el WS ya las empuja
+  // cada poll_interval_seconds via mensajes 'update' (ver renderPositions en
+  // ws.onmessage). Pedirlas tambien por REST cada 8s duplicaba llamadas al
+  // broker sin necesidad.
   await refreshPending();
   await refreshAudit();
 }
 
 onTypeChange();
 refreshAll();
+refreshPositions();
 scanSignals(false);
 connectWs();
 setInterval(refreshAll, 8000);
