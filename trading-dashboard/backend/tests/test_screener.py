@@ -163,6 +163,26 @@ def test_earnings_blackout_does_not_block_when_no_earnings_date_known(screener):
     assert result.passes_filters
 
 
+def test_earnings_lookup_is_skipped_for_symbols_that_already_fail_other_filters(monkeypatch, patched_market_data):
+    """get_next_earnings_date es un pedido de red aparte (mas lento que las
+    barras, que ya estan cacheadas): solo vale la pena pagarlo si el simbolo
+    ya pasaria el resto de los filtros. Sin este chequeo, un universo grande
+    (ej. S&P 500 completo) dispara un pedido de earnings por cada simbolo, sin
+    importar cuantos vayan a descartarse de todas formas por tendencia/RSI/
+    liquidez/regimen."""
+    calls: list[str] = []
+
+    def tracking_get_next_earnings_date(symbol, force=False):
+        calls.append(symbol)
+        return None
+
+    monkeypatch.setattr(screener_module, "get_next_earnings_date", tracking_get_next_earnings_date)
+    config = ScreenerConfig(universe=["MOM", "BROKEN", "ILLIQUID"], benchmark_symbol="SPY")
+    s = MomentumScreener(config)
+    s.scan()
+    assert calls == ["MOM"]
+
+
 def test_near_high_filter_blocks_symbol_far_from_52w_high(screener):
     # MOM cotiza ~1.4% por debajo de su maximo de 52s; con un umbral muy
     # estricto (0.5%) queda fuera por proximidad, aunque pase el resto.

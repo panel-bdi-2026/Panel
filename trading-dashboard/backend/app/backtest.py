@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import statistics
+import time
 
 import pandas as pd
 
@@ -166,7 +167,14 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
         benchmark_regime_ok = pd.Series(True, index=bench_bars.index)
 
     all_trades: list[BacktestTrade] = []
-    for symbol in cfg.universe:
+    delay = cfg.scan_request_delay_seconds
+    for i, symbol in enumerate(cfg.universe):
+        # Misma pausa anti-rate-limit que el scan en vivo (ver
+        # scan_request_delay_seconds): el backtest pega tantos pedidos como
+        # simbolos tenga el universo configurado, y con el S&P 500 completo
+        # eso son varios cientos de requests seguidos a la API gratuita.
+        if i > 0 and delay > 0:
+            time.sleep(delay)
         try:
             bars = get_daily_bars(symbol, history_days)
         except MarketDataError:

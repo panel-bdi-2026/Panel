@@ -90,6 +90,35 @@ def test_backtest_includes_sharpe_ratio_when_enough_trades(patched_market_data):
     assert summary.sharpe_ratio is not None
 
 
+def test_backtest_throttles_between_symbols_to_avoid_rate_limiting(monkeypatch, patched_market_data):
+    """Mismo motivo que el throttle del scan en vivo (scan_request_delay_seconds):
+    con un universo grande (S&P 500 completo) el backtest pega cientos de
+    pedidos seguidos a la API gratuita de datos sin esta pausa."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(backtest_module.time, "sleep", lambda secs: sleep_calls.append(secs))
+    config = ScreenerConfig(
+        universe=["MOM", "FLAT"],
+        benchmark_symbol="SPY",
+        backtest_years=1,
+        scan_request_delay_seconds=0.25,
+    )
+    run_backtest(config)
+    assert sleep_calls == [0.25]
+
+
+def test_backtest_skips_throttle_when_delay_is_zero(monkeypatch, patched_market_data):
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(backtest_module.time, "sleep", lambda secs: sleep_calls.append(secs))
+    config = ScreenerConfig(
+        universe=["MOM", "FLAT"],
+        benchmark_symbol="SPY",
+        backtest_years=1,
+        scan_request_delay_seconds=0.0,
+    )
+    run_backtest(config)
+    assert sleep_calls == []
+
+
 def test_backtest_sharpe_ratio_is_none_with_fewer_than_two_trades(monkeypatch):
     # Un solo pico de tendencia y despues una caida plana que nunca vuelve a
     # disparar una entrada: una sola operacion en todo el periodo.

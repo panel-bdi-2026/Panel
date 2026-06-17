@@ -97,10 +97,6 @@ class MomentumScreener:
         liquidity_ok = last_avg_dollar_vol >= cfg.min_avg_dollar_volume
         rsi_ok = cfg.rsi_min <= last_rsi <= cfg.rsi_max
 
-        earnings_date = get_next_earnings_date(symbol, force=force)
-        days_to_earnings = (earnings_date - datetime.now(timezone.utc).date()).days if earnings_date else None
-        earnings_ok = days_to_earnings is None or not (0 <= days_to_earnings <= cfg.earnings_blackout_days)
-
         # last_from_high es <= 0 (0 = en el maximo, -8 = 8% por debajo). Si no
         # hay dato (None) el filtro no bloquea.
         near_high_ok = (
@@ -108,6 +104,20 @@ class MomentumScreener:
             or last_from_high is None
             or last_from_high >= -cfg.max_pct_below_52w_high
         )
+
+        # El llamado de earnings es una request de red aparte (y mas lenta que
+        # las barras, que ya estan cacheadas localmente): solo vale la pena
+        # pagarla si el simbolo ya paso el resto de filtros, que son gratis
+        # (se calculan sobre datos que ya estan en memoria). Para el resto del
+        # universo (la inmensa mayoria en un universo grande) asumimos
+        # earnings_ok=True ya que no afecta passes_filters, que de todas
+        # formas va a ser False por otro motivo.
+        days_to_earnings: int | None = None
+        earnings_ok = True
+        if trend_ok and liquidity_ok and rsi_ok and regime_ok and near_high_ok:
+            earnings_date = get_next_earnings_date(symbol, force=force)
+            days_to_earnings = (earnings_date - datetime.now(timezone.utc).date()).days if earnings_date else None
+            earnings_ok = days_to_earnings is None or not (0 <= days_to_earnings <= cfg.earnings_blackout_days)
 
         notes: list[str] = []
         if not liquidity_ok:

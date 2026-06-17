@@ -74,6 +74,14 @@ clients: list[WebSocket] = []
 SIGNAL_CACHE_TTL_SECONDS = 900  # evita re-escanear el mercado en cada refresh
 signal_cache: dict = {"as_of": None, "results": []}
 
+# Serializa scan y backtest (manuales y el ciclo proactivo en background):
+# ambos golpean la misma API gratuita de datos para todo el universo
+# configurado, y dejarlos correr en paralelo (ej. alguien pide un backtest
+# mientras el scan proactivo esta en ciclo) duplica la tasa de pedidos y
+# aumenta el riesgo de bloqueo temporal de la API. No hace falta mas que un
+# lock simple: esto no es trafico de alta concurrencia.
+_market_scan_lock = asyncio.Lock()
+
 # Recuerda que simbolos pasaban los filtros del screener en el ultimo ciclo del
 # scan proactivo, para poder detectar TRANSICIONES (no pasaba -> pasa) en vez
 # de redraftear el mismo simbolo en cada ciclo mientras siga pasando. None
@@ -269,7 +277,8 @@ async def _run_signal_scan_cycle() -> None:
     if not screener_config.auto_scan_enabled or state["halted"] or not state["connected"]:
         return
     try:
-        results = await asyncio.to_thread(screener.scan)
+        async with _market_scan_lock:
+            results = await asyncio.to_thread(screener.scan)
     except Exception as exc:
         audit.record("signal_scan_failed", {}, {"error": str(exc)})
         return
@@ -654,7 +663,7 @@ def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_k
 
 
 @app.get("/api/signals/scan")
-def scan_signals(force: bool = False, _: None = Depends(require_api_key)):
+async def scan_signals(force: bool = False, _: None = Depends(require_api_key)):
     """Radar de oportunidades momentum/tecnico. No es una recomendacion de
     inversion ni ejecuta nada: solo rankea candidatos del universo configurado
     en screener.yaml. Cacheado para no agotar la cuota de la API gratuita de
@@ -662,13 +671,21 @@ def scan_signals(force: bool = False, _: None = Depends(require_api_key)):
 
     Requiere API key: aunque no mueve dinero, escanear (sobre todo con
     force=true) golpea la API gratuita de datos para todo el universo, asi que
-    dejarlo abierto seria un vector de DoS / de agotar la cuota."""
+    dejarlo abierto seria un vector de DoS / de agotar la cuota.
+
+    async + asyncio.to_thread (en vez de un def sincrono comun): con el
+    universo del S&P 500 completo un scan tarda varios minutos, y un endpoint
+    sincrono ocuparia ese tiempo un thread del pool compartido por TODOS los
+    demas endpoints de la API, pudiendo demorar pedidos no relacionados. El
+    lock evita que un scan se cruce con un backtest o con el ciclo proactivo
+    en background, que pegan a la misma API de datos."""
     now = datetime.now(timezone.utc)
     cached_at = signal_cache["as_of"]
     if not force and cached_at and (now - cached_at).total_seconds() < SIGNAL_CACHE_TTL_SECONDS:
         return {"as_of": cached_at, "cached": True, "results": signal_cache["results"]}
     try:
-        results = screener.scan(force=force)
+        async with _market_scan_lock:
+            results = await asyncio.to_thread(screener.scan, force=force)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Error al escanear el mercado: {exc}")
     signal_cache["as_of"] = now
@@ -677,15 +694,17 @@ def scan_signals(force: bool = False, _: None = Depends(require_api_key)):
 
 
 @app.get("/api/signals/backtest")
-def backtest_strategy(_: None = Depends(require_api_key)):
+async def backtest_strategy(_: None = Depends(require_api_key)):
     """Backtest simplificado de la estrategia momentum sobre el universo
     configurado. Ver docstring de run_backtest() para las simplificaciones
     asumidas (sin comisiones/slippage, curva de equity aproximada).
 
     Requiere API key: es la operacion mas pesada del backend (descarga anos de
-    historia de todo el universo), dejarla abierta seria un vector de DoS."""
+    historia de todo el universo), dejarla abierta seria un vector de DoS.
+    async + asyncio.to_thread + lock por el mismo motivo que scan_signals."""
     try:
-        return run_backtest(screener_config)
+        async with _market_scan_lock:
+            return await asyncio.to_thread(run_backtest, screener_config)
     except BacktestError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except MarketDataError as exc:
