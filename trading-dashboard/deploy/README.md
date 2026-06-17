@@ -43,6 +43,20 @@ desde tus propios dispositivos conectados a tu red privada de Tailscale.
 3. Conectate por SSH con el usuario por defecto de la imagen (`ubuntu` en
    Oracle).
 
+> **"Out of capacity for shape VM.Standard.A1.Flex"**: es el error más común
+> al crear la VM gratis — Oracle no tiene Ampere libre en ese AD en ese
+> momento. No es un error tuyo. Probá pedir **menos recursos** (1 OCPU / 6 GB
+> entra mucho más fácil que 4 OCPU / 24 GB) y reintentá: la capacidad se
+> libera y se ocupa constantemente. Para no estar dándole a "Create" a mano
+> (y para no chocar con el rate limit *"Too many requests"*), usá el script
+> [`scripts/oci_launch_retry.sh`](scripts/oci_launch_retry.sh): reintenta solo
+> con backoff hasta que entra una instancia. Necesita la [OCI CLI](https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm)
+> configurada (`oci setup config`); copiá `scripts/oci_launch.env.example` a
+> `scripts/oci_launch.env`, completá los OCID de tu tenancy (el ejemplo trae
+> los comandos `oci ...` para obtener cada uno) y corré
+> `bash scripts/oci_launch_retry.sh`. Tu `oci_launch.env` no se versiona
+> (está en `.gitignore`).
+
 A partir de aquí, las instrucciones asumen que este repo se clona en
 `/opt/panel` en el servidor (ajustá las rutas si usás otra).
 
