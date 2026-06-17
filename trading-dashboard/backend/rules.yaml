@@ -1,0 +1,34 @@
+# Reglas de riesgo para el motor de trading.
+# Una orden solo se ejecuta si pasa TODAS las reglas. Ver README.md del proyecto
+# para el detalle de cada una y como ajustarlas con criterio.
+
+# Simbolos permitidos. Vacio = no se permite NINGUN simbolo (seguro por defecto).
+symbol_whitelist: []
+
+# Valor maximo en USD de una sola orden.
+max_order_value_usd: 5000
+
+# Tamano maximo de una posicion como % del equity total (NetLiquidation).
+max_position_pct_of_equity: 10
+
+# Si la perdida del dia alcanza este % del equity, se bloquean nuevas ordenes (kill switch).
+daily_loss_limit_pct: 2
+
+# Maximo de operaciones ejecutadas por dia.
+max_trades_per_day: 10
+
+# Toda compra debe llevar un stop-loss adjunto.
+require_stop_loss_on_buy: true
+
+# Riesgo maximo permitido en el stop-loss, como % por debajo del precio de entrada.
+max_stop_loss_pct: 5
+
+# Ordenes con valor estimado mayor a este monto requieren aprobacion manual en el
+# dashboard, aunque el modo "automatico" este activo.
+manual_approval_threshold_usd: 1000
+
+# Si es false, solo se opera dentro del horario regular del mercado.
+allow_extended_hours: false
+trading_hours_start: "09:30"
+trading_hours_end: "16:00"
+trading_hours_timezone: "America/New_York"

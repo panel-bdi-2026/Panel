@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trading Dashboard · IBKR</title>
+<style>
+:root{
+  --primary:#012169;--primary-mid:#0073CF;--bg:#f0f4f8;--card:#fff;--border:#c8d8ec;
+  --text:#1a2636;--muted:#64748b;--sh:0 1px 3px rgba(0,0,0,.09),0 1px 2px rgba(0,0,0,.06);
+  --sh2:0 4px 12px rgba(0,0,0,.10),0 2px 4px rgba(0,0,0,.06);--r:10px;--r2:6px;
+  --green:#16a34a;--green-bg:#f0fdf4;--red:#dc2626;--red-bg:#fef2f2;--amber:#d97706;--amber-bg:#fffbeb;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text)}
+.hdr{background:linear-gradient(135deg,#012169 0%,#013fa0 60%,#0073CF 100%);color:#fff;
+  padding:14px 28px;display:flex;align-items:center;justify-content:space-between;
+  box-shadow:0 2px 8px rgba(0,0,0,.25);flex-wrap:wrap;gap:10px}
+.hdr-l h1{font-size:18px;font-weight:700}
+.hdr-l p{font-size:12px;opacity:.7;margin-top:2px}
+.hdr-r{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.badge{font-size:11px;font-weight:800;padding:5px 11px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}
+.badge.paper{background:#dbeafe;color:#1d4ed8}
+.badge.live{background:#fee2e2;color:#b91c1c;animation:pulse 1.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:5px}
+.dot.on{background:#22c55e}.dot.off{background:#ef4444}
+.conn{font-size:12px;display:flex;align-items:center;background:rgba(255,255,255,.12);
+  padding:5px 11px;border-radius:20px}
+.btn{padding:7px 15px;border-radius:var(--r2);border:none;cursor:pointer;font-size:12px;
+  font-weight:700;font-family:inherit}
+.btn-halt{background:#F97316;color:#fff}.btn-halt.on{background:#dc2626}
+.btn-ghost{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.3)}
+.main{padding:22px 28px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.banner{padding:11px 16px;border-radius:var(--r2);font-size:13px;font-weight:600;display:none}
+.banner.show{display:block}
+.banner.live{background:var(--red-bg);color:var(--red);border:1.5px solid #fecaca}
+.banner.halted{background:var(--amber-bg);color:var(--amber);border:1.5px solid #fde68a}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.kpi{background:var(--card);border-radius:var(--r);padding:14px 16px;box-shadow:var(--sh);border-left:4px solid var(--primary-mid)}
+.kpi-lbl{font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.kpi-val{font-size:26px;font-weight:800;margin-top:5px}
+.kpi-val.pos{color:var(--green)}.kpi-val.neg{color:var(--red)}
+.grid2{display:grid;grid-template-columns:1.3fr 1fr;gap:18px;align-items:start}
+.card{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);overflow:hidden}
+.card-hdr{padding:12px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--primary);
+  display:flex;justify-content:space-between;align-items:center}
+.card-body{padding:14px 16px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;color:var(--muted);font-weight:700;font-size:11px;text-transform:uppercase;
+  letter-spacing:.03em;padding:6px 8px;border-bottom:2px solid var(--border)}
+td{padding:8px;border-bottom:1px solid var(--border)}
+.empty{color:var(--muted);font-size:12px;text-align:center;padding:18px;opacity:.7}
+.fg{margin-bottom:11px}
+.fl{display:block;font-size:11px;font-weight:700;color:var(--text);margin-bottom:4px}
+.fi,.fs{width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:var(--r2);
+  font-size:13px;font-family:inherit;background:var(--bg);outline:none}
+.fi:focus,.fs:focus{border-color:var(--primary-mid);background:#fff}
+.frow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.side-sel{display:flex;border:1.5px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:11px}
+.side-opt{flex:1;padding:8px;border:none;background:var(--bg);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;color:var(--muted)}
+.side-opt.on-buy{background:var(--green-bg);color:var(--green)}
+.side-opt.on-sell{background:var(--red-bg);color:var(--red)}
+.btn-submit{width:100%;padding:10px;background:var(--primary);color:#fff;border:none;border-radius:var(--r2);
+  font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-submit:hover{background:var(--primary-mid)}
+.violations{margin-top:10px;font-size:12px;background:var(--red-bg);color:var(--red);
+  border:1px solid #fecaca;border-radius:var(--r2);padding:8px 10px;display:none}
+.violations.show{display:block}
+.violations ul{margin-left:16px;margin-top:4px}
+.pending-item{padding:9px;border:1.5px solid var(--amber);background:var(--amber-bg);border-radius:var(--r2);
+  margin-bottom:8px;font-size:12px}
+.pending-actions{display:flex;gap:6px;margin-top:7px}
+.btn-approve{background:var(--green);color:#fff;border:none;border-radius:4px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer}
+.btn-reject{background:var(--red);color:#fff;border:none;border-radius:4px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer}
+.toast{position:fixed;bottom:22px;right:22px;background:#1e293b;color:#fff;padding:11px 18px;
+  border-radius:var(--r2);font-size:13px;box-shadow:var(--sh2);transform:translateY(80px);opacity:0;
+  transition:all .3s;z-index:3000;pointer-events:none;max-width:380px}
+.toast.show{transform:translateY(0);opacity:1}
+.apikey-row{display:flex;gap:8px;align-items:center}
+.apikey-row input{flex:1}
+.muted-sm{font-size:11px;color:var(--muted)}
+@media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<header class="hdr">
+  <div class="hdr-l">
+    <h1>Trading Dashboard · Interactive Brokers</h1>
+    <p id="hdr-sub">cargando estado…</p>
+  </div>
+  <div class="hdr-r">
+    <span class="conn" id="connBadge"><span class="dot off" id="connDot"></span><span id="connTxt">sin datos</span></span>
+    <span class="badge paper" id="modeBadge">PAPER</span>
+    <button class="btn btn-halt" id="haltBtn" onclick="toggleHalt()">⏸ Pausar trading</button>
+    <button class="btn btn-ghost" onclick="openApiKeyPrompt()">🔑 API Key</button>
+  </div>
+</header>
+
+<div class="main">
+  <div class="banner live" id="bannerLive">⚠️ MODO LIVE — las órdenes usan dinero real.</div>
+  <div class="banner halted" id="bannerHalted">⏸ Trading pausado manualmente (kill switch). No se ejecutarán nuevas órdenes.</div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="kpi-lbl">Net Liquidation</div><div class="kpi-val" id="kv-netliq">—</div></div>
+    <div class="kpi"><div class="kpi-lbl">Cash</div><div class="kpi-val" id="kv-cash">—</div></div>
+    <div class="kpi"><div class="kpi-lbl">Buying Power</div><div class="kpi-val" id="kv-bp">—</div></div>
+    <div class="kpi"><div class="kpi-lbl">P&L del día</div><div class="kpi-val" id="kv-pnl">—</div></div>
+  </div>
+
+  <div class="grid2">
+    <div style="display:flex;flex-direction:column;gap:18px">
+      <div class="card">
+        <div class="card-hdr">Posiciones <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="refreshAll()">↻ Actualizar</button></div>
+        <div class="card-body">
+          <table id="posTable">
+            <thead><tr><th>Símbolo</th><th>Cantidad</th><th>Costo prom.</th><th>Precio mkt.</th><th>P&L no real.</th></tr></thead>
+            <tbody id="posBody"><tr><td colspan="5" class="empty">Sin datos aún</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-hdr">Órdenes pendientes de aprobación manual</div>
+        <div class="card-body" id="pendingBody">
+          <div class="empty">No hay órdenes pendientes</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-hdr">Bitácora de auditoría (últimas 25)</div>
+        <div class="card-body">
+          <table>
+            <thead><tr><th>Hora</th><th>Acción</th><th>Detalle</th></tr></thead>
+            <tbody id="auditBody"><tr><td colspan="3" class="empty">Sin datos aún</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-hdr">Nueva orden</div>
+      <div class="card-body">
+        <div class="side-sel">
+          <button type="button" class="side-opt on-buy" data-side="BUY" onclick="setSide('BUY')">Comprar</button>
+          <button type="button" class="side-opt" data-side="SELL" onclick="setSide('SELL')">Vender</button>
+        </div>
+        <div class="fg">
+          <label class="fl">Símbolo</label>
+          <input id="f-symbol" class="fi" type="text" placeholder="Ej: AAPL">
+        </div>
+        <div class="frow">
+          <div class="fg">
+            <label class="fl">Cantidad</label>
+            <input id="f-qty" class="fi" type="number" min="0" step="any">
+          </div>
+          <div class="fg">
+            <label class="fl">Tipo</label>
+            <select id="f-type" class="fs" onchange="onTypeChange()">
+              <option value="LMT" selected>Límite (LMT)</option>
+              <option value="MKT">Mercado (MKT)</option>
+            </select>
+          </div>
+        </div>
+        <div class="fg" id="limitPriceGroup">
+          <label class="fl">Precio límite</label>
+          <input id="f-limit" class="fi" type="number" min="0" step="any">
+        </div>
+        <div class="fg">
+          <label class="fl">Stop-loss (obligatorio en compras según reglas)</label>
+          <input id="f-stop" class="fi" type="number" min="0" step="any">
+        </div>
+        <button class="btn-submit" onclick="submitOrder()">Enviar orden</button>
+        <div class="violations" id="violationsBox"></div>
+        <p class="muted-sm" style="margin-top:10px">
+          Toda orden pasa primero por el motor de reglas (<code>rules.yaml</code>). Si la
+          regla de aprobación manual se activa, la orden queda pendiente arriba en vez de
+          ejecutarse de inmediato.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const apiKeyStorageKey = 'ibkr_dash_api_key';
+let currentSide = 'BUY';
+let ws = null;
+
+function getApiKey(){ return localStorage.getItem(apiKeyStorageKey) || ''; }
+function setApiKey(v){ localStorage.setItem(apiKeyStorageKey, v); }
+
+function openApiKeyPrompt(){
+  const v = prompt('API Key del backend (header X-API-Key, definida en .env):', getApiKey());
+  if(v !== null) setApiKey(v.trim());
+}
+
+function toast(msg, ms=3500){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(()=>t.classList.remove('show'), ms);
+}
+
+async function api(path, { method='GET', body=null, auth=false } = {}){
+  const headers = {'Content-Type':'application/json'};
+  if(auth) headers['X-API-Key'] = getApiKey();
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : null });
+  let data = null;
+  try{ data = await res.json(); }catch(e){}
+  if(!res.ok){
+    const err = new Error((data && data.detail && (data.detail.violations ? 'Orden rechazada por las reglas' : data.detail)) || 'Error');
+    err.data = data;
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+function fmtUsd(v){
+  if(v === null || v === undefined) return '—';
+  return '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+function setSide(side){
+  currentSide = side;
+  document.querySelectorAll('.side-opt').forEach(b=>{
+    b.classList.toggle('on-buy', b.dataset.side==='BUY' && side==='BUY');
+    b.classList.toggle('on-sell', b.dataset.side==='SELL' && side==='SELL');
+  });
+}
+
+function onTypeChange(){
+  const isLmt = document.getElementById('f-type').value === 'LMT';
+  document.getElementById('limitPriceGroup').style.display = isLmt ? 'block' : 'none';
+}
+
+async function refreshStatus(){
+  try{
+    const s = await api('/api/status');
+    document.getElementById('hdr-sub').textContent =
+      `IBKR ${s.ib_host}:${s.ib_port} · modo ${s.mode}`;
+    const modeBadge = document.getElementById('modeBadge');
+    modeBadge.textContent = s.mode.toUpperCase();
+    modeBadge.className = 'badge ' + (s.mode === 'live' ? 'live' : 'paper');
+    document.getElementById('bannerLive').classList.toggle('show', s.mode === 'live');
+    document.getElementById('bannerHalted').classList.toggle('show', s.halted);
+    document.getElementById('connDot').className = 'dot ' + (s.connected ? 'on' : 'off');
+    document.getElementById('connTxt').textContent = s.connected ? 'Conectado' : 'Desconectado';
+    const haltBtn = document.getElementById('haltBtn');
+    haltBtn.textContent = s.halted ? '▶ Reanudar trading' : '⏸ Pausar trading';
+    haltBtn.classList.toggle('on', s.halted);
+    return s;
+  }catch(e){
+    document.getElementById('connTxt').textContent = 'Backend no responde';
+  }
+}
+
+async function toggleHalt(){
+  const s = await api('/api/status');
+  try{
+    await api(`/api/halt?value=${!s.halted}`, { method:'POST', auth:true });
+    toast(!s.halted ? '⏸ Trading pausado' : '▶ Trading reanudado');
+    refreshStatus();
+  }catch(e){
+    toast('Error: ' + (e.message || 'no autorizado. Revisa tu API key.'));
+  }
+}
+
+async function refreshAccount(){
+  try{
+    const a = await api('/api/account');
+    document.getElementById('kv-netliq').textContent = fmtUsd(a.net_liquidation);
+    document.getElementById('kv-cash').textContent = fmtUsd(a.cash);
+    document.getElementById('kv-bp').textContent = fmtUsd(a.buying_power);
+    const pnlEl = document.getElementById('kv-pnl');
+    pnlEl.textContent = `${fmtUsd(a.daily_pnl)} (${a.daily_pnl_pct.toFixed(2)}%)`;
+    pnlEl.className = 'kpi-val ' + (a.daily_pnl >= 0 ? 'pos' : 'neg');
+  }catch(e){ /* no conectado aún */ }
+}
+
+async function refreshPositions(){
+  try{
+    const positions = await api('/api/positions');
+    const body = document.getElementById('posBody');
+    if(!positions.length){ body.innerHTML = '<tr><td colspan="5" class="empty">Sin posiciones abiertas</td></tr>'; return; }
+    body.innerHTML = positions.map(p => `
+      <tr>
+        <td><b>${p.symbol}</b></td>
+        <td>${p.quantity}</td>
+        <td>${fmtUsd(p.avg_cost)}</td>
+        <td>${p.market_price ? fmtUsd(p.market_price) : '—'}</td>
+        <td style="color:${(p.unrealized_pnl||0)>=0?'var(--green)':'var(--red)'}">${p.unrealized_pnl!=null?fmtUsd(p.unrealized_pnl):'—'}</td>
+      </tr>`).join('');
+  }catch(e){ /* no conectado aún */ }
+}
+
+async function refreshPending(){
+  try{
+    const pending = await api('/api/orders/pending');
+    const body = document.getElementById('pendingBody');
+    if(!pending.length){ body.innerHTML = '<div class="empty">No hay órdenes pendientes</div>'; return; }
+    body.innerHTML = pending.map(p => `
+      <div class="pending-item">
+        <b>${p.order.side} ${p.order.quantity} ${p.order.symbol}</b>
+        · valor estimado ${fmtUsd(p.decision.estimated_value_usd)}
+        ${p.order.stop_loss_price ? ' · stop-loss ' + fmtUsd(p.order.stop_loss_price) : ''}
+        <div class="pending-actions">
+          <button class="btn-approve" onclick="approveOrder('${p.id}')">✓ Aprobar</button>
+          <button class="btn-reject" onclick="rejectOrder('${p.id}')">✕ Rechazar</button>
+        </div>
+      </div>`).join('');
+  }catch(e){ /* ignore */ }
+}
+
+async function refreshAudit(){
+  try{
+    const entries = await api('/api/audit?limit=25');
+    const body = document.getElementById('auditBody');
+    if(!entries.length){ body.innerHTML = '<tr><td colspan="3" class="empty">Sin datos aún</td></tr>'; return; }
+    body.innerHTML = entries.map(e => `
+      <tr>
+        <td>${new Date(e.ts).toLocaleTimeString()}</td>
+        <td>${e.action}</td>
+        <td>${(e.payload && (e.payload.symbol||'')) + ' ' + (e.payload && (e.payload.side||''))}</td>
+      </tr>`).join('');
+  }catch(e){ /* ignore */ }
+}
+
+async function approveOrder(id){
+  try{
+    await api(`/api/orders/${id}/approve`, { method:'POST', auth:true });
+    toast('✓ Orden ejecutada');
+    refreshAll();
+  }catch(e){ toast('Error: ' + e.message); }
+}
+
+async function rejectOrder(id){
+  try{
+    await api(`/api/orders/${id}/reject`, { method:'POST', auth:true });
+    toast('Orden rechazada');
+    refreshAll();
+  }catch(e){ toast('Error: ' + e.message); }
+}
+
+async function submitOrder(){
+  const violationsBox = document.getElementById('violationsBox');
+  violationsBox.classList.remove('show');
+
+  const order = {
+    symbol: document.getElementById('f-symbol').value.trim().toUpperCase(),
+    side: currentSide,
+    quantity: parseFloat(document.getElementById('f-qty').value),
+    order_type: document.getElementById('f-type').value,
+    limit_price: document.getElementById('f-limit').value ? parseFloat(document.getElementById('f-limit').value) : null,
+    stop_loss_price: document.getElementById('f-stop').value ? parseFloat(document.getElementById('f-stop').value) : null,
+  };
+  if(!order.symbol || !order.quantity){ toast('Completa símbolo y cantidad'); return; }
+  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
+
+  try{
+    const result = await api('/api/orders', { method:'POST', body: order, auth:true });
+    if(result.status === 'pending_approval'){
+      toast('Orden dentro de reglas, pero requiere aprobación manual (ver lista de pendientes)');
+    } else {
+      toast('✓ Orden ejecutada');
+    }
+    refreshAll();
+  }catch(e){
+    if(e.data && e.data.detail && e.data.detail.violations){
+      const items = e.data.detail.violations.map(v => `<li><b>${v.rule}:</b> ${v.message}</li>`).join('');
+      violationsBox.innerHTML = `Orden rechazada por el motor de reglas:<ul>${items}</ul>`;
+      violationsBox.classList.add('show');
+    } else {
+      toast('Error: ' + e.message);
+    }
+  }
+}
+
+function connectWs(){
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  try{
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onmessage = (ev) => {
+      try{
+        const msg = JSON.parse(ev.data);
+        if(msg.type === 'update'){
+          if(msg.account){
+            document.getElementById('kv-netliq').textContent = fmtUsd(msg.account.net_liquidation);
+            document.getElementById('kv-cash').textContent = fmtUsd(msg.account.cash);
+            document.getElementById('kv-bp').textContent = fmtUsd(msg.account.buying_power);
+          }
+        }
+      }catch(e){}
+    };
+    ws.onclose = () => setTimeout(connectWs, 4000);
+  }catch(e){}
+}
+
+async function refreshAll(){
+  await refreshStatus();
+  await refreshAccount();
+  await refreshPositions();
+  await refreshPending();
+  await refreshAudit();
+}
+
+onTypeChange();
+refreshAll();
+connectWs();
+setInterval(refreshAll, 8000);
+</script>
+</body>
+</html>

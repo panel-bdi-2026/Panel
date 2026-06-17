@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Trading dashboard runtime/secret files
+trading-dashboard/backend/.env
+trading-dashboard/backend/audit.db
+trading-dashboard/backend/rules.local.yaml
