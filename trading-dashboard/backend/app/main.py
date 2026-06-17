@@ -295,12 +295,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="IBKR Trading Dashboard", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Solo se habilita CORS si se configuraron origenes explicitos (ALLOWED_ORIGINS
+# en el .env). Por defecto la lista esta vacia y no se agrega el middleware: el
+# dashboard se sirve desde el mismo origen que la API, asi que no necesita CORS,
+# y antes "*" dejaba que cualquier sitio web hiciera requests al backend.
+if settings.allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.allowed_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.get("/api/status")
@@ -391,7 +396,7 @@ async def get_positions(_: None = Depends(require_api_key)):
 
 
 @app.get("/api/rules")
-def get_rules():
+def get_rules(_: None = Depends(require_api_key)):
     return rules_config.model_dump()
 
 
@@ -415,7 +420,7 @@ def get_audit(limit: int = 100, _: None = Depends(require_api_key)):
 
 
 @app.get("/api/signals/config")
-def get_screener_config():
+def get_screener_config(_: None = Depends(require_api_key)):
     return screener_config.model_dump()
 
 
@@ -439,11 +444,15 @@ def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_k
 
 
 @app.get("/api/signals/scan")
-def scan_signals(force: bool = False):
+def scan_signals(force: bool = False, _: None = Depends(require_api_key)):
     """Radar de oportunidades momentum/tecnico. No es una recomendacion de
     inversion ni ejecuta nada: solo rankea candidatos del universo configurado
     en screener.yaml. Cacheado para no agotar la cuota de la API gratuita de
-    datos en cada refresh del dashboard."""
+    datos en cada refresh del dashboard.
+
+    Requiere API key: aunque no mueve dinero, escanear (sobre todo con
+    force=true) golpea la API gratuita de datos para todo el universo, asi que
+    dejarlo abierto seria un vector de DoS / de agotar la cuota."""
     now = datetime.now(timezone.utc)
     cached_at = signal_cache["as_of"]
     if not force and cached_at and (now - cached_at).total_seconds() < SIGNAL_CACHE_TTL_SECONDS:
@@ -458,10 +467,13 @@ def scan_signals(force: bool = False):
 
 
 @app.get("/api/signals/backtest")
-def backtest_strategy():
+def backtest_strategy(_: None = Depends(require_api_key)):
     """Backtest simplificado de la estrategia momentum sobre el universo
     configurado. Ver docstring de run_backtest() para las simplificaciones
-    asumidas (sin comisiones/slippage, curva de equity aproximada)."""
+    asumidas (sin comisiones/slippage, curva de equity aproximada).
+
+    Requiere API key: es la operacion mas pesada del backend (descarga anos de
+    historia de todo el universo), dejarla abierta seria un vector de DoS."""
     try:
         return run_backtest(screener_config)
     except BacktestError as exc:

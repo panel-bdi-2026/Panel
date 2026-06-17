@@ -92,6 +92,16 @@ solo con este backend (REST + WebSocket), nunca directo con IBKR.
     `RulesEngine` que cualquier orden y siempre quedan en la cola de
     aprobación manual, sin importar su valor estimado. Ver "Escaneo proactivo
     y órdenes en borrador automáticas" más abajo.
+12. **Símbolos validados estrictamente.** El símbolo de toda orden se valida
+    contra `^[A-Z0-9.\-]{1,12}$` antes de guardarse o mostrarse, y el frontend
+    escapa todo texto dinámico antes de renderizarlo. Sin esto, un "símbolo"
+    con HTML/JavaScript podía quedar persistido y ejecutarse en el navegador
+    de quien abriera el dashboard (XSS almacenado capaz de robar la API key).
+13. **Superficie de red mínima.** Escanear el mercado y correr el backtest
+    también requieren `X-API-Key` (no mueven dinero, pero consumen la cuota de
+    la API de datos y serían un vector de DoS si quedaran abiertos). CORS está
+    cerrado por defecto (el dashboard se sirve del mismo origen que la API);
+    se abre solo si definís `ALLOWED_ORIGINS` en el `.env`.
 
 Ninguna de estas reglas reemplaza tu propio criterio. Esto no es una
 recomendación de inversión ni una garantía de que una orden "aprobada" sea una

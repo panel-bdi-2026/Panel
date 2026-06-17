@@ -229,6 +229,10 @@ function openApiKeyPrompt(){
     // key recien guardada sin esperar al reintento automatico de 4s.
     if(ws) ws.close();
     connectWs();
+    // Recien ahora se puede escanear/leer la cuenta: refresca todo con la key.
+    refreshAll();
+    refreshPositions();
+    scanSignals(false);
   }
 }
 
@@ -258,6 +262,16 @@ async function api(path, { method='GET', body=null, auth=false } = {}){
 function fmtUsd(v){
   if(v === null || v === undefined) return '—';
   return '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+// Escapa texto antes de meterlo en innerHTML. Aunque el backend ya valida el
+// simbolo de las ordenes, cualquier string que venga del broker, del screener
+// o de la bitacora se escapa aca tambien (defensa en profundidad): nunca se
+// interpola texto dinamico crudo en el DOM.
+function esc(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+  ));
 }
 
 function setSide(side){
@@ -339,8 +353,8 @@ function renderPositions(positions){
   if(!positions.length){ body.innerHTML = '<tr><td colspan="5" class="empty">Sin posiciones abiertas</td></tr>'; return; }
   body.innerHTML = positions.map(p => `
     <tr>
-      <td><b>${p.symbol}</b></td>
-      <td>${p.quantity}</td>
+      <td><b>${esc(p.symbol)}</b></td>
+      <td>${esc(p.quantity)}</td>
       <td>${fmtUsd(p.avg_cost)}</td>
       <td>${p.market_price ? fmtUsd(p.market_price) : '—'}</td>
       <td style="color:${(p.unrealized_pnl||0)>=0?'var(--green)':'var(--red)'}">${p.unrealized_pnl!=null?fmtUsd(p.unrealized_pnl):'—'}</td>
@@ -362,7 +376,7 @@ async function refreshPending(){
     body.innerHTML = pending.map(p => `
       <div class="pending-item">
         ${p.source === 'signal_engine' ? '<span title="Generada automaticamente por el escaneo proactivo">🤖 Señal automática</span><br>' : ''}
-        <b>${p.order.side} ${p.order.quantity} ${p.order.symbol}</b>
+        <b>${esc(p.order.side)} ${esc(p.order.quantity)} ${esc(p.order.symbol)}</b>
         · valor estimado ${fmtUsd(p.decision.estimated_value_usd)}
         ${p.order.stop_loss_price ? ' · stop-loss ' + fmtUsd(p.order.stop_loss_price) : ''}
         <div class="pending-actions">
@@ -381,8 +395,8 @@ async function refreshAudit(){
     body.innerHTML = entries.map(e => `
       <tr>
         <td>${new Date(e.ts).toLocaleTimeString()}</td>
-        <td>${e.action}</td>
-        <td>${(e.payload && (e.payload.symbol||'')) + ' ' + (e.payload && (e.payload.side||''))}</td>
+        <td>${esc(e.action)}</td>
+        <td>${esc((e.payload && (e.payload.symbol||'')) + ' ' + (e.payload && (e.payload.side||'')))}</td>
       </tr>`).join('');
   }catch(e){ /* ignore */ }
 }
@@ -442,9 +456,13 @@ let lastSignals = {};
 async function scanSignals(force=false){
   const body = document.getElementById('signalsBody');
   const meta = document.getElementById('signalsMeta');
+  if(!getApiKey()){
+    body.innerHTML = '<tr><td colspan="8" class="empty">Define tu API Key (🔑 arriba) para escanear el mercado</td></tr>';
+    return;
+  }
   body.innerHTML = '<tr><td colspan="8" class="empty">Escaneando…</td></tr>';
   try{
-    const data = await api(`/api/signals/scan${force ? '?force=true' : ''}`);
+    const data = await api(`/api/signals/scan${force ? '?force=true' : ''}`, { auth:true });
     lastSignals = {};
     if(!data.results.length){
       body.innerHTML = '<tr><td colspan="8" class="empty">Sin candidatos que pasen los filtros configurados</td></tr>';
@@ -452,14 +470,14 @@ async function scanSignals(force=false){
       data.results.forEach(r => lastSignals[r.symbol] = r);
       body.innerHTML = data.results.map(r => `
         <tr>
-          <td><b>${r.symbol}</b>${r.passes_filters ? '' : ' <span class="muted-sm">(no pasa filtros)</span>'}</td>
+          <td><b>${esc(r.symbol)}</b>${r.passes_filters ? '' : ' <span class="muted-sm">(no pasa filtros)</span>'}</td>
           <td>${r.score.toFixed(1)}</td>
           <td>${fmtUsd(r.last_price)}</td>
           <td style="color:${r.momentum_3m_pct>=0?'var(--green)':'var(--red)'}">${r.momentum_3m_pct.toFixed(1)}%</td>
           <td style="color:${r.momentum_1m_pct>=0?'var(--green)':'var(--red)'}">${r.momentum_1m_pct.toFixed(1)}%</td>
           <td>${r.rsi.toFixed(0)}</td>
           <td>${fmtUsd(r.suggested_stop_loss_price)} (-${r.suggested_stop_loss_pct.toFixed(1)}%)</td>
-          <td><button class="btn-approve" onclick="useSignal('${r.symbol}')">Usar</button></td>
+          <td><button class="btn-approve" onclick="useSignal('${esc(r.symbol)}')">Usar</button></td>
         </tr>`).join('');
     }
     meta.textContent = `Actualizado: ${new Date(data.as_of).toLocaleString()}${data.cached ? ' (cache)' : ''} · ${data.results.length} símbolos con datos`;
@@ -500,7 +518,7 @@ async function runBacktest(){
   box.style.display = 'block';
   box.textContent = 'Corriendo backtest (puede tardar; depende de la API gratuita de datos)…';
   try{
-    const r = await api('/api/signals/backtest');
+    const r = await api('/api/signals/backtest', { auth:true });
     box.innerHTML = `
       <b>Backtest ${new Date(r.start_date).toLocaleDateString()} → ${new Date(r.end_date).toLocaleDateString()}</b><br>
       ${r.total_trades} operaciones · win rate ${r.win_rate_pct}% · profit factor ${r.profit_factor ?? '∞'} · Sharpe ${r.sharpe_ratio ?? '—'}<br>

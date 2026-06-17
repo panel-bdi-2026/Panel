@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+# Tickers reales son letras, digitos, punto y guion (ej. BRK.B, RDS-A). Se
+# valida estrictamente el simbolo de toda orden entrante: sin esto, el campo
+# aceptaba cualquier texto (solo se hacia strip().upper()), que despues se
+# persistia en audit.db / ordenes pendientes y se renderizaba en el dashboard.
+# Un "simbolo" tipo '<img src=x onerror=...>' quedaba como XSS almacenado
+# capaz de robar la API key del localStorage de quien abriera el panel.
+_SYMBOL_RE = re.compile(r"^[A-Z0-9.\-]{1,12}$")
 
 
 class Side(str, Enum):
@@ -28,7 +37,13 @@ class OrderRequest(BaseModel):
     @field_validator("symbol")
     @classmethod
     def upper_symbol(cls, v: str) -> str:
-        return v.strip().upper()
+        v = v.strip().upper()
+        if not _SYMBOL_RE.match(v):
+            raise ValueError(
+                "Simbolo invalido: solo se permiten letras, numeros, punto y "
+                "guion (1 a 12 caracteres)."
+            )
+        return v
 
 
 class RuleViolation(BaseModel):

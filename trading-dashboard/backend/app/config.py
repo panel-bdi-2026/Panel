@@ -33,6 +33,15 @@ class Settings:
 
         self.api_key = os.getenv("API_KEY", "")
 
+        # Origenes permitidos para CORS. Vacio por defecto: el frontend se sirve
+        # desde el mismo backend (mismo origen), asi que no necesita CORS, y
+        # dejar "*" abierto permitia que cualquier web hiciera requests a los
+        # endpoints (vector de DNS rebinding contra un backend en la LAN). Si
+        # servis el frontend aparte, lista los origenes separados por coma.
+        self.allowed_origins = [
+            o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+        ]
+
         self.rules_path = Path(os.getenv("RULES_PATH", str(BASE_DIR / "rules.yaml")))
         self.screener_path = Path(os.getenv("SCREENER_PATH", str(BASE_DIR / "screener.yaml")))
         self.audit_db_path = Path(os.getenv("AUDIT_DB_PATH", str(BASE_DIR / "audit.db")))
