@@ -100,6 +100,14 @@ class MomentumScreener:
         days_to_earnings = (earnings_date - datetime.now(timezone.utc).date()).days if earnings_date else None
         earnings_ok = days_to_earnings is None or not (0 <= days_to_earnings <= cfg.earnings_blackout_days)
 
+        # last_from_high es <= 0 (0 = en el maximo, -8 = 8% por debajo). Si no
+        # hay dato (None) el filtro no bloquea.
+        near_high_ok = (
+            not cfg.near_high_filter_enabled
+            or last_from_high is None
+            or last_from_high >= -cfg.max_pct_below_52w_high
+        )
+
         notes: list[str] = []
         if not liquidity_ok:
             notes.append("Volumen promedio por debajo del minimo de liquidez configurado.")
@@ -111,6 +119,11 @@ class MomentumScreener:
             notes.append("Filtro de regimen: el benchmark esta por debajo de su SMA de regimen.")
         if not earnings_ok:
             notes.append(f"Earnings estimados en {days_to_earnings} dia(s): dentro de la ventana de blackout.")
+        if not near_high_ok:
+            notes.append(
+                f"A {abs(last_from_high):.1f}% del maximo de 52 semanas: mas lejos del "
+                f"umbral de proximidad configurado ({cfg.max_pct_below_52w_high}%)."
+            )
 
         relative_strength = last_roc_3m - benchmark_roc_3m if benchmark_roc_3m is not None else 0.0
 
@@ -138,7 +151,7 @@ class MomentumScreener:
             pct_from_52w_high=round(last_from_high, 2) if last_from_high is not None else None,
             suggested_stop_loss_price=round(stop_loss_price, 2),
             suggested_stop_loss_pct=round(stop_loss_pct, 2),
-            passes_filters=trend_ok and liquidity_ok and rsi_ok and regime_ok and earnings_ok,
+            passes_filters=trend_ok and liquidity_ok and rsi_ok and regime_ok and earnings_ok and near_high_ok,
             notes=notes,
         )
 

@@ -81,6 +81,13 @@ regime_sma_period: 200
 # (gap risk que el stop-loss basado en ATR no cubre).
 earnings_blackout_days: 5
 
+# Filtro de proximidad al maximo de 52 semanas: solo se consideran entradas en
+# simbolos a no mas de max_pct_below_52w_high (%) por debajo de su maximo de 52
+# semanas. Favorece lideres cerca de maximos (breakouts) en vez de nombres ya
+# extendidos a la baja (efecto momentum del "52-week high").
+near_high_filter_enabled: true
+max_pct_below_52w_high: 15.0
+
 # Anos de historia usados al correr un backtest de la estrategia.
 backtest_years: 3
 

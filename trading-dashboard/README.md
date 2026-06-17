@@ -163,6 +163,14 @@ tamaño, todo aplica igual.
   bajista. Si no hay suficiente historia para calcular la SMA, el filtro no
   bloquea (asume régimen favorable en vez de fallar el scan por falta de
   dato).
+- **Proximidad al máximo de 52 semanas** (`near_high_filter_enabled`,
+  `max_pct_below_52w_high`): solo se consideran entradas en símbolos que
+  cotizan a no más de ese % por debajo de su máximo de 52 semanas (15% por
+  defecto). Favorece líderes cerca de máximos (breakouts) en vez de nombres ya
+  extendidos a la baja — la cercanía al máximo de 52 semanas es un predictor
+  de continuación de momentum bien documentado (George & Hwang, 2004). Si no
+  hay historia suficiente para el máximo, no bloquea. Se aplica tanto en el
+  scan en vivo como en el backtest.
 - **Blackout de earnings** (`earnings_blackout_days`): no se sugieren
   entradas nuevas dentro de esa cantidad de días antes de la próxima fecha de
   earnings estimada (gap risk que el stop-loss basado en ATR no cubre). La

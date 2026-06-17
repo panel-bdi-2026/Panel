@@ -4,7 +4,7 @@ import statistics
 
 import pandas as pd
 
-from .indicators import atr, rate_of_change, rsi, sma
+from .indicators import atr, pct_from_high, rate_of_change, rsi, sma
 from .market_data import MarketDataError, get_daily_bars
 from .models import BacktestSummary, BacktestTrade
 from .screener_config import ScreenerConfig
@@ -42,6 +42,7 @@ def _simulate_symbol(
     roc_1m = rate_of_change(close, cfg.momentum_short_days)
     rsi_s = rsi(close, cfg.rsi_period)
     atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
+    from_high_s = pct_from_high(close, 252)
 
     notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
 
@@ -100,8 +101,14 @@ def _simulate_symbol(
         rel_strength_ok = bench_roc is None or roc_3m.iloc[i] > bench_roc
         momentum_ok = roc_3m.iloc[i] > 0 and (pd.isna(roc_1m.iloc[i]) or roc_1m.iloc[i] > 0)
         regime_ok = bool(benchmark_regime_ok.iloc[i]) if i < len(benchmark_regime_ok) else True
+        fh = from_high_s.iloc[i]
+        near_high_ok = (
+            not cfg.near_high_filter_enabled
+            or pd.isna(fh)
+            or fh >= -cfg.max_pct_below_52w_high
+        )
 
-        if trend_ok and rsi_ok and rel_strength_ok and momentum_ok and regime_ok:
+        if trend_ok and rsi_ok and rel_strength_ok and momentum_ok and regime_ok and near_high_ok:
             in_position = True
             entry_price = price
             entry_idx = i

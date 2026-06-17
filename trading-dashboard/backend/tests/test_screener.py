@@ -161,3 +161,31 @@ def test_earnings_blackout_does_not_block_when_earnings_outside_window(monkeypat
 def test_earnings_blackout_does_not_block_when_no_earnings_date_known(screener):
     result = screener.evaluate_symbol("MOM", benchmark_roc_3m=5.0, regime_ok=True)
     assert result.passes_filters
+
+
+def test_near_high_filter_blocks_symbol_far_from_52w_high(screener):
+    # MOM cotiza ~1.4% por debajo de su maximo de 52s; con un umbral muy
+    # estricto (0.5%) queda fuera por proximidad, aunque pase el resto.
+    screener.reload(ScreenerConfig(
+        universe=["MOM"], benchmark_symbol="SPY",
+        near_high_filter_enabled=True, max_pct_below_52w_high=0.5,
+    ))
+    result = screener.evaluate_symbol("MOM", benchmark_roc_3m=0.0, regime_ok=True)
+    assert result.trend_ok
+    assert not result.passes_filters
+    assert any("52 semanas" in note for note in result.notes)
+
+
+def test_near_high_filter_does_not_block_when_within_threshold(screener):
+    # Con el umbral por defecto (15%), MOM a ~1.4% del maximo pasa el filtro.
+    result = screener.evaluate_symbol("MOM", benchmark_roc_3m=0.0, regime_ok=True)
+    assert result.passes_filters
+
+
+def test_near_high_filter_disabled_does_not_block(screener):
+    screener.reload(ScreenerConfig(
+        universe=["MOM"], benchmark_symbol="SPY",
+        near_high_filter_enabled=False, max_pct_below_52w_high=0.5,
+    ))
+    result = screener.evaluate_symbol("MOM", benchmark_roc_3m=0.0, regime_ok=True)
+    assert result.passes_filters

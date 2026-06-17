@@ -233,3 +233,48 @@ def test_cap_concurrent_positions_no_cap_when_top_n_invalid():
     from app.backtest import cap_concurrent_positions
     trades = [_trade("A", 1, 10), _trade("B", 1, 10)]
     assert len(cap_concurrent_positions(trades, top_n=0)) == 2
+
+
+def test_near_high_filter_reduces_entries_far_from_52w_high(monkeypatch):
+    # Pico temprano a ~196 (fija el maximo de 52s), caida, y luego un uptrend
+    # limpio pero siempre >15% por debajo de ese pico. Con el filtro activo,
+    # esas entradas "lejos del maximo" se descartan.
+    n = 120
+    vals = []
+    for i in range(n):
+        if i <= 12:
+            vals.append(100 + i * 8)
+        elif i <= 24:
+            vals.append(196 - (i - 12) * 7)
+        else:
+            vals.append(112 + (i - 24) * 0.5)
+    idx = pd.date_range("2023-01-01", periods=n, freq="D")
+    close = pd.Series(vals, index=idx)
+
+    def _mk(c):
+        return pd.DataFrame(
+            {"Open": c, "High": c * 1.004, "Low": c * 0.996, "Close": c, "Volume": 5_000_000},
+            index=c.index,
+        )
+
+    bars = _mk(close)
+    bench = _mk(pd.Series([100.0] * n, index=idx))
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol == "SPY":
+            return bench
+        if symbol == "FARHI":
+            return bars
+        raise MarketDataError("no data")
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+
+    base = dict(
+        universe=["FARHI"], benchmark_symbol="SPY", backtest_years=1,
+        sma_fast=3, sma_slow=5, atr_period=3, momentum_lookback_days=5,
+        momentum_short_days=3, rsi_period=3, rsi_min=0, rsi_max=100,
+        regime_filter_enabled=False, top_n=5,
+    )
+    without = run_backtest(ScreenerConfig(**base, near_high_filter_enabled=False))
+    with_filter = run_backtest(ScreenerConfig(**base, near_high_filter_enabled=True, max_pct_below_52w_high=15.0))
+    assert with_filter.total_trades < without.total_trades

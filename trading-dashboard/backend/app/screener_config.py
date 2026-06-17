@@ -55,6 +55,16 @@ class ScreenerConfig(BaseModel):
     # stop-loss basado en ATR sin ejecutarse al precio sugerido.
     earnings_blackout_days: int = 5
 
+    # Filtro de proximidad al maximo de 52 semanas: solo se consideran entradas
+    # en simbolos que cotizan a no mas de max_pct_below_52w_high por debajo de
+    # su maximo de 52 semanas. Comprar lideres cerca de maximos (breakouts) en
+    # vez de nombres ya extendidos a la baja es un efecto momentum documentado
+    # (George & Hwang, 2004): la cercania al maximo de 52 semanas predice
+    # continuacion mejor que el retorno pasado por si solo. Si no hay historia
+    # suficiente para el maximo, el filtro no bloquea (no falla por falta de dato).
+    near_high_filter_enabled: bool = True
+    max_pct_below_52w_high: float = 15.0
+
     backtest_years: int = 3
     # Costos de transaccion asumidos en el backtest (antes no se modelaban, lo
     # que infla artificialmente los retornos reportados respecto a la
