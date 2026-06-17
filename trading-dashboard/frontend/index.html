@@ -219,7 +219,14 @@ function setApiKey(v){ localStorage.setItem(apiKeyStorageKey, v); }
 
 function openApiKeyPrompt(){
   const v = prompt('API Key del backend (header X-API-Key, definida en .env):', getApiKey());
-  if(v !== null) setApiKey(v.trim());
+  if(v !== null){
+    setApiKey(v.trim());
+    // El WS tambien requiere la API key (como query param, ya que el navegador
+    // no puede mandar headers en el handshake): reconectar para que tome la
+    // key recien guardada sin esperar al reintento automatico de 4s.
+    if(ws) ws.close();
+    connectWs();
+  }
 }
 
 function toast(msg, ms=3500){
@@ -314,7 +321,7 @@ async function toggleHalt(){
 
 async function refreshAccount(){
   try{
-    const a = await api('/api/account');
+    const a = await api('/api/account', { auth:true });
     document.getElementById('kv-netliq').textContent = fmtUsd(a.net_liquidation);
     document.getElementById('kv-cash').textContent = fmtUsd(a.cash);
     document.getElementById('kv-bp').textContent = fmtUsd(a.buying_power);
@@ -326,7 +333,7 @@ async function refreshAccount(){
 
 async function refreshPositions(){
   try{
-    const positions = await api('/api/positions');
+    const positions = await api('/api/positions', { auth:true });
     const body = document.getElementById('posBody');
     if(!positions.length){ body.innerHTML = '<tr><td colspan="5" class="empty">Sin posiciones abiertas</td></tr>'; return; }
     body.innerHTML = positions.map(p => `
@@ -342,7 +349,7 @@ async function refreshPositions(){
 
 async function refreshPending(){
   try{
-    const pending = await api('/api/orders/pending');
+    const pending = await api('/api/orders/pending', { auth:true });
     const body = document.getElementById('pendingBody');
     if(!pending.length){ body.innerHTML = '<div class="empty">No hay órdenes pendientes</div>'; return; }
     body.innerHTML = pending.map(p => `
@@ -360,7 +367,7 @@ async function refreshPending(){
 
 async function refreshAudit(){
   try{
-    const entries = await api('/api/audit?limit=25');
+    const entries = await api('/api/audit?limit=25', { auth:true });
     const body = document.getElementById('auditBody');
     if(!entries.length){ body.innerHTML = '<tr><td colspan="3" class="empty">Sin datos aún</td></tr>'; return; }
     body.innerHTML = entries.map(e => `
@@ -485,7 +492,7 @@ async function runBacktest(){
 function connectWs(){
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   try{
-    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws = new WebSocket(`${proto}://${location.host}/ws?api_key=${encodeURIComponent(getApiKey())}`);
     ws.onmessage = (ev) => {
       try{
         const msg = JSON.parse(ev.data);

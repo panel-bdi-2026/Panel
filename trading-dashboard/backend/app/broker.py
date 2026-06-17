@@ -11,6 +11,13 @@ class IBKRConnectionError(RuntimeError):
     pass
 
 
+class StopLossRejectedError(RuntimeError):
+    """La orden padre se transmitio pero IBKR rechazo/cancelo el stop-loss
+    asociado. La posicion puede haber quedado abierta sin proteccion --
+    quien llama debe tratar esto como una falla critica, no como exito."""
+    pass
+
+
 class IBKRBroker:
     """Capa fina sobre ib_async (fork mantenido de ib_insync).
 
@@ -30,6 +37,7 @@ class IBKRBroker:
         self.host = host
         self.port = port
         self.client_id = client_id
+        self.account_id: str | None = None
         self.ib = IB()
 
     async def connect(self) -> None:
@@ -38,6 +46,14 @@ class IBKRBroker:
             # Datos demorados por defecto: funcionan sin suscripcion de market data
             # en tiempo real. Cambia a reqMarketDataType(1) si tienes suscripciones.
             self.ib.reqMarketDataType(3)
+            accounts = self.ib.managedAccounts()
+            if accounts:
+                self.account_id = accounts[0]
+                # Suscripcion al PnL diario real de IBKR (dailyPnL). Sin esto no
+                # hay forma confiable de saber la perdida del DIA: accountSummary
+                # solo trae el no-realizado acumulado desde que se abrio cada
+                # posicion, no el movimiento de hoy.
+                self.ib.reqPnL(self.account_id)
         except Exception as exc:
             raise IBKRConnectionError(
                 f"No se pudo conectar a IBKR en {self.host}:{self.port}: {exc}"
@@ -72,9 +88,16 @@ class IBKRBroker:
         net_liq = float(values.get("NetLiquidation", 0) or 0)
         cash = float(values.get("TotalCashValue", 0) or 0)
         buying_power = float(values.get("BuyingPower", 0) or 0)
-        realized = float(values.get("RealizedPnL", 0) or 0)
-        unrealized = float(values.get("UnrealizedPnL", 0) or 0)
-        daily_pnl = realized + unrealized
+
+        # dailyPnL es el P&L real DEL DIA que reporta IBKR (requiere reqPnL,
+        # suscripto en connect()). RealizedPnL/UnrealizedPnL de accountSummary
+        # NO son del dia: el no-realizado es acumulado desde que se abrio cada
+        # posicion, asi que usarlos subestima/sobreestima la perdida diaria real.
+        daily_pnl = 0.0
+        pnl_list = self.ib.pnl()
+        if pnl_list:
+            raw = pnl_list[0].dailyPnL
+            daily_pnl = float(raw) if raw is not None and raw == raw else 0.0  # filtra NaN
         daily_pnl_pct = (daily_pnl / net_liq * 100) if net_liq else 0.0
         return AccountSummary(
             net_liquidation=net_liq,
@@ -141,12 +164,26 @@ class IBKRBroker:
             stop = StopOrder(protective_side.value, order.quantity, order.stop_loss_price)
             stop.parentId = parent.orderId
             stop.transmit = True
-            self.ib.placeOrder(contract, stop)
+            stop_trade = self.ib.placeOrder(contract, stop)
             await asyncio.sleep(0.5)
+
+            # IBKR puede rechazar/cancelar el stop (precio invalido, regla del
+            # mercado, etc). Si eso pasa, NO devolvemos "ok": la posicion padre
+            # puede haber quedado abierta sin proteccion y eso hay que tratarlo
+            # como una falla critica, no silenciarlo.
+            bad_statuses = {"Cancelled", "ApiCancelled", "Inactive", "PendingCancel"}
+            stop_status = stop_trade.orderStatus.status
+            if stop_status in bad_statuses:
+                raise StopLossRejectedError(
+                    f"El stop-loss fue rechazado/cancelado por IBKR (estado: {stop_status}). "
+                    f"La orden principal (id {parent.orderId}) puede haber quedado activa SIN "
+                    f"proteccion. Revisa la posicion manualmente en TWS antes de seguir operando."
+                )
             return {
                 "order_id": parent.orderId,
                 "stop_order_id": stop.orderId,
                 "status": parent_trade.orderStatus.status,
+                "stop_status": stop_status,
             }
 
         trade = self.ib.placeOrder(contract, parent)

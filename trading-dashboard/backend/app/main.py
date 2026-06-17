@@ -14,13 +14,14 @@ from pydantic import BaseModel
 
 from .audit import AuditLog
 from .backtest import BacktestError, run_backtest
-from .broker import IBKRBroker, IBKRConnectionError
+from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
 from .market_data import MarketDataError
 from .models import OrderRequest, PendingOrder
 from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
 from .screener_config import ScreenerConfig
+from .state_store import load_state, save_state
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 
@@ -32,16 +33,32 @@ broker = IBKRBroker(settings.ib_host, settings.ib_port, settings.ib_client_id)
 screener_config = ScreenerConfig.load(settings.screener_path)
 screener = MomentumScreener(screener_config)
 
+# Estado persistido (halted, mode, ordenes pendientes) para que sobreviva a un
+# reinicio del backend: sin esto, un reinicio (intencional o por un crash)
+# perdia el halt o las ordenes pendientes de aprobacion y volvia silenciosamente
+# a los valores por defecto (trading activo).
+_persisted = load_state(settings.state_path)
+
 state: dict = {
-    "mode": settings.trading_mode,
-    "halted": False,
+    "mode": _persisted.get("mode", settings.trading_mode),
+    "halted": _persisted.get("halted", False),
     "connected": False,
-    "pending_orders": {},  # id -> PendingOrder
+    "pending_orders": {
+        pid: PendingOrder(**p) for pid, p in _persisted.get("pending_orders", {}).items()
+    },
 }
 clients: list[WebSocket] = []
 
 SIGNAL_CACHE_TTL_SECONDS = 900  # evita re-escanear el mercado en cada refresh
 signal_cache: dict = {"as_of": None, "results": []}
+
+
+def _persist_state() -> None:
+    save_state(settings.state_path, {
+        "mode": state["mode"],
+        "halted": state["halted"],
+        "pending_orders": {pid: p.model_dump() for pid, p in state["pending_orders"].items()},
+    })
 
 
 def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
@@ -72,6 +89,60 @@ async def _broadcast_loop() -> None:
             clients.remove(ws)
 
 
+async def _risk_monitor_loop() -> None:
+    """Kill switch automatico: a diferencia de RulesEngine.evaluate(), que solo
+    chequea daily_loss_limit_pct cuando llega una orden nueva, esto corre en
+    background y pausa el trading aunque no se envie ninguna orden mientras la
+    cuenta sigue perdiendo (ej. por posiciones abiertas moviendose en contra)."""
+    while True:
+        await asyncio.sleep(settings.poll_interval_seconds)
+        if not state["connected"] or state["halted"]:
+            continue
+        try:
+            account = broker.get_account_summary()
+        except Exception:
+            continue
+        if account.daily_pnl_pct <= -abs(rules_config.daily_loss_limit_pct):
+            state["halted"] = True
+            _persist_state()
+            audit.record("auto_halt_daily_loss_limit", {}, {"daily_pnl_pct": account.daily_pnl_pct})
+            print(
+                f"[KILL SWITCH] Perdida diaria {account.daily_pnl_pct:.2f}% "
+                "alcanzo el limite. Trading pausado automaticamente."
+            )
+
+
+async def _restore_persisted_mode() -> None:
+    """Si el estado persistido indica un modo distinto al que arranco el
+    broker (ej. el backend se reinicio mientras estaba en modo live), reconecta
+    al puerto correspondiente para que state['mode'] no mienta sobre a que
+    cuenta esta conectado realmente el broker."""
+    if not state["connected"] or state["mode"] == settings.trading_mode:
+        return
+    if state["mode"] == "live" and not settings.live_confirm:
+        print(
+            "[WARN] El estado persistido indica modo live pero LIVE_CONFIRM no "
+            "esta definido en este arranque. Se mantiene modo paper."
+        )
+        state["mode"] = settings.trading_mode
+        _persist_state()
+        return
+    target_port = settings.ib_port_live if state["mode"] == "live" else settings.ib_port_paper
+    if target_port is None:
+        state["mode"] = settings.trading_mode
+        _persist_state()
+        return
+    try:
+        await broker.reconnect(settings.ib_host, target_port, settings.ib_client_id)
+        state["connected"] = True
+        print(f"[INFO] Modo restaurado desde estado persistido: {state['mode']}")
+    except IBKRConnectionError as exc:
+        state["connected"] = False
+        state["mode"] = settings.trading_mode
+        _persist_state()
+        print(f"[WARN] No se pudo restaurar el modo persistido tras el reinicio: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -80,9 +151,12 @@ async def lifespan(app: FastAPI):
     except IBKRConnectionError as exc:
         state["connected"] = False
         print(f"[WARN] {exc}")
+    await _restore_persisted_mode()
     task = asyncio.create_task(_broadcast_loop())
+    risk_task = asyncio.create_task(_risk_monitor_loop())
     yield
     task.cancel()
+    risk_task.cancel()
     broker.disconnect()
 
 
@@ -109,6 +183,7 @@ def status():
 @app.post("/api/halt")
 def set_halt(value: bool, _: None = Depends(require_api_key)):
     state["halted"] = value
+    _persist_state()
     audit.record("halt_toggle", {"value": value}, {})
     return {"halted": state["halted"]}
 
@@ -162,19 +237,20 @@ async def set_mode(body: ModeUpdate, _: None = Depends(require_api_key)):
     state["mode"] = mode
     state["connected"] = True
     state["halted"] = True
+    _persist_state()
     audit.record("mode_switched", {"mode": mode}, {"ib_port": target_port})
     return {"mode": state["mode"], "connected": state["connected"], "halted": state["halted"]}
 
 
 @app.get("/api/account")
-def get_account():
+def get_account(_: None = Depends(require_api_key)):
     if not state["connected"]:
         raise HTTPException(status_code=503, detail="No conectado a IBKR.")
     return broker.get_account_summary()
 
 
 @app.get("/api/positions")
-async def get_positions():
+async def get_positions(_: None = Depends(require_api_key)):
     if not state["connected"]:
         raise HTTPException(status_code=503, detail="No conectado a IBKR.")
     return await broker.get_positions()
@@ -200,7 +276,7 @@ def update_rules(body: RulesUpdate, _: None = Depends(require_api_key)):
 
 
 @app.get("/api/audit")
-def get_audit(limit: int = 100):
+def get_audit(limit: int = 100, _: None = Depends(require_api_key)):
     return audit.recent(limit)
 
 
@@ -256,7 +332,7 @@ def backtest_strategy():
 
 
 @app.get("/api/orders/pending")
-def list_pending_orders():
+def list_pending_orders(_: None = Depends(require_api_key)):
     return list(state["pending_orders"].values())
 
 
@@ -300,10 +376,15 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
             created_at=datetime.now(timezone.utc),
         )
         state["pending_orders"][pending_id] = pending
+        _persist_state()
         audit.record("order_pending_approval", order.model_dump(), {"id": pending_id})
         return {"status": "pending_approval", "pending_order": pending.model_dump()}
 
-    result = await broker.place_order(order)
+    try:
+        result = await broker.place_order(order)
+    except StopLossRejectedError as exc:
+        audit.record("stop_loss_rejected", order.model_dump(), {"error": str(exc)})
+        raise HTTPException(status_code=502, detail=str(exc))
     audit.record("order_executed", order.model_dump(), result)
     return {"status": "executed", "result": result}
 
@@ -313,7 +394,12 @@ async def approve_order(order_id: str, _: None = Depends(require_api_key)):
     pending = state["pending_orders"].pop(order_id, None)
     if not pending:
         raise HTTPException(status_code=404, detail="Orden pendiente no encontrada.")
-    result = await broker.place_order(pending.order)
+    _persist_state()
+    try:
+        result = await broker.place_order(pending.order)
+    except StopLossRejectedError as exc:
+        audit.record("stop_loss_rejected", pending.order.model_dump(), {"error": str(exc)})
+        raise HTTPException(status_code=502, detail=str(exc))
     audit.record("order_executed_after_approval", pending.order.model_dump(), result)
     return {"status": "executed", "result": result}
 
@@ -323,12 +409,19 @@ def reject_order(order_id: str, _: None = Depends(require_api_key)):
     pending = state["pending_orders"].pop(order_id, None)
     if not pending:
         raise HTTPException(status_code=404, detail="Orden pendiente no encontrada.")
+    _persist_state()
     audit.record("order_rejected", pending.order.model_dump(), {"id": order_id})
     return {"status": "rejected"}
 
 
 @app.websocket("/ws")
-async def ws_endpoint(websocket: WebSocket):
+async def ws_endpoint(websocket: WebSocket, api_key: str = ""):
+    # Un navegador no puede mandar headers personalizados en el handshake de
+    # un WebSocket, asi que la API key viaja como query param (?api_key=...)
+    # en vez del header X-API-Key que usa el resto de los endpoints.
+    if api_key != settings.api_key:
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     clients.append(websocket)
     try:
