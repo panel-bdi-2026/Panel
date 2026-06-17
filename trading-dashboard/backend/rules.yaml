@@ -23,6 +23,11 @@ require_stop_loss_on_buy: true
 # Riesgo maximo permitido en el stop-loss, como % por debajo del precio de entrada.
 max_stop_loss_pct: 5
 
+# Si es false (default), se rechaza cualquier orden que dejaria una posicion
+# en negativo (venta sin tener antes la cantidad equivalente en cartera).
+# Evita quedar corto por error de cantidad/simbolo.
+allow_short_selling: false
+
 # Ordenes con valor estimado mayor a este monto requieren aprobacion manual en el
 # dashboard, aunque el modo "automatico" este activo.
 manual_approval_threshold_usd: 1000

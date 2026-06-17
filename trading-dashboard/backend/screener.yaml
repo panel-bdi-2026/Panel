@@ -57,8 +57,9 @@ rsi_period: 14
 rsi_min: 40
 rsi_max: 75
 
-# Liquidez minima (volumen promedio 20 dias) para no proponer nombres ilíquidos.
-min_avg_volume: 1000000
+# Liquidez minima en DOLARES (volumen promedio 20 dias x precio) para no
+# proponer nombres iliquidos en terminos de dinero realmente operado.
+min_avg_dollar_volume: 1000000
 
 # Cuantos candidatos como maximo se consideran "top" en cada scan/backtest.
 top_n: 10

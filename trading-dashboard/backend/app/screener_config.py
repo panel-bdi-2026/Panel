@@ -32,7 +32,10 @@ class ScreenerConfig(BaseModel):
     rsi_min: float = 40
     rsi_max: float = 75
 
-    min_avg_volume: float = 1_000_000
+    # Volumen promedio en DOLARES (precio x acciones), no en cantidad de
+    # acciones: una accion barata puede superar un umbral de acciones y
+    # seguir siendo poco liquida en terminos de dinero realmente operado.
+    min_avg_dollar_volume: float = 1_000_000
     top_n: int = 10
 
     atr_period: int = 14

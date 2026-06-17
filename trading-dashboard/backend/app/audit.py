@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 class AuditLog:
@@ -54,11 +55,20 @@ class AuditLog:
             for row in cur.fetchall()
         ]
 
-    def count_trades_today(self) -> int:
-        today = datetime.now(timezone.utc).date().isoformat()
+    def count_trades_today(self, tz_name: str = "America/New_York") -> int:
+        """Cuenta ordenes ejecutadas hoy segun el dia de trading en `tz_name`
+        (no el dia calendario UTC): ts se guarda en UTC, asi que filtrar por el
+        prefijo de fecha UTC desalinea el conteo del dia real de mercado --
+        ej. una orden ejecutada a las 21:00 ET ya es "manana" en UTC."""
+        tz = ZoneInfo(tz_name)
+        now_local = datetime.now(tz)
+        start_local = datetime.combine(now_local.date(), dtime.min, tzinfo=tz)
+        end_local = start_local + timedelta(days=1)
+        start_utc = start_local.astimezone(timezone.utc).isoformat()
+        end_utc = end_local.astimezone(timezone.utc).isoformat()
         cur = self._conn.execute(
             "SELECT COUNT(*) FROM audit_log WHERE action IN "
-            "('order_executed', 'order_executed_after_approval') AND ts LIKE ?",
-            (f"{today}%",),
+            "('order_executed', 'order_executed_after_approval') AND ts >= ? AND ts < ?",
+            (start_utc, end_utc),
         )
         return cur.fetchone()[0]

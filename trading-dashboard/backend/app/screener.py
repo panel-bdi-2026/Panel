@@ -25,19 +25,19 @@ class MomentumScreener:
     def reload(self, config: ScreenerConfig) -> None:
         self.config = config
 
-    def _benchmark_roc(self) -> float | None:
+    def _benchmark_roc(self, force: bool = False) -> float | None:
         try:
-            bars = get_daily_bars(self.config.benchmark_symbol, self.config.lookback_days)
+            bars = get_daily_bars(self.config.benchmark_symbol, self.config.lookback_days, force=force)
         except MarketDataError:
             return None
         roc = rate_of_change(bars["Close"], self.config.momentum_lookback_days)
         value = roc.iloc[-1] if len(roc) else None
         return float(value) if value is not None and not pd.isna(value) else None
 
-    def evaluate_symbol(self, symbol: str, benchmark_roc_3m: float | None) -> SignalResult | None:
+    def evaluate_symbol(self, symbol: str, benchmark_roc_3m: float | None, force: bool = False) -> SignalResult | None:
         cfg = self.config
         try:
-            bars = get_daily_bars(symbol, cfg.lookback_days)
+            bars = get_daily_bars(symbol, cfg.lookback_days, force=force)
         except MarketDataError:
             return None
         if len(bars) < cfg.sma_slow + cfg.momentum_lookback_days // 2:
@@ -51,6 +51,7 @@ class MomentumScreener:
         rsi_s = rsi(close, cfg.rsi_period)
         atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
         avg_volume_s = bars["Volume"].rolling(20, min_periods=1).mean()
+        avg_dollar_volume_s = avg_volume_s * close
         from_high_s = pct_from_high(close, 252)
 
         if pd.isna(sma_slow_s.iloc[-1]) or pd.isna(roc_3m.iloc[-1]) or pd.isna(atr_s.iloc[-1]):
@@ -61,11 +62,15 @@ class MomentumScreener:
         last_roc_3m = float(roc_3m.iloc[-1])
         last_roc_1m = float(roc_1m.iloc[-1]) if not pd.isna(roc_1m.iloc[-1]) else 0.0
         last_avg_vol = float(avg_volume_s.iloc[-1])
+        last_avg_dollar_vol = float(avg_dollar_volume_s.iloc[-1])
         last_atr = float(atr_s.iloc[-1])
         last_from_high = float(from_high_s.iloc[-1]) if not pd.isna(from_high_s.iloc[-1]) else None
 
         trend_ok = bool(last_price > sma_fast_s.iloc[-1] > sma_slow_s.iloc[-1])
-        liquidity_ok = last_avg_vol >= cfg.min_avg_volume
+        # Filtro en volumen en dolares, no en cantidad de acciones: una accion de
+        # bajo precio puede superar un umbral de acciones y seguir siendo poco
+        # liquida en terminos de dinero realmente operado por dia.
+        liquidity_ok = last_avg_dollar_vol >= cfg.min_avg_dollar_volume
         rsi_ok = cfg.rsi_min <= last_rsi <= cfg.rsi_max
 
         notes: list[str] = []
@@ -106,11 +111,11 @@ class MomentumScreener:
             notes=notes,
         )
 
-    def scan(self) -> list[SignalResult]:
-        benchmark_roc = self._benchmark_roc()
+    def scan(self, force: bool = False) -> list[SignalResult]:
+        benchmark_roc = self._benchmark_roc(force=force)
         results = []
         for symbol in self.config.universe:
-            result = self.evaluate_symbol(symbol, benchmark_roc)
+            result = self.evaluate_symbol(symbol, benchmark_roc, force=force)
             if result is not None:
                 results.append(result)
         if self.config.universe and not results:

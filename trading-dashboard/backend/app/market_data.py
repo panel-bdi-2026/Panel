@@ -16,17 +16,21 @@ class MarketDataError(RuntimeError):
     pass
 
 
-def get_daily_bars(symbol: str, lookback_days: int) -> pd.DataFrame:
+def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.DataFrame:
     """Barras diarias OHLCV ajustadas para `symbol`, cubriendo ~lookback_days dias de trading.
 
     Usa yfinance (datos de Yahoo Finance, no oficiales, gratis y con limites de
     uso) en vez de IBKR para no consumir suscripciones de market data solo para
     investigacion/backtesting. Resultado cacheado por simbolo+ventana.
+
+    `force=True` ignora el cache (usado por el boton "forzar rescan" del
+    dashboard): sin esto, forzar un rescan dentro de los 15 minutos del cache
+    no traia datos nuevos a pesar de que el usuario lo pidio explicitamente.
     """
     key = (symbol.upper(), lookback_days)
     now = time.time()
     cached = _cache.get(key)
-    if cached and now - cached[0] < _CACHE_TTL_SECONDS:
+    if not force and cached and now - cached[0] < _CACHE_TTL_SECONDS:
         return cached[1]
 
     end = datetime.now(timezone.utc)

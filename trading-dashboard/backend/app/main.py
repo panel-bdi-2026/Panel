@@ -310,7 +310,7 @@ def scan_signals(force: bool = False):
     if not force and cached_at and (now - cached_at).total_seconds() < SIGNAL_CACHE_TTL_SECONDS:
         return {"as_of": cached_at, "cached": True, "results": signal_cache["results"]}
     try:
-        results = screener.scan()
+        results = screener.scan(force=force)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Error al escanear el mercado: {exc}")
     signal_cache["as_of"] = now
@@ -351,7 +351,7 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
             status_code=422,
             detail="No se pudo obtener un precio de referencia para validar la orden. Usa una orden LMT con precio definido.",
         )
-    trades_today = audit.count_trades_today()
+    trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
 
     decision = rules_engine.evaluate(
         order=order,

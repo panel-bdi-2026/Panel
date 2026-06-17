@@ -31,7 +31,7 @@ def _bars(close_values, volume=5_000_000):
 # Series sinteticas (140 dias, sin red): MOM sube con fuerza relativa clara vs
 # el benchmark; WEAK avanza apenas por encima del benchmark; BROKEN esta en
 # clara tendencia bajista; ILLIQUID tiene el mismo precio que MOM pero volumen
-# por debajo del minimo de liquidez configurado.
+# en dolares (precio x volumen) por debajo del minimo de liquidez configurado.
 MOM_CLOSE = _series(140, 0.25, 3, 4)
 WEAK_CLOSE = _series(140, 0.02, 1, 3)
 BROKEN_CLOSE = _series(140, -0.25, -2, 4, base=160.0)
@@ -41,14 +41,14 @@ FAKE_BARS = {
     "MOM": _bars(MOM_CLOSE),
     "WEAK": _bars(WEAK_CLOSE),
     "BROKEN": _bars(BROKEN_CLOSE),
-    "ILLIQUID": _bars(MOM_CLOSE, volume=10_000),
+    "ILLIQUID": _bars(MOM_CLOSE, volume=1_000),
     "SPY": _bars(BENCH_CLOSE),
 }
 
 
 @pytest.fixture
 def patched_market_data(monkeypatch):
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, force=False):
         if symbol not in FAKE_BARS:
             raise MarketDataError(f"sin datos sinteticos para {symbol}")
         return FAKE_BARS[symbol]
@@ -107,7 +107,7 @@ def test_stop_loss_is_below_last_price(screener):
 
 
 def test_scan_raises_when_no_symbol_has_data(monkeypatch):
-    def always_fails(symbol, lookback_days):
+    def always_fails(symbol, lookback_days, force=False):
         raise MarketDataError("sin red en este entorno")
 
     monkeypatch.setattr(screener_module, "get_daily_bars", always_fails)

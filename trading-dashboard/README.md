@@ -63,15 +63,29 @@ solo con este backend (REST + WebSocket), nunca directo con IBKR.
    ejecuta sola. Tú apruebas o rechazas desde el dashboard.
 5. **Kill switch.** El botón "Pausar trading" del dashboard bloquea cualquier
    orden nueva de inmediato. También se activa solo si la pérdida del día
-   alcanza `daily_loss_limit_pct`.
+   alcanza `daily_loss_limit_pct` — tanto al evaluar una orden nueva como de
+   forma continua en background (no hace falta enviar una orden para que el
+   backend note que se llegó al límite y pause el trading).
 6. **Stop-loss obligatorio en compras** (configurable, pero viene activo por
-   defecto) y con un tope de riesgo (`max_stop_loss_pct`) para que nadie meta
-   un stop tan lejano que no proteja nada.
-7. **Auditoría inmutable.** Cada intento de orden (aprobada, rechazada,
+   defecto), con un tope de riesgo (`max_stop_loss_pct`), y verificación de
+   que IBKR lo aceptó: si el stop-loss es rechazado/cancelado por el broker
+   después de enviar la orden padre, el backend lo trata como una falla
+   crítica (no como una orden exitosa) y queda registrado en la auditoría.
+7. **Short selling deshabilitado por defecto** (`allow_short_selling`): una
+   orden que dejaría una posición en negativo se rechaza, para evitar quedar
+   corto por error de cantidad o de símbolo.
+8. **Auditoría inmutable.** Cada intento de orden (aprobada, rechazada,
    pendiente, ejecutada) queda en `audit.db` con timestamp y el resultado
    completo de la evaluación de reglas.
-8. **Endpoints que mueven dinero o cambian reglas requieren `X-API-Key`**
-   (enviar/aprobar/rechazar órdenes, cambiar `rules.yaml`, pausar/reanudar).
+9. **Endpoints que mueven dinero, cambian reglas o leen datos de la cuenta
+   requieren `X-API-Key`** (enviar/aprobar/rechazar órdenes, cambiar
+   `rules.yaml`, pausar/reanudar, y también leer cuenta/posiciones/auditoría —
+   nada de eso es público en la red local). El WebSocket de actualizaciones en
+   vivo pide la misma key como `?api_key=` en la URL, ya que el navegador no
+   puede mandar headers personalizados en el handshake.
+10. **El estado (`halted`, `mode`, órdenes pendientes) persiste en
+    `state.json`** y sobrevive a un reinicio del backend — un reinicio no
+    vuelve a dejar el trading activo silenciosamente si lo habías pausado.
 
 Ninguna de estas reglas reemplaza tu propio criterio. Esto no es una
 recomendación de inversión ni una garantía de que una orden "aprobada" sea una
@@ -88,6 +102,7 @@ buena idea — solo que respeta los límites que tú configuraste.
 | `max_trades_per_day` | Tope de operaciones ejecutadas por día. |
 | `require_stop_loss_on_buy` | Exige stop-loss en toda compra. |
 | `max_stop_loss_pct` | Riesgo máximo aceptado en ese stop-loss. |
+| `allow_short_selling` | Si es `false` (default), rechaza órdenes que dejarían una posición en negativo. |
 | `manual_approval_threshold_usd` | Por encima de este monto, la orden queda pendiente de tu aprobación. |
 | `allow_extended_hours` / `trading_hours_*` | Restringe operar a horario regular de mercado. |
 
@@ -109,8 +124,11 @@ tamaño, todo aplica igual.
   por símbolo para no agotar la cuota en cada refresh del dashboard.
 - **Señal**: combina momentum a 3 y 1 meses, fuerza relativa contra `SPY`,
   filtro de tendencia (precio > SMA20 > SMA50), RSI en una zona "sana" (ni
-  sobrecomprado ni rompiendo a la baja) y un piso de liquidez. El stop-loss
-  sugerido se calcula con ATR(14).
+  sobrecomprado ni rompiendo a la baja) y un piso de liquidez en **dólares**
+  (`min_avg_dollar_volume`: volumen promedio 20 días × precio, no cantidad de
+  acciones — así una acción barata no pasa el filtro solo por moverse en
+  volúmenes altos de acciones baratas). El stop-loss sugerido se calcula con
+  ATR(14).
 - **Backtest** (`GET /api/signals/backtest`): corre la misma lógica de
   entrada/salida sobre la historia del universo configurado y devuelve
   métricas (win rate, profit factor, retorno acumulado vs. `SPY`, max

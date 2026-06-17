@@ -18,6 +18,7 @@ class RulesConfig(BaseModel):
     max_trades_per_day: int = 10
     require_stop_loss_on_buy: bool = True
     max_stop_loss_pct: float = 5
+    allow_short_selling: bool = False
     manual_approval_threshold_usd: float = 1000
     allow_extended_hours: bool = False
     trading_hours_start: str = "09:30"
@@ -109,9 +110,20 @@ class RulesEngine:
                 ),
             ))
 
+        signed_qty = order.quantity if order.side == Side.BUY else -order.quantity
+        resulting_qty = current_position_qty + signed_qty
+
+        if not self.config.allow_short_selling and resulting_qty < 0:
+            violations.append(RuleViolation(
+                rule="allow_short_selling",
+                message=(
+                    f"La orden dejaria una posicion corta ({resulting_qty:g}) en "
+                    f"{order.symbol}. El short selling esta deshabilitado "
+                    "(allow_short_selling=false)."
+                ),
+            ))
+
         if account.net_liquidation > 0:
-            signed_qty = order.quantity if order.side == Side.BUY else -order.quantity
-            resulting_qty = current_position_qty + signed_qty
             resulting_value = abs(resulting_qty) * price
             position_pct = (resulting_value / account.net_liquidation) * 100
             if position_pct > self.config.max_position_pct_of_equity:

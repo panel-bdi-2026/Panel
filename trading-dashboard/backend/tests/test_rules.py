@@ -116,3 +116,19 @@ def test_sell_does_not_require_stop_loss(engine):
     order = buy_order(side=Side.SELL, stop_loss_price=None, quantity=1)
     decision = engine.evaluate(order, make_account(), 1, 200, 0, False)
     assert decision.approved
+
+
+def test_rejects_short_selling_by_default(engine):
+    # No hay posicion previa: vender 1 dejaria la posicion en -1 (short).
+    order = buy_order(side=Side.SELL, stop_loss_price=None, quantity=1)
+    decision = engine.evaluate(order, make_account(), 0, 200, 0, False)
+    assert not decision.approved
+    assert any(v.rule == "allow_short_selling" for v in decision.violations)
+
+
+def test_allows_short_selling_when_enabled():
+    config = RulesConfig(symbol_whitelist=["AAPL"], allow_extended_hours=True, allow_short_selling=True)
+    engine = RulesEngine(config)
+    order = buy_order(side=Side.SELL, stop_loss_price=None, quantity=1)
+    decision = engine.evaluate(order, make_account(), 0, 200, 0, False)
+    assert decision.approved
