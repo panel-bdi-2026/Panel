@@ -72,6 +72,7 @@ class PendingOrder(BaseModel):
     decision: OrderDecision
     created_at: datetime
     status: str = "pending"  # pending | approved | rejected | executed
+    source: str = "user"  # user | signal_engine
 
 
 class SignalResult(BaseModel):

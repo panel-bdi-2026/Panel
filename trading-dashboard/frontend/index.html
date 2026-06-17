@@ -361,6 +361,7 @@ async function refreshPending(){
     if(!pending.length){ body.innerHTML = '<div class="empty">No hay órdenes pendientes</div>'; return; }
     body.innerHTML = pending.map(p => `
       <div class="pending-item">
+        ${p.source === 'signal_engine' ? '<span title="Generada automaticamente por el escaneo proactivo">🤖 Señal automática</span><br>' : ''}
         <b>${p.order.side} ${p.order.quantity} ${p.order.symbol}</b>
         · valor estimado ${fmtUsd(p.decision.estimated_value_usd)}
         ${p.order.stop_loss_price ? ' · stop-loss ' + fmtUsd(p.order.stop_loss_price) : ''}
@@ -527,6 +528,13 @@ function connectWs(){
           if(msg.positions){
             renderPositions(msg.positions);
           }
+        }
+        if(msg.type === 'signal_alert'){
+          const symbols = msg.new_signals.map(s => s.symbol).join(', ');
+          const draftedCount = msg.drafted_orders.length;
+          toast(`🤖 Señal nueva: ${symbols}. ${draftedCount} orden(es) en borrador para tu aprobación.`, 7000);
+          refreshPending();
+          refreshAudit();
         }
       }catch(e){}
     };

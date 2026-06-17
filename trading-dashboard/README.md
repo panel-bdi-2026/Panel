@@ -86,6 +86,12 @@ solo con este backend (REST + WebSocket), nunca directo con IBKR.
 10. **El estado (`halted`, `mode`, órdenes pendientes) persiste en
     `state.json`** y sobrevive a un reinicio del backend — un reinicio no
     vuelve a dejar el trading activo silenciosamente si lo habías pausado.
+11. **El escaneo proactivo nunca ejecuta nada por sí solo.** Si lo habilitás
+    (`auto_scan_enabled` en `screener.yaml`), detecta señales nuevas en
+    background y arma órdenes de compra en *borrador* — pasan por el mismo
+    `RulesEngine` que cualquier orden y siempre quedan en la cola de
+    aprobación manual, sin importar su valor estimado. Ver "Escaneo proactivo
+    y órdenes en borrador automáticas" más abajo.
 
 Ninguna de estas reglas reemplaza tu propio criterio. Esto no es una
 recomendación de inversión ni una garantía de que una orden "aprobada" sea una
@@ -177,6 +183,41 @@ Esto no es una recomendación de inversión ni un sistema que garantice ganarle
 al mercado — es una herramienta de screening con una metodología transparente
 que tú puedes auditar, ajustar y poner a prueba con el backtest antes de
 arriesgar capital real.
+
+### Escaneo proactivo y órdenes en borrador automáticas
+
+Por defecto el radar de oportunidades es "pull": solo escanea cuando abres el
+dashboard o pedís `GET /api/signals/scan`. Con `auto_scan_enabled: true` en
+`screener.yaml` el backend además corre el mismo escáner solo, en background,
+cada `auto_scan_interval_minutes` (30 por defecto):
+
+- Detecta **transiciones**: un símbolo que antes no pasaba los filtros del
+  screener y en este ciclo sí. No vuelve a avisar de un símbolo que ya viene
+  pasando los filtros desde el ciclo anterior — solo de cambios de estado.
+  El primer ciclo después de arrancar el backend (o después de cambiar
+  `screener.yaml`) no genera avisos: solo establece la base de qué símbolos
+  pasan, para no inundar la cola de pendientes con todo lo que ya venía
+  pasando antes de que el backend arrancara.
+- Por cada símbolo nuevo, arma una orden de **compra** en borrador (LMT al
+  último precio, con el stop-loss sugerido por ATR), sizeada por riesgo con
+  el mismo cálculo que `GET /api/orders/size-suggestion`
+  (`RulesEngine.suggested_quantity`), y la pasa por
+  `RulesEngine.evaluate()` — las mismas reglas que cualquier otra orden
+  (whitelist, stop-loss, límites de tamaño, horario, kill switch, etc.). Si
+  la rechaza alguna regla, no se crea el borrador.
+- El borrador **siempre** queda en la cola de aprobación manual
+  (`GET /api/orders/pending`), sin importar si su valor está por debajo de
+  `manual_approval_threshold_usd`: una orden generada sin intervención
+  humana nunca se ejecuta sola. Se distingue de las que armás vos a mano por
+  el campo `source: "signal_engine"` (vs. `"user"`), y el dashboard la marca
+  con 🤖.
+- No arma un borrador si ya tenés una posición abierta en ese símbolo, o si
+  ya hay una orden pendiente (de cualquier origen) para ese símbolo.
+- Mientras el trading está pausado (`halted`) o el backend no está conectado
+  a IBKR, el ciclo no hace nada (ni siquiera escanea).
+- Cada ciclo nuevo te avisa por el WebSocket (`type: "signal_alert"`, con
+  `new_signals` y `drafted_orders`) y el dashboard muestra un toast con los
+  símbolos detectados y cuántos borradores se crearon.
 
 ## Instalación
 

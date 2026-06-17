@@ -89,3 +89,10 @@ backtest_years: 3
 backtest_assumed_capital_usd: 100000
 commission_per_trade_usd: 1.0
 slippage_pct: 0.05
+
+# Escaneo proactivo en background: si esta habilitado, el backend corre el
+# screener solo cada auto_scan_interval_minutes y arma ordenes de compra en
+# borrador para simbolos que recien empiezan a pasar los filtros. Esas
+# ordenes quedan pendientes de aprobacion manual, nunca se ejecutan solas.
+auto_scan_enabled: false
+auto_scan_interval_minutes: 30

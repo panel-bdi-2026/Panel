@@ -18,7 +18,7 @@ from .backtest import BacktestError, run_backtest
 from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
 from .market_data import MarketDataError
-from .models import OrderRequest, PendingOrder
+from .models import OrderRequest, OrderType, PendingOrder, SignalResult, Side
 from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
 from .screener_config import ScreenerConfig
@@ -53,6 +53,14 @@ clients: list[WebSocket] = []
 SIGNAL_CACHE_TTL_SECONDS = 900  # evita re-escanear el mercado en cada refresh
 signal_cache: dict = {"as_of": None, "results": []}
 
+# Recuerda que simbolos pasaban los filtros del screener en el ultimo ciclo del
+# scan proactivo, para poder detectar TRANSICIONES (no pasaba -> pasa) en vez
+# de redraftear el mismo simbolo en cada ciclo mientras siga pasando. None
+# significa "todavia no hay base": el primer ciclo solo la establece, sin
+# generar borradores, para no inundar la cola de pendientes apenas arranca el
+# backend o se cambia la config del screener.
+_signal_state: dict = {"previously_passing": None}
+
 
 def _persist_state() -> None:
     save_state(settings.state_path, {
@@ -71,6 +79,17 @@ def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="API key invalida.")
 
 
+async def _broadcast(payload: dict) -> None:
+    dead = []
+    for ws in clients:
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        clients.remove(ws)
+
+
 async def _broadcast_loop() -> None:
     while True:
         await asyncio.sleep(settings.poll_interval_seconds)
@@ -84,14 +103,122 @@ async def _broadcast_loop() -> None:
             }
         except Exception as exc:
             payload = {"type": "error", "message": str(exc)}
-        dead = []
-        for ws in clients:
-            try:
-                await ws.send_json(payload)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            clients.remove(ws)
+        await _broadcast(payload)
+
+
+def _draft_order_from_signal(result: SignalResult) -> PendingOrder | None:
+    """Convierte una señal recien pasada a passes_filters=True en una orden de
+    compra en borrador, sizeada por riesgo via RulesEngine.suggested_quantity().
+
+    Se salta el draft (sin loggear error, es esperable que pase seguido) si ya
+    hay una posicion abierta o una orden pendiente en ese simbolo, o si el
+    sizing por riesgo da cantidad cero (sin equity/cuenta no conectada).
+
+    Importante: el draft SIEMPRE queda en pending_orders para aprobacion
+    manual, sin importar lo que diga decision.requires_manual_approval. Una
+    orden generada sin intervencion humana nunca debe poder ejecutarse sola,
+    aunque su valor este por debajo de manual_approval_threshold_usd.
+    """
+    symbol = result.symbol
+    if any(p.order.symbol == symbol for p in state["pending_orders"].values()):
+        return None
+
+    position_qty = broker.get_position_qty(symbol)
+    if position_qty != 0:
+        return None
+
+    account_summary = broker.get_account_summary()
+    sizing = rules_engine.suggested_quantity(
+        account_summary, position_qty, result.last_price, result.suggested_stop_loss_price
+    )
+    if sizing.quantity <= 0:
+        return None
+
+    order = OrderRequest(
+        symbol=symbol,
+        side=Side.BUY,
+        quantity=sizing.quantity,
+        order_type=OrderType.LMT,
+        limit_price=result.last_price,
+        stop_loss_price=result.suggested_stop_loss_price,
+    )
+    trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
+    decision = rules_engine.evaluate(
+        order=order,
+        account=account_summary,
+        current_position_qty=position_qty,
+        reference_price=result.last_price,
+        trades_today=trades_today,
+        halted=state["halted"],
+    )
+    if not decision.approved:
+        audit.record("signal_order_rejected", order.model_dump(), decision.model_dump())
+        return None
+
+    pending_id = str(uuid.uuid4())
+    pending = PendingOrder(
+        id=pending_id,
+        order=order,
+        decision=decision,
+        created_at=datetime.now(timezone.utc),
+        source="signal_engine",
+    )
+    state["pending_orders"][pending_id] = pending
+    _persist_state()
+    audit.record("signal_order_drafted", order.model_dump(), {"id": pending_id, "score": result.score})
+    return pending
+
+
+async def _run_signal_scan_cycle() -> None:
+    """Un ciclo del escaneo proactivo: corre el screener, detecta simbolos que
+    recien empiezan a pasar los filtros (transicion no-pasa -> pasa) y les
+    arma una orden de compra en borrador (ver _draft_order_from_signal).
+
+    Separado de _signal_scan_loop (que solo aporta el sleep + while True) para
+    poder testear un ciclo de una sola vez sin lidiar con un loop infinito.
+    """
+    if not screener_config.auto_scan_enabled or state["halted"] or not state["connected"]:
+        return
+    try:
+        results = await asyncio.to_thread(screener.scan)
+    except Exception as exc:
+        audit.record("signal_scan_failed", {}, {"error": str(exc)})
+        return
+
+    top_results = results[: screener_config.top_n]
+    passing_now = {r.symbol for r in top_results if r.passes_filters}
+    previously_passing = _signal_state["previously_passing"]
+
+    if previously_passing is None:
+        # Primer ciclo: solo establece la base. Sin esto, cada simbolo que ya
+        # viniera pasando los filtros desde antes de que arrancara el backend
+        # (o desde el ultimo cambio de config) se draftearia de una al primer
+        # ciclo, en vez de solo los que cambian de estado.
+        _signal_state["previously_passing"] = passing_now
+        return
+
+    new_symbols = passing_now - previously_passing
+    _signal_state["previously_passing"] = passing_now
+    if not new_symbols:
+        return
+
+    new_signals = [r for r in top_results if r.symbol in new_symbols]
+    drafted = [p for p in (_draft_order_from_signal(r) for r in new_signals) if p is not None]
+
+    await _broadcast({
+        "type": "signal_alert",
+        "new_signals": [r.model_dump() for r in new_signals],
+        "drafted_orders": [p.model_dump() for p in drafted],
+    })
+
+
+async def _signal_scan_loop() -> None:
+    """Escaneo proactivo en background: a diferencia de /api/signals/scan (que
+    solo corre cuando alguien abre el dashboard), este loop corre solo cada
+    auto_scan_interval_minutes."""
+    while True:
+        await asyncio.sleep(screener_config.auto_scan_interval_minutes * 60)
+        await _run_signal_scan_cycle()
 
 
 async def _risk_monitor_loop() -> None:
@@ -159,9 +286,11 @@ async def lifespan(app: FastAPI):
     await _restore_persisted_mode()
     task = asyncio.create_task(_broadcast_loop())
     risk_task = asyncio.create_task(_risk_monitor_loop())
+    signal_task = asyncio.create_task(_signal_scan_loop())
     yield
     task.cancel()
     risk_task.cancel()
+    signal_task.cancel()
     broker.disconnect()
 
 
@@ -300,6 +429,11 @@ def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_k
     screener_config = ScreenerConfig(**body.config)
     screener_config.save(settings.screener_path)
     screener.reload(screener_config)
+    # Tras un cambio manual de config, los filtros pudieron cambiar por
+    # completo: se descarta la base de simbolos "pasando" para que el proximo
+    # ciclo del scan proactivo no trate la config nueva como transiciones
+    # reales (vuelve a ser un primer ciclo, solo establece base).
+    _signal_state["previously_passing"] = None
     audit.record("screener_config_updated", body.config, {})
     return screener_config.model_dump()
 

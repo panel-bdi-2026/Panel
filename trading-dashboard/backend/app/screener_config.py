@@ -65,6 +65,15 @@ class ScreenerConfig(BaseModel):
     commission_per_trade_usd: float = 1.0
     slippage_pct: float = 0.05
 
+    # Escaneo proactivo en background: si esta habilitado, el backend corre el
+    # screener solo (sin que el usuario abra el dashboard) cada
+    # auto_scan_interval_minutes y arma ordenes de compra en borrador para
+    # simbolos que recien empiezan a pasar los filtros (transicion no-pasa ->
+    # pasa). Esas ordenes quedan en la cola de aprobacion manual igual que
+    # cualquier otra: el motor nunca ejecuta nada por si solo.
+    auto_scan_enabled: bool = False
+    auto_scan_interval_minutes: int = 30
+
     @classmethod
     def load(cls, path: Path) -> "ScreenerConfig":
         if not path.exists():
