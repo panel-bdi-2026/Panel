@@ -73,6 +73,13 @@ class ScreenerConfig(BaseModel):
     # cualquier otra: el motor nunca ejecuta nada por si solo.
     auto_scan_enabled: bool = False
     auto_scan_interval_minutes: int = 30
+    # Tope de ordenes en borrador que el escaneo proactivo puede crear en un
+    # solo ciclo. Si el regimen de mercado se vuelve alcista de golpe, decenas
+    # de simbolos pueden pasar a cumplir los filtros a la vez; sin este tope se
+    # draftearian todas juntas, cada una sizeada como si fuera la unica
+    # posicion. Ademas del tope, no se draftea mas alla de los "cupos" libres
+    # respecto a top_n contando lo que ya esta pendiente.
+    max_auto_drafts_per_cycle: int = 3
 
     @classmethod
     def load(cls, path: Path) -> "ScreenerConfig":

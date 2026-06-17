@@ -96,3 +96,8 @@ slippage_pct: 0.05
 # ordenes quedan pendientes de aprobacion manual, nunca se ejecutan solas.
 auto_scan_enabled: false
 auto_scan_interval_minutes: 30
+
+# Tope de ordenes en borrador que el escaneo proactivo puede crear por ciclo
+# (ademas no draftea mas alla de los cupos libres respecto a top_n contando lo
+# que ya esta pendiente). Evita inundar la cola si muchos simbolos pasan a la vez.
+max_auto_drafts_per_cycle: 3

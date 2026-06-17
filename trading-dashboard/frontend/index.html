@@ -336,15 +336,18 @@ async function toggleHalt(){
   }
 }
 
+function renderAccount(a){
+  document.getElementById('kv-netliq').textContent = fmtUsd(a.net_liquidation);
+  document.getElementById('kv-cash').textContent = fmtUsd(a.cash);
+  document.getElementById('kv-bp').textContent = fmtUsd(a.buying_power);
+  const pnlEl = document.getElementById('kv-pnl');
+  pnlEl.textContent = `${fmtUsd(a.daily_pnl)} (${(a.daily_pnl_pct ?? 0).toFixed(2)}%)`;
+  pnlEl.className = 'kpi-val ' + ((a.daily_pnl || 0) >= 0 ? 'pos' : 'neg');
+}
+
 async function refreshAccount(){
   try{
-    const a = await api('/api/account', { auth:true });
-    document.getElementById('kv-netliq').textContent = fmtUsd(a.net_liquidation);
-    document.getElementById('kv-cash').textContent = fmtUsd(a.cash);
-    document.getElementById('kv-bp').textContent = fmtUsd(a.buying_power);
-    const pnlEl = document.getElementById('kv-pnl');
-    pnlEl.textContent = `${fmtUsd(a.daily_pnl)} (${a.daily_pnl_pct.toFixed(2)}%)`;
-    pnlEl.className = 'kpi-val ' + (a.daily_pnl >= 0 ? 'pos' : 'neg');
+    renderAccount(await api('/api/account', { auth:true }));
   }catch(e){ /* no conectado aún */ }
 }
 
@@ -539,9 +542,7 @@ function connectWs(){
         const msg = JSON.parse(ev.data);
         if(msg.type === 'update'){
           if(msg.account){
-            document.getElementById('kv-netliq').textContent = fmtUsd(msg.account.net_liquidation);
-            document.getElementById('kv-cash').textContent = fmtUsd(msg.account.cash);
-            document.getElementById('kv-bp').textContent = fmtUsd(msg.account.buying_power);
+            renderAccount(msg.account);
           }
           if(msg.positions){
             renderPositions(msg.positions);
@@ -562,18 +563,18 @@ function connectWs(){
 
 async function refreshAll(){
   await refreshStatus();
-  await refreshAccount();
-  // Las posiciones no se re-piden por REST en cada ciclo: el WS ya las empuja
-  // cada poll_interval_seconds via mensajes 'update' (ver renderPositions en
-  // ws.onmessage). Pedirlas tambien por REST cada 8s duplicaba llamadas al
-  // broker sin necesidad.
+  // La cuenta (KPIs, incluido P&L del dia) y las posiciones llegan por el WS
+  // (mensaje 'update' cada poll_interval_seconds, ver renderAccount/
+  // renderPositions en ws.onmessage). No se re-piden por REST en el ciclo
+  // periodico para no duplicar llamadas al broker.
   await refreshPending();
   await refreshAudit();
 }
 
 onTypeChange();
 refreshAll();
-refreshPositions();
+refreshAccount();    // carga inicial; despues el WS la mantiene en vivo
+refreshPositions();  // carga inicial; despues el WS las mantiene en vivo
 scanSignals(false);
 connectWs();
 setInterval(refreshAll, 8000);

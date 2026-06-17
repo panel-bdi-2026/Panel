@@ -202,7 +202,15 @@ async def _run_signal_scan_cycle() -> None:
     if not new_symbols:
         return
 
+    # new_signals queda ordenado por score (top_results ya viene ordenado), asi
+    # que al recortar por el cap se conservan las señales mas fuertes. El cap es
+    # el menor entre el tope por ciclo y los cupos libres respecto a top_n
+    # (contando lo que ya esta pendiente), para no sobre-asignar la cartera de
+    # un golpe. Errar hacia MENOS ordenes automaticas es el lado seguro.
     new_signals = [r for r in top_results if r.symbol in new_symbols]
+    free_slots = max(0, screener_config.top_n - len(state["pending_orders"]))
+    cap = min(screener_config.max_auto_drafts_per_cycle, free_slots)
+    new_signals = new_signals[:cap]
     drafted = [p for p in (_draft_order_from_signal(r) for r in new_signals) if p is not None]
 
     await _broadcast({

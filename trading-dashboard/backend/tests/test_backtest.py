@@ -195,3 +195,41 @@ def test_regime_filter_blocks_entries_when_benchmark_below_regime_sma(monkeypatc
     )
     with pytest.raises(BacktestError):
         run_backtest(config)
+
+
+def _trade(symbol, entry_day, exit_day, return_pct=1.0):
+    from datetime import datetime, timezone
+    from app.models import BacktestTrade
+    return BacktestTrade(
+        symbol=symbol,
+        entry_date=datetime(2024, 1, entry_day, tzinfo=timezone.utc),
+        exit_date=datetime(2024, 1, exit_day, tzinfo=timezone.utc),
+        entry_price=100.0,
+        exit_price=100.0 * (1 + return_pct / 100),
+        return_pct=return_pct,
+        exit_reason="max_holding_days",
+    )
+
+
+def test_cap_concurrent_positions_limits_simultaneous_trades():
+    from app.backtest import cap_concurrent_positions
+    # 3 operaciones que se solapan completamente (todas abiertas dia 1-10) con
+    # top_n=2: solo entran las dos primeras, la tercera no tiene cupo.
+    trades = [_trade("A", 1, 10), _trade("B", 1, 10), _trade("C", 1, 10)]
+    taken = cap_concurrent_positions(trades, top_n=2)
+    assert [t.symbol for t in taken] == ["A", "B"]
+
+
+def test_cap_concurrent_positions_reuses_freed_slot():
+    from app.backtest import cap_concurrent_positions
+    # A ocupa el unico cupo dias 1-5; cuando cierra, D (que entra dia 6) puede
+    # tomarlo. B y C se solapan con A y quedan afuera con top_n=1.
+    trades = [_trade("A", 1, 5), _trade("B", 2, 4), _trade("C", 3, 4), _trade("D", 6, 9)]
+    taken = cap_concurrent_positions(trades, top_n=1)
+    assert [t.symbol for t in taken] == ["A", "D"]
+
+
+def test_cap_concurrent_positions_no_cap_when_top_n_invalid():
+    from app.backtest import cap_concurrent_positions
+    trades = [_trade("A", 1, 10), _trade("B", 1, 10)]
+    assert len(cap_concurrent_positions(trades, top_n=0)) == 2

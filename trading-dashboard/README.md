@@ -178,11 +178,13 @@ tamaño, todo aplica igual.
   de apertura (peor que el stop), no el cierre del día. El `sharpe_ratio` se
   aproxima a partir de los retornos por operación (no de una curva de equity
   diaria), así que no es comparable 1:1 con un Sharpe calculado sobre
-  retornos diarios; es `None` si hay menos de 2 operaciones. Sigue siendo
-  deliberadamente simple en otros aspectos — la curva de equity asume capital
-  igualmente repartido entre operaciones de forma secuencial, no concurrencia
-  real de posiciones. Sirve para validar la dirección de la idea, no como
-  promesa de resultados futuros.
+  retornos diarios; es `None` si hay menos de 2 operaciones. Limita las
+  posiciones abiertas a la vez a `top_n` (descarta las señales que no
+  tendrían cupo libre, como en la operatoria real), y pondera cada operación
+  como `1/top_n` del capital. Sigue siendo deliberadamente simple en otros
+  aspectos — no modela el efecto del cash sin invertir cuando hay menos de
+  `top_n` posiciones abiertas. Sirve para validar la dirección de la idea, no
+  como promesa de resultados futuros.
 - **Endpoints**: `GET /api/signals/scan` (lista rankeada, cacheada),
   `GET /api/signals/backtest`, `GET/PUT /api/signals/config` (el `PUT`
   requiere `X-API-Key`, igual que `/api/rules`).
@@ -223,6 +225,12 @@ cada `auto_scan_interval_minutes` (30 por defecto):
   con 🤖.
 - No arma un borrador si ya tenés una posición abierta en ese símbolo, o si
   ya hay una orden pendiente (de cualquier origen) para ese símbolo.
+- **Tope por ciclo**: como mucho draftea `max_auto_drafts_per_cycle` (3 por
+  defecto) órdenes en un solo ciclo, y nunca más allá de los cupos libres
+  respecto a `top_n` contando lo que ya está pendiente. Si muchos símbolos
+  pasan a la vez (ej. el régimen se vuelve alcista de golpe), se quedan los de
+  mayor score; el resto no se draftea (errar hacia menos órdenes automáticas
+  es el lado seguro).
 - Mientras el trading está pausado (`halted`) o el backend no está conectado
   a IBKR, el ciclo no hace nada (ni siquiera escanea).
 - Cada ciclo nuevo te avisa por el WebSocket (`type: "signal_alert"`, con
@@ -323,11 +331,11 @@ rojo permanente mientras `mode=live`.
 - Los datos del screener/backtest vienen de Yahoo Finance via `yfinance`: no
   oficial, gratis, con límites de uso y sin SLA. Si falla o te quedas sin
   cuota, el dashboard lo informa en vez de inventar datos.
-- El backtest es simplificado: aunque modela comisión, slippage y un fill de
-  stop-loss realista (mínimo intradiario, no el cierre), no rastrea
-  concurrencia real de posiciones (asume capital repartido secuencialmente
-  entre operaciones) y su Sharpe ratio es una aproximación por operación, no
-  el cálculo estándar sobre una curva de equity diaria — útil para validar la
-  dirección de la idea, no para proyectar retornos.
+- El backtest es simplificado: modela comisión, slippage, un fill de
+  stop-loss realista (mínimo intradiario, no el cierre) y un tope de `top_n`
+  posiciones concurrentes, pero no modela el efecto del cash ocioso cuando hay
+  menos de `top_n` posiciones abiertas, y su Sharpe ratio es una aproximación
+  por operación, no el cálculo estándar sobre una curva de equity diaria —
+  útil para validar la dirección de la idea, no para proyectar retornos.
 - Pensado para uso personal/un solo usuario; no implementa multiusuario ni
   roles.

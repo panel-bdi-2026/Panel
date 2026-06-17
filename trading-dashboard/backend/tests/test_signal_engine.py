@@ -204,3 +204,57 @@ def test_update_screener_config_resets_signal_baseline():
     body = main_module.ScreenerUpdate(config=main_module.screener_config.model_dump())
     main_module.update_screener_config(body, None)
     assert main_module._signal_state["previously_passing"] is None
+
+
+def test_signal_scan_cycle_caps_drafts_per_cycle(monkeypatch):
+    main_module.screener_config.auto_scan_enabled = True
+    main_module.screener_config.top_n = 10
+    main_module.screener_config.max_auto_drafts_per_cycle = 3
+    main_module._signal_state["previously_passing"] = set()  # base ya establecida
+    main_module.rules_engine.reload(RulesConfig(
+        symbol_whitelist=["S0", "S1", "S2", "S3", "S4"],
+        allow_extended_hours=True,
+        manual_approval_threshold_usd=1_000_000,
+    ))
+    # 5 simbolos transicionan a "pasa" en el mismo ciclo, ordenados por score
+    # descendente (S0 el mas fuerte). Con el tope de 3, solo se draftean los 3
+    # mejores.
+    signals = [make_signal(symbol=f"S{i}", score=10 - i, passes=True) for i in range(5)]
+    monkeypatch.setattr(main_module.screener, "scan", lambda: signals)
+
+    asyncio.run(main_module._run_signal_scan_cycle())
+
+    drafted = list(main_module.state["pending_orders"].values())
+    assert len(drafted) == 3
+    assert {p.order.symbol for p in drafted} == {"S0", "S1", "S2"}
+
+
+def test_signal_scan_cycle_respects_free_slots_vs_top_n(monkeypatch):
+    main_module.screener_config.auto_scan_enabled = True
+    main_module.screener_config.top_n = 2
+    main_module.screener_config.max_auto_drafts_per_cycle = 5
+    main_module._signal_state["previously_passing"] = set()
+    main_module.rules_engine.reload(RulesConfig(
+        symbol_whitelist=["S0", "S1", "S2"],
+        allow_extended_hours=True,
+        manual_approval_threshold_usd=1_000_000,
+    ))
+    # Ya hay 1 orden pendiente: con top_n=2 solo queda 1 cupo libre, asi que
+    # aunque el tope por ciclo sea 5 y haya 3 señales nuevas, se draftea 1 sola.
+    existing = PendingOrder(
+        id="pending-x",
+        order=main_module.OrderRequest(symbol="ZZ", side=main_module.Side.BUY, quantity=1, stop_loss_price=90),
+        decision=OrderDecision(approved=True, requires_manual_approval=True, estimated_value_usd=100),
+        created_at=datetime.now(timezone.utc),
+        source="user",
+    )
+    main_module.state["pending_orders"]["pending-x"] = existing
+
+    signals = [make_signal(symbol=f"S{i}", score=10 - i, passes=True) for i in range(3)]
+    monkeypatch.setattr(main_module.screener, "scan", lambda: signals)
+
+    asyncio.run(main_module._run_signal_scan_cycle())
+
+    drafted = [p for p in main_module.state["pending_orders"].values() if p.source == "signal_engine"]
+    assert len(drafted) == 1
+    assert drafted[0].order.symbol == "S0"

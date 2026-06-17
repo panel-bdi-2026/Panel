@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from app.audit import AuditLog
 
@@ -17,8 +18,15 @@ def _insert_at(audit: AuditLog, action: str, ts: datetime) -> None:
 
 def test_counts_trade_executed_earlier_today_ny(tmp_path):
     audit = make_audit(tmp_path)
-    now_utc = datetime.now(timezone.utc)
-    _insert_at(audit, "order_executed", now_utc - timedelta(minutes=5))
+    # Se ancla a mediodia de NY de HOY (no a "now - 5 min"): si el test corre en
+    # los primeros minutos despues de la medianoche de NY, "5 minutos atras"
+    # caeria en el dia de trading de AYER y el conteo daria 0. Mediodia de NY de
+    # hoy siempre cae dentro de la ventana del dia de trading actual, corra a la
+    # hora que corra (antes el test era flaky alrededor de la medianoche de NY).
+    noon_ny = datetime.now(ZoneInfo("America/New_York")).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    )
+    _insert_at(audit, "order_executed", noon_ny.astimezone(timezone.utc))
     assert audit.count_trades_today("America/New_York") == 1
 
 

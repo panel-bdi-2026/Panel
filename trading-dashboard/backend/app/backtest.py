@@ -111,6 +111,25 @@ def _simulate_symbol(
     return trades
 
 
+def cap_concurrent_positions(trades: list[BacktestTrade], top_n: int) -> list[BacktestTrade]:
+    """Filtra una lista de operaciones a un maximo de top_n posiciones abiertas
+    a la vez, recorriendolas por fecha de entrada y descartando las que no
+    tendrian cupo libre (como en la operatoria real, donde no se pueden tener
+    mas de top_n posiciones simultaneas). Sin top_n valido devuelve la lista
+    intacta. Se asume que `trades` ya viene ordenada por fecha de entrada."""
+    if not top_n or top_n <= 0:
+        return list(trades)
+    taken: list[BacktestTrade] = []
+    open_exit_dates: list = []
+    for t in trades:
+        open_exit_dates = [d for d in open_exit_dates if d > t.entry_date]
+        if len(open_exit_dates) >= top_n:
+            continue  # sin cupo libre: en la realidad no se podria abrir
+        taken.append(t)
+        open_exit_dates.append(t.exit_date)
+    return taken
+
+
 def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     """Backtest simplificado de la estrategia momentum sobre el universo configurado.
 
@@ -155,6 +174,17 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
 
     all_trades.sort(key=lambda t: t.entry_date)
+
+    # Cartera con top_n cupos concurrentes: antes se contaba CADA señal de cada
+    # simbolo como una operacion, pero la curva de equity ponderaba cada una
+    # como 1/top_n. Con mas de top_n posiciones abiertas a la vez eso
+    # subrepresentaba el capital realmente usado e inflaba el retorno. Ahora se
+    # descartan las operaciones que no tendrian cupo libre (ver
+    # cap_concurrent_positions), igual que en la operatoria real.
+    all_trades = cap_concurrent_positions(all_trades, cfg.top_n)
+
+    if not all_trades:
+        raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
 
     returns = [t.return_pct for t in all_trades]
     wins = [r for r in returns if r > 0]
