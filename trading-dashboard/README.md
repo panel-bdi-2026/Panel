@@ -55,8 +55,16 @@ solo con este backend (REST + WebSocket), nunca directo con IBKR.
 2. **Toda orden pasa por el `RulesEngine`** (`backend/app/rules.py`) antes de
    llegar a IBKR. Si una sola regla falla, la orden se rechaza con el detalle
    de qué regla y por qué.
-3. **Lista blanca de símbolos vacía por defecto.** Sin excepción: si no agregas
-   símbolos a `symbol_whitelist` en `rules.yaml`, no se puede operar nada.
+3. **Lista blanca de símbolos sincronizada con el universo del screener.**
+   `symbol_whitelist` en `rules.yaml` ya no se mantiene a mano por separado:
+   el backend la sobrescribe automáticamente para que sea siempre igual al
+   `universe` de `screener.yaml` (el radar de oportunidades, ver más abajo),
+   tanto al arrancar como cada vez que cambiás esa config vía
+   `PUT /api/signals/config`. Así el screener puede identificar candidatos de
+   forma autónoma sobre todo el universo configurado sin que tengas que ir
+   agregando símbolos uno por uno. La traba de seguridad de fondo sigue
+   intacta: si el universo quedara vacío, la whitelist también queda vacía y
+   no se puede operar nada — sin excepción.
 4. **Aprobación manual por monto.** Aunque el modo de ejecución sea
    "automático", toda orden con valor estimado mayor a
    `manual_approval_threshold_usd` queda en una cola de pendientes — no se
@@ -132,7 +140,7 @@ buena idea — solo que respeta los límites que tú configuraste.
 
 | Campo | Qué hace |
 |---|---|
-| `symbol_whitelist` | Símbolos permitidos. Vacío = nada permitido. |
+| `symbol_whitelist` | Símbolos permitidos. Vacío = nada permitido. Se sobrescribe automáticamente con el `universe` de `screener.yaml`: editalo ahí, no acá. |
 | `max_order_value_usd` | Valor máximo (USD) de una orden individual. |
 | `max_position_pct_of_equity` | Tamaño máximo de una posición como % del NetLiquidation. |
 | `daily_loss_limit_pct` | Pérdida diaria que activa el kill switch automático. |
@@ -167,9 +175,23 @@ que decidas enviar a partir de un candidato pasa exactamente por el mismo
 `RulesEngine` que cualquier otra orden — whitelist, stop-loss, límites de
 tamaño, todo aplica igual.
 
+Por defecto `universe` es el **S&P 500 completo** (503 símbolos): el screener
+identifica oportunidades de forma autónoma en todo el índice en vez de
+depender de que vayas cargando a mano cuáles símbolos seguir. Como la
+whitelist de `rules.yaml` se sincroniza automáticamente con este universo
+(ver "Modelo de seguridad", punto 3), ampliarlo o recortarlo acá también
+cambia qué símbolos pueden operarse. Podés acortarlo en `screener.yaml` si
+preferís un universo más chico (escanea más rápido y consume menos cuota de
+la API gratuita de datos).
+
 - **Datos**: precios diarios via [`yfinance`](https://github.com/ranaroussi/yfinance)
   (Yahoo Finance no oficial, gratis, con límites de uso). Se cachean 15 min
-  por símbolo para no agotar la cuota en cada refresh del dashboard.
+  por símbolo para no agotar la cuota en cada refresh del dashboard. Durante
+  un scan se espera `scan_request_delay_seconds` (0.15s por defecto) entre
+  cada símbolo para no ráfagar la API con un universo grande — con el S&P 500
+  completo, un scan en frío (sin cache) tarda varios minutos. Subí ese valor
+  si ves errores de datos frecuentes; bajalo (0 está permitido) si usás un
+  universo chico.
 - **Señal**: combina momentum a 3 y 1 meses, fuerza relativa contra `SPY`,
   filtro de tendencia (precio > SMA20 > SMA50), RSI en una zona "sana" (ni
   sobrecomprado ni rompiendo a la baja) y un piso de liquidez en **dólares**

@@ -37,6 +37,22 @@ broker = IBKRBroker(settings.ib_host, settings.ib_port, settings.ib_client_id)
 screener_config = ScreenerConfig.load(settings.screener_path)
 screener = MomentumScreener(screener_config)
 
+
+def _sync_whitelist_with_universe() -> None:
+    """Mantiene `rules_config.symbol_whitelist` igual al `universe` del
+    screener: el radar de oportunidades ya elige el universo de forma
+    autonoma (ver screener.yaml), asi que la whitelist deja de mantenerse a
+    mano por separado y simplemente lo refleja. Si el universo quedara vacio,
+    la whitelist tambien queda vacia, y la traba de "lista blanca vacia
+    bloquea todo" en RulesEngine.evaluate() sigue aplicando igual."""
+    if rules_config.symbol_whitelist != screener_config.universe:
+        rules_config.symbol_whitelist = list(screener_config.universe)
+        rules_config.save(settings.rules_path)
+        rules_engine.reload(rules_config)
+
+
+_sync_whitelist_with_universe()
+
 funds_store = FundsStore(settings.funds_path)
 
 # Estado persistido (halted, mode, ordenes pendientes) para que sobreviva a un
@@ -627,6 +643,7 @@ def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_k
     screener_config = ScreenerConfig(**body.config)
     screener_config.save(settings.screener_path)
     screener.reload(screener_config)
+    _sync_whitelist_with_universe()
     # Tras un cambio manual de config, los filtros pudieron cambiar por
     # completo: se descarta la base de simbolos "pasando" para que el proximo
     # ciclo del scan proactivo no trate la config nueva como transiciones

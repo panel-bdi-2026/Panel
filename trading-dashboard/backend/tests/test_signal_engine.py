@@ -206,6 +206,28 @@ def test_update_screener_config_resets_signal_baseline():
     assert main_module._signal_state["previously_passing"] is None
 
 
+def test_update_screener_config_syncs_whitelist_with_universe():
+    new_universe = ["ZZZ", "YYY"]
+    config = main_module.screener_config.model_dump()
+    config["universe"] = new_universe
+    body = main_module.ScreenerUpdate(config=config)
+
+    main_module.update_screener_config(body, None)
+
+    assert main_module.rules_config.symbol_whitelist == new_universe
+    assert main_module.rules_engine.config.symbol_whitelist == new_universe
+
+
+def test_sync_whitelist_with_universe_is_noop_when_already_synced(monkeypatch):
+    main_module.rules_config.symbol_whitelist = list(main_module.screener_config.universe)
+    save_calls = []
+    monkeypatch.setattr(main_module.RulesConfig, "save", lambda self, path: save_calls.append(path))
+
+    main_module._sync_whitelist_with_universe()
+
+    assert save_calls == []
+
+
 def test_signal_scan_cycle_caps_drafts_per_cycle(monkeypatch):
     main_module.screener_config.auto_scan_enabled = True
     main_module.screener_config.top_n = 10

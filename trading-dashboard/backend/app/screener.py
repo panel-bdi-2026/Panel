@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -158,7 +159,12 @@ class MomentumScreener:
     def scan(self, force: bool = False) -> list[SignalResult]:
         benchmark_roc, regime_ok = self._benchmark_context(force=force)
         results = []
-        for symbol in self.config.universe:
+        delay = self.config.scan_request_delay_seconds
+        for i, symbol in enumerate(self.config.universe):
+            # Pausa entre simbolos para no rafagar la API gratuita de Yahoo
+            # Finance con un universo grande (ver scan_request_delay_seconds).
+            if i > 0 and delay > 0:
+                time.sleep(delay)
             result = self.evaluate_symbol(symbol, benchmark_roc, regime_ok=regime_ok, force=force)
             if result is not None:
                 results.append(result)
