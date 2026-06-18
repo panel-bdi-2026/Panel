@@ -13,13 +13,16 @@ set -euo pipefail
 TWS_USER_HOME="${TWS_USER_HOME:-/home/trading}"
 DISPLAY_NUM="${IBC_DISPLAY:-:11}"
 
-LOG_FILE=$(find "$TWS_USER_HOME/ibc/logs" -name 'ibc-*.txt' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+# El "|| true" evita que un find/grep sin resultados (exit no-cero) tire
+# abajo el script en silencio por set -e + pipefail antes de llegar a los
+# chequeos de abajo, que son los que de verdad explican el problema.
+LOG_FILE=$(find "$TWS_USER_HOME/ibc/logs" -name 'ibc-*.txt' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-) || true
 if [[ -z "$LOG_FILE" ]]; then
   echo "No se encontro ningun log de IBC en $TWS_USER_HOME/ibc/logs" >&2
   exit 1
 fi
 
-CMD=$(tac "$LOG_FILE" | grep -m1 'ibcalpha.ibc.IbcGateway')
+CMD=$(tac "$LOG_FILE" | grep -m1 'ibcalpha.ibc.IbcGateway') || true
 if [[ -z "$CMD" ]]; then
   echo "No se encontro la linea de lanzamiento de java en $LOG_FILE" >&2
   exit 1
