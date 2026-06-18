@@ -16,6 +16,23 @@ from pydantic import BaseModel, Field, field_validator
 _SYMBOL_RE = re.compile(r"^[A-Z0-9.\-]{1,12}$")
 
 
+def validate_symbol(value: str) -> str:
+    """Normaliza y valida un ticker contra _SYMBOL_RE. Punto de entrada
+    compartido para cualquier input de simbolo (ordenes, universo del
+    screener, query params), no solo OrderRequest: cualquier otro lugar
+    que reciba un simbolo en texto libre y lo persista o lo use para
+    construir una whitelist necesita la misma sanitizacion, o queda como
+    una puerta de entrada sin el chequeo que protege contra XSS almacenado
+    e inyeccion de datos malformados."""
+    v = value.strip().upper()
+    if not _SYMBOL_RE.match(v):
+        raise ValueError(
+            "Simbolo invalido: solo se permiten letras, numeros, punto y "
+            "guion (1 a 12 caracteres)."
+        )
+    return v
+
+
 class Side(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
@@ -41,13 +58,7 @@ class OrderRequest(BaseModel):
     @field_validator("symbol")
     @classmethod
     def upper_symbol(cls, v: str) -> str:
-        v = v.strip().upper()
-        if not _SYMBOL_RE.match(v):
-            raise ValueError(
-                "Simbolo invalido: solo se permiten letras, numeros, punto y "
-                "guion (1 a 12 caracteres)."
-            )
-        return v
+        return validate_symbol(v)
 
 
 class RuleViolation(BaseModel):

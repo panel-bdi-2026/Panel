@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.models import OrderRequest, Side
+from app.models import OrderRequest, Side, validate_symbol
 
 
 def make_order(symbol):
@@ -30,3 +30,17 @@ def test_symbol_allows_dot_and_dash():
 def test_symbol_rejects_invalid_or_malicious_input(payload):
     with pytest.raises(ValidationError):
         make_order(payload)
+
+
+# validate_symbol() es el mismo chequeo que usa OrderRequest.symbol, expuesto
+# como funcion compartida para otros inputs de simbolo (universo del
+# screener, query params) que no son un OrderRequest.
+
+def test_validate_symbol_normalizes_and_validates():
+    assert validate_symbol("  aapl ") == "AAPL"
+    assert validate_symbol("brk.b") == "BRK.B"
+
+
+def test_validate_symbol_rejects_invalid_or_malicious_input():
+    with pytest.raises(ValueError):
+        validate_symbol("<script>alert(1)</script>")

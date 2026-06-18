@@ -479,3 +479,21 @@ def test_run_auto_exit_monitor_cycle_continues_after_a_check_fails(monkeypatch):
     asyncio.run(main_module._run_auto_exit_monitor_cycle())  # no debe propagar la excepcion
 
     assert set(checked) == {"AAPL", "MSFT"}
+
+
+# ---------------------------------------------------------------------------
+# order_size_suggestion: el simbolo de query param tambien debe pasar por la
+# misma validacion que OrderRequest.symbol (ver app/models.py validate_symbol).
+# ---------------------------------------------------------------------------
+
+def test_order_size_suggestion_rejects_invalid_symbol():
+    with pytest.raises(main_module.HTTPException) as exc_info:
+        main_module.order_size_suggestion(
+            symbol="<script>alert(1)</script>", entry_price=100.0, stop_loss_price=90.0
+        )
+    assert exc_info.value.status_code == 422
+
+
+def test_order_size_suggestion_normalizes_valid_symbol():
+    suggestion = main_module.order_size_suggestion(symbol="  aapl ", entry_price=100.0, stop_loss_price=90.0)
+    assert suggestion.quantity > 0

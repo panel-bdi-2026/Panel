@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .audit import AuditLog
 from .backtest import BacktestError, run_backtest
@@ -21,7 +21,7 @@ from .config import settings
 from .funds import FundsStore
 from .indicators import sma
 from .market_data import MarketDataError, get_daily_bars
-from .models import OrderRequest, OrderType, PendingOrder, SignalResult, Side
+from .models import OrderRequest, OrderType, PendingOrder, SignalResult, Side, validate_symbol
 from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
 from .screener_config import ScreenerConfig
@@ -639,7 +639,11 @@ class RulesUpdate(BaseModel):
 @app.put("/api/rules")
 def update_rules(body: RulesUpdate, _: None = Depends(require_api_key)):
     global rules_config
-    rules_config = RulesConfig(**body.rules)
+    try:
+        new_config = RulesConfig(**body.rules)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors())
+    rules_config = new_config
     rules_config.save(settings.rules_path)
     rules_engine.reload(rules_config)
     audit.record("rules_updated", body.rules, {})
@@ -663,7 +667,11 @@ class ScreenerUpdate(BaseModel):
 @app.put("/api/signals/config")
 def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_key)):
     global screener_config
-    screener_config = ScreenerConfig(**body.config)
+    try:
+        new_config = ScreenerConfig(**body.config)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors())
+    screener_config = new_config
     screener_config.save(settings.screener_path)
     screener.reload(screener_config)
     _sync_whitelist_with_universe()
@@ -744,7 +752,11 @@ def order_size_suggestion(
     que en _try_auto_trade_entry."""
     if not state["connected"]:
         raise HTTPException(status_code=503, detail="No conectado a IBKR.")
-    position_qty = broker.get_position_qty(symbol.strip().upper())
+    try:
+        symbol = validate_symbol(symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    position_qty = broker.get_position_qty(symbol)
     if fund_id:
         fund = funds_store.get(fund_id)
         if fund is None:

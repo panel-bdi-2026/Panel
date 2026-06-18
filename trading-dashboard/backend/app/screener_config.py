@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from .atomic_io import atomic_write_text
+from .models import validate_symbol
 
 # Universo de partida: S&P 500 completo, para que el screener identifique
 # oportunidades de forma autonoma en todo el indice en vez de depender de una
@@ -149,6 +150,22 @@ class ScreenerConfig(BaseModel):
     # posicion. Ademas del tope, no se draftea mas alla de los "cupos" libres
     # respecto a top_n contando lo que ya esta pendiente.
     max_auto_drafts_per_cycle: int = 3
+
+    @field_validator("universe")
+    @classmethod
+    def validate_universe(cls, v: list[str]) -> list[str]:
+        # _sync_whitelist_with_universe() (main.py) copia este universo
+        # directo a rules_config.symbol_whitelist, que RulesEngine.evaluate()
+        # usa para aprobar o rechazar ordenes: sin la misma sanitizacion que
+        # OrderRequest.symbol, un universo cargado a mano con un simbolo
+        # malformado o sin normalizar quedaria en la whitelist sin que
+        # ninguna orden real (siempre normalizada) pueda matchearlo nunca.
+        return [validate_symbol(s) for s in v]
+
+    @field_validator("benchmark_symbol")
+    @classmethod
+    def validate_benchmark_symbol(cls, v: str) -> str:
+        return validate_symbol(v)
 
     @classmethod
     def load(cls, path: Path) -> "ScreenerConfig":

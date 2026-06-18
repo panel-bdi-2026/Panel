@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from app.models import AccountSummary, OrderRequest, OrderType, Side
 from app.rules import RulesConfig, RulesEngine
@@ -167,3 +168,45 @@ def test_suggested_quantity_zero_when_no_equity(engine):
 def test_suggested_quantity_zero_when_stop_not_below_entry(engine):
     suggestion = engine.suggested_quantity(100_000, 0, entry_price=200, stop_loss_price=200)
     assert suggestion.quantity == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Cotas en los campos numericos de RulesConfig: sin ellas, PUT /api/rules
+# podia recibir un valor absurdamente alto (ej. daily_loss_limit_pct=999999)
+# que neutraliza el kill switch en la practica sin desactivarlo
+# explicitamente, porque ninguna perdida diaria real llegaria nunca a ese
+# umbral.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("field,value", [
+    ("daily_loss_limit_pct", 0),
+    ("daily_loss_limit_pct", 999_999),
+    ("max_order_value_usd", 0),
+    ("max_order_value_usd", -1),
+    ("max_position_pct_of_equity", 0),
+    ("max_position_pct_of_equity", 101),
+    ("risk_per_trade_pct", 0),
+    ("risk_per_trade_pct", 101),
+    ("max_trades_per_day", 0),
+    ("max_trades_per_day", 1001),
+    ("max_stop_loss_pct", 0),
+    ("max_stop_loss_pct", 101),
+    ("manual_approval_threshold_usd", -1),
+])
+def test_rules_config_rejects_out_of_range_values(field, value):
+    with pytest.raises(ValidationError):
+        RulesConfig(**{field: value})
+
+
+def test_rules_config_accepts_values_at_the_bounds():
+    config = RulesConfig(
+        daily_loss_limit_pct=100,
+        max_order_value_usd=10_000_000,
+        max_position_pct_of_equity=100,
+        risk_per_trade_pct=100,
+        max_trades_per_day=1000,
+        max_stop_loss_pct=100,
+        manual_approval_threshold_usd=100_000_000,
+    )
+    assert config.daily_loss_limit_pct == 100
+    assert config.manual_approval_threshold_usd == 100_000_000

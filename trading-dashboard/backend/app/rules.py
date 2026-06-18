@@ -6,7 +6,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .atomic_io import atomic_write_text
 from .models import AccountSummary, OrderDecision, OrderRequest, PositionSizeSuggestion, RuleViolation, Side
@@ -14,19 +14,24 @@ from .models import AccountSummary, OrderDecision, OrderRequest, PositionSizeSug
 
 class RulesConfig(BaseModel):
     symbol_whitelist: list[str] = []
-    max_order_value_usd: float = 5000
-    max_position_pct_of_equity: float = 10
+    # Cotas superiores en los campos que limitan riesgo: sin ellas, PUT
+    # /api/rules podia recibir un valor absurdamente alto (ej.
+    # daily_loss_limit_pct=999999) que en la practica neutraliza el kill
+    # switch sin desactivarlo explicitamente, ya que ninguna perdida diaria
+    # real llegaria nunca a ese umbral.
+    max_order_value_usd: float = Field(default=5000, gt=0, le=10_000_000)
+    max_position_pct_of_equity: float = Field(default=10, gt=0, le=100)
     # Riesgo maximo a arriesgar por operacion, como % del equity, si se toca el
     # stop-loss. Se usa solo para sugerir un tamano de posicion (no rechaza
     # ordenes por si solo): el tamano final igual queda limitado tambien por
     # max_position_pct_of_equity y max_order_value_usd.
-    risk_per_trade_pct: float = 1
-    daily_loss_limit_pct: float = 2
-    max_trades_per_day: int = 10
+    risk_per_trade_pct: float = Field(default=1, gt=0, le=100)
+    daily_loss_limit_pct: float = Field(default=2, gt=0, le=100)
+    max_trades_per_day: int = Field(default=10, gt=0, le=1000)
     require_stop_loss_on_buy: bool = True
-    max_stop_loss_pct: float = 5
+    max_stop_loss_pct: float = Field(default=5, gt=0, le=100)
     allow_short_selling: bool = False
-    manual_approval_threshold_usd: float = 1000
+    manual_approval_threshold_usd: float = Field(default=1000, ge=0, le=100_000_000)
     allow_extended_hours: bool = False
     trading_hours_start: str = "09:30"
     trading_hours_end: str = "16:00"
