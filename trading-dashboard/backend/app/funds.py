@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,6 +188,15 @@ class FundsStore:
 
     def __init__(self, path: Path):
         self.path = path
+        # Protege la secuencia leer-mutar-guardar de cada metodo publico de
+        # mas abajo: sin esto, dos llamadas concurrentes desde threads
+        # distintos (ej. dos requests sincronas del API atendidas por el
+        # threadpool de FastAPI a la vez) pueden interleavear sus lecturas y
+        # escrituras sobre el mismo Fund y perder una actualizacion. No
+        # protege por si sola la ventana de carrera "validar afuera, mutar
+        # despues" (ver _funds_order_lock en main.py), que abarca codigo
+        # fuera de esta clase.
+        self._lock = threading.Lock()
         self.funds: dict[str, Fund] = self._load()
 
     def _backup_corrupt_file(self) -> None:
@@ -249,8 +259,9 @@ class FundsStore:
             created_at=datetime.now(timezone.utc),
         )
         fund.apply_capital_flow(initial_capital_usd, note="Capital inicial")
-        self.funds[fund.id] = fund
-        self.save()
+        with self._lock:
+            self.funds[fund.id] = fund
+            self.save()
         return fund
 
     def get(self, fund_id: str) -> Fund | None:
@@ -266,20 +277,22 @@ class FundsStore:
         return sum(f.cash_usd for fid, f in self.funds.items() if fid != exclude_fund_id)
 
     def set_auto_trading(self, fund_id: str, enabled: bool) -> Fund | None:
-        fund = self.funds.get(fund_id)
-        if fund is None:
-            return None
-        fund.auto_trading_enabled = enabled
-        self.save()
-        return fund
+        with self._lock:
+            fund = self.funds.get(fund_id)
+            if fund is None:
+                return None
+            fund.auto_trading_enabled = enabled
+            self.save()
+            return fund
 
     def apply_capital_flow(self, fund_id: str, amount: float, note: Optional[str] = None) -> CapitalFlow | None:
-        fund = self.funds.get(fund_id)
-        if fund is None:
-            return None
-        flow = fund.apply_capital_flow(amount, note)
-        self.save()
-        return flow
+        with self._lock:
+            fund = self.funds.get(fund_id)
+            if fund is None:
+                return None
+            flow = fund.apply_capital_flow(amount, note)
+            self.save()
+            return flow
 
     def record_fill(
         self,
@@ -290,9 +303,10 @@ class FundsStore:
         price: float,
         stop_loss_price: Optional[float] = None,
     ) -> FundTrade | None:
-        fund = self.funds.get(fund_id)
-        if fund is None:
-            return None
-        trade = fund.record_fill(symbol, side, quantity, price, stop_loss_price)
-        self.save()
-        return trade
+        with self._lock:
+            fund = self.funds.get(fund_id)
+            if fund is None:
+                return None
+            trade = fund.record_fill(symbol, side, quantity, price, stop_loss_price)
+            self.save()
+            return trade

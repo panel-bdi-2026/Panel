@@ -82,6 +82,18 @@ signal_cache: dict = {"as_of": None, "results": []}
 # lock simple: esto no es trafico de alta concurrencia.
 _market_scan_lock = asyncio.Lock()
 
+# Serializa toda la secuencia "validar fondo -> enviar al broker -> aplicar el
+# fill" entre submit_order, approve_order, _try_auto_trade_entry y
+# _check_fund_exit. Sin esto, dos de estos flujos corriendo concurrentemente
+# sobre el MISMO fondo (ej. una orden manual y el motor de auto-trading, o dos
+# ordenes manuales seguidas) pueden validar ambas contra el mismo cash_usd
+# desactualizado -- ninguna ve el efecto de la otra hasta que record_fill ya
+# corrio -- y terminar gastando mas cash del que el fondo realmente tiene. El
+# lock se sostiene durante el await a broker.place_order a proposito: cerrar
+# la ventana de carrera exige que ninguna otra validacion para el mismo fondo
+# pueda colarse entre "ya valide" y "ya aplique el fill".
+_funds_order_lock = asyncio.Lock()
+
 # Recuerda que simbolos pasaban los filtros del screener en el ultimo ciclo del
 # scan proactivo, para poder detectar TRANSICIONES (no pasaba -> pasa) en vez
 # de redraftear el mismo simbolo en cada ciclo mientras siga pasando. None
@@ -208,62 +220,63 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
     if state["mode"] != "paper" or result.last_price <= 0:
         return
     symbol = result.symbol
-    candidates = [f for f in funds_store.list() if f.auto_trading_enabled and f.owned_quantity(symbol) == 0]
-    if not candidates:
-        return
+    async with _funds_order_lock:
+        candidates = [f for f in funds_store.list() if f.auto_trading_enabled and f.owned_quantity(symbol) == 0]
+        if not candidates:
+            return
 
-    account_summary = broker.get_account_summary()
-    position_qty = broker.get_position_qty(symbol)
+        account_summary = broker.get_account_summary()
+        position_qty = broker.get_position_qty(symbol)
 
-    fund = None
-    quantity = 0.0
-    for candidate in candidates:
-        sizing = rules_engine.suggested_quantity(
-            candidate.equity_estimate(), position_qty, result.last_price, result.suggested_stop_loss_price
+        fund = None
+        quantity = 0.0
+        for candidate in candidates:
+            sizing = rules_engine.suggested_quantity(
+                candidate.equity_estimate(), position_qty, result.last_price, result.suggested_stop_loss_price
+            )
+            if sizing.quantity <= 0:
+                continue
+            affordable_qty = math.floor(candidate.cash_usd / result.last_price)
+            qty = min(sizing.quantity, affordable_qty)
+            if qty > 0:
+                fund = candidate
+                quantity = qty
+                break
+        if fund is None:
+            return
+
+        order = OrderRequest(
+            symbol=symbol,
+            side=Side.BUY,
+            quantity=quantity,
+            order_type=OrderType.LMT,
+            limit_price=result.last_price,
+            stop_loss_price=result.suggested_stop_loss_price,
+            fund_id=fund.id,
         )
-        if sizing.quantity <= 0:
-            continue
-        affordable_qty = math.floor(candidate.cash_usd / result.last_price)
-        qty = min(sizing.quantity, affordable_qty)
-        if qty > 0:
-            fund = candidate
-            quantity = qty
-            break
-    if fund is None:
-        return
+        trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
+        decision = rules_engine.evaluate(
+            order=order,
+            account=account_summary,
+            current_position_qty=position_qty,
+            reference_price=result.last_price,
+            trades_today=trades_today,
+            halted=state["halted"],
+        )
+        if not decision.approved:
+            audit.record("auto_trade_rejected", order.model_dump(), decision.model_dump())
+            return
 
-    order = OrderRequest(
-        symbol=symbol,
-        side=Side.BUY,
-        quantity=quantity,
-        order_type=OrderType.LMT,
-        limit_price=result.last_price,
-        stop_loss_price=result.suggested_stop_loss_price,
-        fund_id=fund.id,
-    )
-    trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
-    decision = rules_engine.evaluate(
-        order=order,
-        account=account_summary,
-        current_position_qty=position_qty,
-        reference_price=result.last_price,
-        trades_today=trades_today,
-        halted=state["halted"],
-    )
-    if not decision.approved:
-        audit.record("auto_trade_rejected", order.model_dump(), decision.model_dump())
-        return
+        try:
+            result_payload = await broker.place_order(order)
+        except StopLossRejectedError as exc:
+            audit.record("auto_trade_stop_loss_rejected", order.model_dump(), {"error": str(exc)})
+            return
 
-    try:
-        result_payload = await broker.place_order(order)
-    except StopLossRejectedError as exc:
-        audit.record("auto_trade_stop_loss_rejected", order.model_dump(), {"error": str(exc)})
-        return
-
-    funds_store.record_fill(
-        fund.id, symbol, Side.BUY, quantity, result.last_price, stop_loss_price=result.suggested_stop_loss_price
-    )
-    audit.record("auto_trade_executed", order.model_dump(), {"fund_id": fund.id, **result_payload})
+        funds_store.record_fill(
+            fund.id, symbol, Side.BUY, quantity, result.last_price, stop_loss_price=result.suggested_stop_loss_price
+        )
+        audit.record("auto_trade_executed", order.model_dump(), {"fund_id": fund.id, **result_payload})
 
 
 async def _run_signal_scan_cycle() -> None:
@@ -377,59 +390,60 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
     3. trend_break: el precio cierra por debajo de la SMA rapida del
        screener, igual que en backtest.py.
     """
-    fund = funds_store.get(fund_id)
-    if fund is None:
-        return
-    position = fund.positions.get(symbol)
-    if position is None or position.quantity <= 0:
-        return
-
-    broker_qty = broker.get_position_qty(symbol)
-    if broker_qty < position.quantity:
-        closed_qty = position.quantity - max(broker_qty, 0.0)
-        fill_price = position.stop_loss_price or position.avg_cost
-        funds_store.record_fill(fund_id, symbol, Side.SELL, closed_qty, fill_price)
-        audit.record(
-            "auto_trade_stop_loss_reconciled",
-            {"fund_id": fund_id, "symbol": symbol},
-            {"quantity": closed_qty, "price": fill_price},
-        )
+    async with _funds_order_lock:
         fund = funds_store.get(fund_id)
-        position = fund.positions.get(symbol) if fund else None
+        if fund is None:
+            return
+        position = fund.positions.get(symbol)
         if position is None or position.quantity <= 0:
             return
 
-    held_days = (datetime.now(timezone.utc) - position.opened_at).days if position.opened_at else 0
-    timed_out = held_days >= screener_config.max_holding_days
+        broker_qty = broker.get_position_qty(symbol)
+        if broker_qty < position.quantity:
+            closed_qty = position.quantity - max(broker_qty, 0.0)
+            fill_price = position.stop_loss_price or position.avg_cost
+            funds_store.record_fill(fund_id, symbol, Side.SELL, closed_qty, fill_price)
+            audit.record(
+                "auto_trade_stop_loss_reconciled",
+                {"fund_id": fund_id, "symbol": symbol},
+                {"quantity": closed_qty, "price": fill_price},
+            )
+            fund = funds_store.get(fund_id)
+            position = fund.positions.get(symbol) if fund else None
+            if position is None or position.quantity <= 0:
+                return
 
-    trend_broke = False
-    try:
-        bars = await asyncio.to_thread(get_daily_bars, symbol, screener_config.sma_fast + 5)
-        sma_fast_s = sma(bars["Close"], screener_config.sma_fast)
-        if len(sma_fast_s) and not bool(sma_fast_s.isna().iloc[-1]):
-            trend_broke = float(bars["Close"].iloc[-1]) < float(sma_fast_s.iloc[-1])
-    except MarketDataError:
-        pass
+        held_days = (datetime.now(timezone.utc) - position.opened_at).days if position.opened_at else 0
+        timed_out = held_days >= screener_config.max_holding_days
 
-    if not (timed_out or trend_broke):
-        return
+        trend_broke = False
+        try:
+            bars = await asyncio.to_thread(get_daily_bars, symbol, screener_config.sma_fast + 5)
+            sma_fast_s = sma(bars["Close"], screener_config.sma_fast)
+            if len(sma_fast_s) and not bool(sma_fast_s.isna().iloc[-1]):
+                trend_broke = float(bars["Close"].iloc[-1]) < float(sma_fast_s.iloc[-1])
+        except MarketDataError:
+            pass
 
-    reference_price = await broker.get_reference_price(symbol)
-    if not reference_price:
-        return
+        if not (timed_out or trend_broke):
+            return
 
-    order = OrderRequest(
-        symbol=symbol, side=Side.SELL, quantity=position.quantity, order_type=OrderType.MKT, fund_id=fund_id
-    )
-    try:
-        result_payload = await broker.place_order(order)
-    except StopLossRejectedError as exc:
-        audit.record("auto_trade_exit_failed", order.model_dump(), {"error": str(exc)})
-        return
+        reference_price = await broker.get_reference_price(symbol)
+        if not reference_price:
+            return
 
-    funds_store.record_fill(fund_id, symbol, Side.SELL, position.quantity, reference_price)
-    reason = "max_holding_days" if timed_out else "trend_break"
-    audit.record("auto_trade_exit", order.model_dump(), {"reason": reason, **result_payload})
+        order = OrderRequest(
+            symbol=symbol, side=Side.SELL, quantity=position.quantity, order_type=OrderType.MKT, fund_id=fund_id
+        )
+        try:
+            result_payload = await broker.place_order(order)
+        except StopLossRejectedError as exc:
+            audit.record("auto_trade_exit_failed", order.model_dump(), {"error": str(exc)})
+            return
+
+        funds_store.record_fill(fund_id, symbol, Side.SELL, position.quantity, reference_price)
+        reason = "max_holding_days" if timed_out else "trend_break"
+        audit.record("auto_trade_exit", order.model_dump(), {"reason": reason, **result_payload})
     await _broadcast({"type": "auto_trade_exit", "fund_id": fund_id, "symbol": symbol, "reason": reason})
 
 
@@ -794,50 +808,51 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
             detail="No se pudo obtener un precio de referencia para validar la orden. Usa una orden LMT con precio definido.",
         )
 
-    if order.fund_id:
-        _validate_fund_order(order, reference_price)
+    async with _funds_order_lock:
+        if order.fund_id:
+            _validate_fund_order(order, reference_price)
 
-    trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
+        trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
 
-    decision = rules_engine.evaluate(
-        order=order,
-        account=account_summary,
-        current_position_qty=position_qty,
-        reference_price=reference_price,
-        trades_today=trades_today,
-        halted=state["halted"],
-    )
-
-    audit.record("order_submitted", order.model_dump(), decision.model_dump())
-
-    if not decision.approved:
-        raise HTTPException(status_code=422, detail=decision.model_dump())
-
-    if decision.requires_manual_approval:
-        pending_id = str(uuid.uuid4())
-        pending = PendingOrder(
-            id=pending_id,
+        decision = rules_engine.evaluate(
             order=order,
-            decision=decision,
-            created_at=datetime.now(timezone.utc),
+            account=account_summary,
+            current_position_qty=position_qty,
+            reference_price=reference_price,
+            trades_today=trades_today,
+            halted=state["halted"],
         )
-        state["pending_orders"][pending_id] = pending
-        _persist_state()
-        audit.record("order_pending_approval", order.model_dump(), {"id": pending_id})
-        return {"status": "pending_approval", "pending_order": pending.model_dump()}
 
-    try:
-        result = await broker.place_order(order)
-    except StopLossRejectedError as exc:
-        audit.record("stop_loss_rejected", order.model_dump(), {"error": str(exc)})
-        raise HTTPException(status_code=502, detail=str(exc))
-    audit.record("order_executed", order.model_dump(), result)
-    if order.fund_id:
-        # reference_price ya se uso para validar/sizear la orden: se reusa como
-        # aproximacion del fill (place_order() no espera ni devuelve el fill
-        # real de IBKR hoy). Documentado como simplificacion, igual que en backtest.py.
-        funds_store.record_fill(order.fund_id, order.symbol, order.side, order.quantity, reference_price)
-    return {"status": "executed", "result": result}
+        audit.record("order_submitted", order.model_dump(), decision.model_dump())
+
+        if not decision.approved:
+            raise HTTPException(status_code=422, detail=decision.model_dump())
+
+        if decision.requires_manual_approval:
+            pending_id = str(uuid.uuid4())
+            pending = PendingOrder(
+                id=pending_id,
+                order=order,
+                decision=decision,
+                created_at=datetime.now(timezone.utc),
+            )
+            state["pending_orders"][pending_id] = pending
+            _persist_state()
+            audit.record("order_pending_approval", order.model_dump(), {"id": pending_id})
+            return {"status": "pending_approval", "pending_order": pending.model_dump()}
+
+        try:
+            result = await broker.place_order(order)
+        except StopLossRejectedError as exc:
+            audit.record("stop_loss_rejected", order.model_dump(), {"error": str(exc)})
+            raise HTTPException(status_code=502, detail=str(exc))
+        audit.record("order_executed", order.model_dump(), result)
+        if order.fund_id:
+            # reference_price ya se uso para validar/sizear la orden: se reusa como
+            # aproximacion del fill (place_order() no espera ni devuelve el fill
+            # real de IBKR hoy). Documentado como simplificacion, igual que en backtest.py.
+            funds_store.record_fill(order.fund_id, order.symbol, order.side, order.quantity, reference_price)
+        return {"status": "executed", "result": result}
 
 
 @app.post("/api/orders/{order_id}/approve")
@@ -846,21 +861,22 @@ async def approve_order(order_id: str, _: None = Depends(require_api_key)):
     if not pending:
         raise HTTPException(status_code=404, detail="Orden pendiente no encontrada.")
     _persist_state()
-    try:
-        result = await broker.place_order(pending.order)
-    except StopLossRejectedError as exc:
-        audit.record("stop_loss_rejected", pending.order.model_dump(), {"error": str(exc)})
-        raise HTTPException(status_code=502, detail=str(exc))
-    audit.record("order_executed_after_approval", pending.order.model_dump(), result)
-    if pending.order.fund_id:
-        fill_price = pending.order.limit_price
-        if fill_price is None:
-            fill_price = await broker.get_reference_price(pending.order.symbol)
-        if fill_price:
-            funds_store.record_fill(
-                pending.order.fund_id, pending.order.symbol, pending.order.side, pending.order.quantity, fill_price
-            )
-    return {"status": "executed", "result": result}
+    async with _funds_order_lock:
+        try:
+            result = await broker.place_order(pending.order)
+        except StopLossRejectedError as exc:
+            audit.record("stop_loss_rejected", pending.order.model_dump(), {"error": str(exc)})
+            raise HTTPException(status_code=502, detail=str(exc))
+        audit.record("order_executed_after_approval", pending.order.model_dump(), result)
+        if pending.order.fund_id:
+            fill_price = pending.order.limit_price
+            if fill_price is None:
+                fill_price = await broker.get_reference_price(pending.order.symbol)
+            if fill_price:
+                funds_store.record_fill(
+                    pending.order.fund_id, pending.order.symbol, pending.order.side, pending.order.quantity, fill_price
+                )
+        return {"status": "executed", "result": result}
 
 
 @app.post("/api/orders/{order_id}/reject")

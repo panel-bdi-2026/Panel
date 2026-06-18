@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -14,6 +15,15 @@ class AuditLog:
     def __init__(self, db_path: Path):
         self.db_path = db_path
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        # check_same_thread=False habilita compartir esta conexion entre el
+        # event loop y el threadpool de endpoints sincronos de FastAPI, pero
+        # sqlite3 no serializa por si solo un execute+commit hecho desde
+        # threads distintos como una unidad atomica: sin este lock, dos
+        # llamadas concurrentes a record()/count_trades_today() pueden
+        # interleavear y devolver "database is locked", o un conteo de
+        # trades del dia inconsistente justo cuando RulesEngine.evaluate() lo
+        # usa para el cap de ordenes diarias.
+        self._lock = threading.Lock()
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_log (
@@ -28,22 +38,25 @@ class AuditLog:
         self._conn.commit()
 
     def record(self, action: str, payload: dict, result: dict) -> None:
-        self._conn.execute(
-            "INSERT INTO audit_log (ts, action, payload, result) VALUES (?, ?, ?, ?)",
-            (
-                datetime.now(timezone.utc).isoformat(),
-                action,
-                json.dumps(payload, default=str),
-                json.dumps(result, default=str),
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO audit_log (ts, action, payload, result) VALUES (?, ?, ?, ?)",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    action,
+                    json.dumps(payload, default=str),
+                    json.dumps(result, default=str),
+                ),
+            )
+            self._conn.commit()
 
     def recent(self, limit: int = 100) -> list[dict]:
-        cur = self._conn.execute(
-            "SELECT id, ts, action, payload, result FROM audit_log ORDER BY id DESC LIMIT ?",
-            (limit,),
-        )
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT id, ts, action, payload, result FROM audit_log ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            rows = cur.fetchall()
         return [
             {
                 "id": row[0],
@@ -52,7 +65,7 @@ class AuditLog:
                 "payload": json.loads(row[3]),
                 "result": json.loads(row[4]),
             }
-            for row in cur.fetchall()
+            for row in rows
         ]
 
     # Acciones que representan una operacion realmente ejecutada (mueve
@@ -79,8 +92,9 @@ class AuditLog:
         start_utc = start_local.astimezone(timezone.utc).isoformat()
         end_utc = end_local.astimezone(timezone.utc).isoformat()
         placeholders = ", ".join("?" for _ in self._TRADE_ACTIONS)
-        cur = self._conn.execute(
-            f"SELECT COUNT(*) FROM audit_log WHERE action IN ({placeholders}) AND ts >= ? AND ts < ?",
-            (*self._TRADE_ACTIONS, start_utc, end_utc),
-        )
-        return cur.fetchone()[0]
+        with self._lock:
+            cur = self._conn.execute(
+                f"SELECT COUNT(*) FROM audit_log WHERE action IN ({placeholders}) AND ts >= ? AND ts < ?",
+                (*self._TRADE_ACTIONS, start_utc, end_utc),
+            )
+            return cur.fetchone()[0]

@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 
@@ -247,3 +248,53 @@ def test_load_does_not_back_up_a_clean_file(tmp_path):
     FundsStore(path)
 
     assert list(tmp_path.glob("funds.corrupt.*.bak")) == []
+
+
+def test_record_fill_is_serialized_by_internal_lock(store):
+    """El lock interno de FundsStore protege la secuencia leer-mutar-guardar:
+    mientras un hilo lo tiene tomado, otra llamada a record_fill debe quedar
+    bloqueada hasta que se libera, no interleavear su lectura del fondo con la
+    escritura del primero."""
+    fund = store.create("Test", 5000)
+    store._lock.acquire()
+    started = threading.Event()
+    finished = threading.Event()
+
+    def worker():
+        started.set()
+        store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100)
+        finished.set()
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    try:
+        started.wait(timeout=1)
+        assert not finished.wait(timeout=0.2)  # sigue bloqueado: el lock esta tomado
+    finally:
+        store._lock.release()
+    thread.join(timeout=1)
+    assert finished.is_set()
+    assert store.get(fund.id).owned_quantity("AAPL") == 10
+
+
+def test_apply_capital_flow_is_serialized_by_internal_lock(store):
+    fund = store.create("Test", 5000)
+    store._lock.acquire()
+    started = threading.Event()
+    finished = threading.Event()
+
+    def worker():
+        started.set()
+        store.apply_capital_flow(fund.id, 1000, note="Aporte concurrente")
+        finished.set()
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    try:
+        started.wait(timeout=1)
+        assert not finished.wait(timeout=0.2)
+    finally:
+        store._lock.release()
+    thread.join(timeout=1)
+    assert finished.is_set()
+    assert store.get(fund.id).cash_usd == 6000

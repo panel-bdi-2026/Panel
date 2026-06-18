@@ -410,6 +410,58 @@ def test_run_auto_exit_monitor_cycle_only_checks_auto_trading_funds_with_positio
     assert checked == [(fund_on.id, "MSFT")]
 
 
+# ---------------------------------------------------------------------------
+# _funds_order_lock (cierre de la carrera validar -> enviar -> aplicar fill)
+# ---------------------------------------------------------------------------
+
+def test_concurrent_submit_order_does_not_overspend_fund_cash(monkeypatch):
+    """Reproduce la carrera que _funds_order_lock existe para cerrar: dos
+    compras concurrentes sobre el MISMO fondo, cada una individualmente
+    dentro del cash disponible (4500 contra 8000), pero juntas no (9000 >
+    8000). Sin el lock, ambas validarian contra el mismo cash_usd
+    desactualizado (ninguna ve el record_fill de la otra hasta que ya
+    corrio) y el fondo terminaria con cash_usd negativo. Con el lock, la
+    segunda se valida DESPUES de que la primera ya aplico su fill y debe
+    ser rechazada."""
+    fund = main_module.funds_store.create("Fondo", 8_000, auto_trading_enabled=False)
+
+    async def slow_place_order(order):
+        await asyncio.sleep(0.05)  # ensancha la ventana de carrera si el lock fallara
+        return {"order_id": 1, "status": "Filled"}
+
+    monkeypatch.setattr(main_module.broker, "place_order", slow_place_order)
+
+    def make_order():
+        return main_module.OrderRequest(
+            symbol="AAPL",
+            side=main_module.Side.BUY,
+            quantity=45,
+            order_type="LMT",
+            limit_price=100.0,
+            stop_loss_price=96.0,
+            fund_id=fund.id,
+        )
+
+    async def run_both():
+        return await asyncio.gather(
+            main_module.submit_order(make_order(), None),
+            main_module.submit_order(make_order(), None),
+            return_exceptions=True,
+        )
+
+    results = asyncio.run(run_both())
+
+    successes = [r for r in results if isinstance(r, dict)]
+    failures = [r for r in results if isinstance(r, main_module.HTTPException)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert failures[0].status_code == 422
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.cash_usd == 3_500  # 8000 - 4500: la segunda compra se rechazo
+    assert fund.owned_quantity("AAPL") == 45
+
+
 def test_run_auto_exit_monitor_cycle_continues_after_a_check_fails(monkeypatch):
     fund = main_module.funds_store.create("Con auto", 10_000, auto_trading_enabled=True)
     main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 5, 100)

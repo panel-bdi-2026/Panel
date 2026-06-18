@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -59,3 +60,30 @@ def test_counts_auto_trade_executed_and_auto_trade_exit(tmp_path):
     _insert_at(audit, "auto_trade_executed", now_utc)
     _insert_at(audit, "auto_trade_exit", now_utc)
     assert audit.count_trades_today("America/New_York") == 2
+
+
+def test_record_is_serialized_by_internal_lock(tmp_path):
+    """check_same_thread=False permite compartir la conexion entre hilos,
+    pero no hace que execute()+commit() desde hilos distintos sea atomico
+    por si solo: el lock interno de AuditLog es lo que evita que dos
+    llamadas a record() interleaveen y corrompan el conteo del dia."""
+    audit = make_audit(tmp_path)
+    audit._lock.acquire()
+    started = threading.Event()
+    finished = threading.Event()
+
+    def worker():
+        started.set()
+        audit.record("order_submitted", {"symbol": "AAPL"}, {"approved": True})
+        finished.set()
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    try:
+        started.wait(timeout=1)
+        assert not finished.wait(timeout=0.2)  # sigue bloqueado: el lock esta tomado
+    finally:
+        audit._lock.release()
+    thread.join(timeout=1)
+    assert finished.is_set()
+    assert len(audit.recent()) == 1
