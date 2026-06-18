@@ -212,8 +212,8 @@ td{padding:8px;border-bottom:1px solid var(--border)}
         <div class="card-hdr">Bitácora de auditoría (últimas 25)</div>
         <div class="card-body">
           <table>
-            <thead><tr><th>Hora</th><th>Acción</th><th>Detalle</th></tr></thead>
-            <tbody id="auditBody"><tr><td colspan="3" class="empty">Sin datos aún</td></tr></tbody>
+            <thead><tr><th>Hora</th><th>Acción</th><th>Detalle</th><th></th></tr></thead>
+            <tbody id="auditBody"><tr><td colspan="4" class="empty">Sin datos aún</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -940,18 +940,29 @@ async function refreshPending(){
   }catch(e){ /* ignore */ }
 }
 
+let lastAuditEntries = [];
+
 async function refreshAudit(){
   try{
     const entries = await api('/api/audit?limit=25', { auth:true });
+    lastAuditEntries = entries;
     const body = document.getElementById('auditBody');
-    if(!entries.length){ body.innerHTML = '<tr><td colspan="3" class="empty">Sin datos aún</td></tr>'; return; }
-    body.innerHTML = entries.map(e => `
+    if(!entries.length){ body.innerHTML = '<tr><td colspan="4" class="empty">Sin datos aún</td></tr>'; return; }
+    body.innerHTML = entries.map((e, i) => `
       <tr>
         <td>${new Date(e.ts).toLocaleTimeString()}</td>
         <td>${esc(e.action)}</td>
         <td>${esc((e.payload && (e.payload.symbol||'')) + ' ' + (e.payload && (e.payload.side||'')))}</td>
+        ${e.result && e.result.signal ? `<td><button class="info-btn" onclick="showAuditSignalDetail(${i})" title="Ver la señal que originó esta acción">ⓘ</button></td>` : ''}
       </tr>`).join('');
   }catch(e){ /* ignore */ }
+}
+
+function showAuditSignalDetail(index){
+  const e = lastAuditEntries[index];
+  const r = e && e.result && e.result.signal;
+  if(!r) return;
+  openModal(`Señal detrás de: ${e.action}`, signalDetailHtml(r));
 }
 
 async function approveOrder(id){
@@ -1086,13 +1097,11 @@ function renderSignalsChart(results){
   });
 }
 
-function showSignalDetail(symbol){
-  const r = lastSignals[symbol];
-  if(!r) return;
+function signalDetailHtml(r){
   const notesHtml = r.notes && r.notes.length
     ? `<ul style="margin-left:16px;margin-top:4px">${r.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`
     : '<p class="muted-sm" style="margin-top:4px">Sin notas adicionales.</p>';
-  openModal(`Detalle de señal: ${r.symbol}`, `
+  return `
     <table>
       <tbody>
         <tr><td><b>Distancia al máximo de 52 semanas</b></td><td>${r.pct_from_52w_high != null ? r.pct_from_52w_high.toFixed(1) + '%' : '—'}</td></tr>
@@ -1103,7 +1112,13 @@ function showSignalDetail(symbol){
     </table>
     <p class="muted-sm" style="margin-top:10px"><b>Notas:</b></p>
     ${notesHtml}
-  `);
+  `;
+}
+
+function showSignalDetail(symbol){
+  const r = lastSignals[symbol];
+  if(!r) return;
+  openModal(`Detalle de señal: ${r.symbol}`, signalDetailHtml(r));
 }
 
 async function suggestQuantity(){

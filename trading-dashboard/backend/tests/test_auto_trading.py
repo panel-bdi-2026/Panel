@@ -151,6 +151,31 @@ def test_auto_trade_entry_executes_buy_and_records_fill(monkeypatch):
     assert pos.opened_at is not None
 
 
+def test_auto_trade_entry_records_signal_rationale_in_audit(monkeypatch):
+    # El audit trail tiene que conservar el POR QUE el motor de señales
+    # decidio esta compra (score/momentum/RSI/notas), no solo el QUE se
+    # compro: sin esto no hay forma de auditar despues si el auto-trading
+    # entro por una señal razonable o por un bug del screener.
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
+    signal = make_signal(last_price=100.0, stop=95.0, score=42.0)
+
+    asyncio.run(main_module._try_auto_trade_entry(signal))
+
+    entries = main_module.audit.recent(1)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["action"] == "auto_trade_executed"
+    assert entry["result"]["fund_id"] == fund.id
+    recorded_signal = entry["result"]["signal"]
+    assert recorded_signal["symbol"] == "AAPL"
+    assert recorded_signal["score"] == 42.0
+    assert recorded_signal["momentum_3m_pct"] == signal.momentum_3m_pct
+    assert recorded_signal["momentum_1m_pct"] == signal.momentum_1m_pct
+    assert recorded_signal["rsi"] == signal.rsi
+    assert recorded_signal["notes"] == signal.notes
+
+
 def test_auto_trade_entry_does_not_buy_when_broker_rejects_stop_loss(monkeypatch):
     fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
 

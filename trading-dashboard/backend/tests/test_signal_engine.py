@@ -86,6 +86,28 @@ def test_draft_order_from_signal_creates_pending_order_with_signal_source():
     assert pending.id in main_module.state["pending_orders"]
 
 
+def test_draft_order_from_signal_records_signal_rationale_in_audit():
+    # Igual que en auto_trade_executed: el audit trail del draft manual tiene
+    # que guardar la señal completa (score/momentum/RSI/notas), no solo el
+    # score suelto, para poder revisar despues por que el motor sugirio esta
+    # orden.
+    signal = make_signal(score=7.5)
+    pending = main_module._draft_order_from_signal(signal)
+    assert pending is not None
+
+    entries = main_module.audit.recent(1)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["action"] == "signal_order_drafted"
+    assert entry["result"]["id"] == pending.id
+    recorded_signal = entry["result"]["signal"]
+    assert recorded_signal["symbol"] == "AAPL"
+    assert recorded_signal["score"] == 7.5
+    assert recorded_signal["momentum_3m_pct"] == signal.momentum_3m_pct
+    assert recorded_signal["rsi"] == signal.rsi
+    assert recorded_signal["notes"] == signal.notes
+
+
 def test_draft_order_from_signal_skips_when_existing_position(monkeypatch):
     monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
     pending = main_module._draft_order_from_signal(make_signal())

@@ -206,7 +206,7 @@ def _draft_order_from_signal(result: SignalResult) -> PendingOrder | None:
     )
     state["pending_orders"][pending_id] = pending
     _persist_state()
-    audit.record("signal_order_drafted", order.model_dump(), {"id": pending_id, "score": result.score})
+    audit.record("signal_order_drafted", order.model_dump(), {"id": pending_id, "signal": result.model_dump()})
     return pending
 
 
@@ -276,7 +276,11 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
         funds_store.record_fill(
             fund.id, symbol, Side.BUY, quantity, result.last_price, stop_loss_price=result.suggested_stop_loss_price
         )
-        audit.record("auto_trade_executed", order.model_dump(), {"fund_id": fund.id, **result_payload})
+        audit.record(
+            "auto_trade_executed",
+            order.model_dump(),
+            {"fund_id": fund.id, "signal": result.model_dump(), **result_payload},
+        )
 
 
 async def _run_signal_scan_cycle() -> None:
