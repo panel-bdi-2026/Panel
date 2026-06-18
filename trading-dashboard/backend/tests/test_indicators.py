@@ -55,3 +55,12 @@ def test_pct_from_high():
     s = pd.Series([100.0, 110.0, 99.0])
     out = pct_from_high(s, 3)
     assert out.iloc[-1] == pytest.approx((99.0 / 110.0 - 1) * 100)
+
+
+def test_pct_from_high_with_insufficient_history_is_nan():
+    # Con menos dias que la ventana pedida no hay un maximo real de esa
+    # ventana para comparar: debe ser NaN, no un "maximo" calculado sobre
+    # los pocos dias disponibles.
+    s = pd.Series([100.0, 110.0, 99.0])
+    out = pct_from_high(s, 5)
+    assert out.isna().all()

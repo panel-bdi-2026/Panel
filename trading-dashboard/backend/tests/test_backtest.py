@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -265,19 +267,20 @@ def test_cap_concurrent_positions_no_cap_when_top_n_invalid():
 
 
 def test_near_high_filter_reduces_entries_far_from_52w_high(monkeypatch):
-    # Pico temprano a ~196 (fija el maximo de 52s), caida, y luego un uptrend
-    # limpio pero siempre >15% por debajo de ese pico. Con el filtro activo,
-    # esas entradas "lejos del maximo" se descartan.
-    n = 120
-    vals = []
-    for i in range(n):
-        if i <= 12:
-            vals.append(100 + i * 8)
-        elif i <= 24:
-            vals.append(196 - (i - 12) * 7)
-        else:
-            vals.append(112 + (i - 24) * 0.5)
-    idx = pd.date_range("2023-01-01", periods=n, freq="D")
+    # Rampa larga (252 dias, hasta 300) que fija un maximo de 52s alto y
+    # permanece "a la vista" de la ventana movil durante toda la segunda
+    # mitad de la serie, seguida de una cola oscilante (150 dias) que se
+    # queda siempre >15% por debajo de ese pico. Se necesitan al menos 252
+    # dias para que pct_from_high tenga la ventana completa (ver
+    # indicators.py): con menos, el "maximo" no es un dato real y el filtro
+    # nunca bloquea nada. Un pico corto seguido de una sola caida no alcanza:
+    # el maximo "sale" de la ventana movil en pocos dias y solo retrasa una
+    # entrada en vez de bloquearla.
+    n_ramp, n_tail = 252, 150
+    ramp_target, tail_mean, tail_amp, tail_period = 300, 210, 15, 10
+    vals = [100 + i * (ramp_target - 100) / (n_ramp - 1) for i in range(n_ramp)]
+    vals += [tail_mean + tail_amp * math.sin(i / tail_period) for i in range(n_tail)]
+    idx = pd.date_range("2023-01-01", periods=n_ramp + n_tail, freq="D")
     close = pd.Series(vals, index=idx)
 
     def _mk(c):
@@ -287,7 +290,7 @@ def test_near_high_filter_reduces_entries_far_from_52w_high(monkeypatch):
         )
 
     bars = _mk(close)
-    bench = _mk(pd.Series([100.0] * n, index=idx))
+    bench = _mk(pd.Series([100.0] * (n_ramp + n_tail), index=idx))
 
     def fake_get_daily_bars(symbol, lookback_days):
         if symbol == "SPY":

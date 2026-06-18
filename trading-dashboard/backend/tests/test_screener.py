@@ -28,14 +28,16 @@ def _bars(close_values, volume=5_000_000):
     )
 
 
-# Series sinteticas (140 dias, sin red): MOM sube con fuerza relativa clara vs
-# el benchmark; WEAK avanza apenas por encima del benchmark; BROKEN esta en
-# clara tendencia bajista; ILLIQUID tiene el mismo precio que MOM pero volumen
-# en dolares (precio x volumen) por debajo del minimo de liquidez configurado.
-MOM_CLOSE = _series(140, 0.25, 3, 4)
-WEAK_CLOSE = _series(140, 0.02, 1, 3)
-BROKEN_CLOSE = _series(140, -0.25, -2, 4, base=160.0)
-BENCH_CLOSE = _series(140, 0.05, 1, 6)
+# Series sinteticas (265 dias, sin red: mas de 252 para que pct_from_high
+# tenga la ventana completa de un "maximo de 52 semanas" real, ver
+# indicators.py). MOM sube con fuerza relativa clara vs el benchmark; WEAK
+# avanza apenas por encima del benchmark; BROKEN esta en clara tendencia
+# bajista; ILLIQUID tiene el mismo precio que MOM pero volumen en dolares
+# (precio x volumen) por debajo del minimo de liquidez configurado.
+MOM_CLOSE = _series(265, 0.25, 3, 4)
+WEAK_CLOSE = _series(265, 0.02, 1, 3)
+BROKEN_CLOSE = _series(265, -0.25, -2, 4, base=160.0)
+BENCH_CLOSE = _series(265, 0.05, 1, 6)
 
 FAKE_BARS = {
     "MOM": _bars(MOM_CLOSE),
@@ -184,7 +186,7 @@ def test_earnings_lookup_is_skipped_for_symbols_that_already_fail_other_filters(
 
 
 def test_near_high_filter_blocks_symbol_far_from_52w_high(screener):
-    # MOM cotiza ~1.4% por debajo de su maximo de 52s; con un umbral muy
+    # MOM cotiza ~1.0% por debajo de su maximo de 52s; con un umbral muy
     # estricto (0.5%) queda fuera por proximidad, aunque pase el resto.
     screener.reload(ScreenerConfig(
         universe=["MOM"], benchmark_symbol="SPY",
@@ -197,9 +199,32 @@ def test_near_high_filter_blocks_symbol_far_from_52w_high(screener):
 
 
 def test_near_high_filter_does_not_block_when_within_threshold(screener):
-    # Con el umbral por defecto (15%), MOM a ~1.4% del maximo pasa el filtro.
+    # Con el umbral por defecto (15%), MOM a ~1.0% del maximo pasa el filtro.
     result = screener.evaluate_symbol("MOM", benchmark_roc_3m=0.0, regime_ok=True)
     assert result.passes_filters
+
+
+def test_near_high_filter_returns_none_with_insufficient_history(monkeypatch):
+    # Con menos de 252 dias de historia no hay un maximo de 52 semanas real
+    # para comparar: pct_from_52w_high debe quedar en None y el filtro de
+    # proximidad no debe bloquear por esto (ver indicators.pct_from_high).
+    short_bars = FAKE_BARS["MOM"].iloc[:100]
+
+    def fake_get_daily_bars(symbol, lookback_days, force=False):
+        if symbol != "MOM":
+            raise MarketDataError(f"sin datos sinteticos para {symbol}")
+        return short_bars
+
+    monkeypatch.setattr(screener_module, "get_daily_bars", fake_get_daily_bars)
+    monkeypatch.setattr(screener_module, "get_next_earnings_date", lambda symbol, force=False: None)
+
+    config = ScreenerConfig(universe=["MOM"], benchmark_symbol="SPY")
+    s = MomentumScreener(config)
+    result = s.evaluate_symbol("MOM", benchmark_roc_3m=0.0, regime_ok=True)
+
+    assert result is not None
+    assert result.pct_from_52w_high is None
+    assert not any("52 semanas" in note for note in result.notes)
 
 
 def test_near_high_filter_disabled_does_not_block(screener):

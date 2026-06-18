@@ -40,5 +40,13 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> 
 
 
 def pct_from_high(close: pd.Series, window: int) -> pd.Series:
-    rolling_high = close.rolling(window, min_periods=1).max()
+    """Pct. de distancia (<=0) del cierre actual respecto del maximo de los
+    ultimos `window` dias. Exige la ventana completa (min_periods=window):
+    con min_periods=1, un simbolo con poca historia (recien listado, o con
+    menos de `window` dias en cache) reportaba un "maximo" calculado sobre
+    una ventana mucho mas corta como si fuera un dato real -- ej. confundir
+    el maximo de unas pocas semanas con el de 52 semanas. Ahora esos casos
+    devuelven NaN; los llamadores (screener.py, backtest.py) ya tratan NaN
+    como "sin dato, el filtro de proximidad al maximo no bloquea"."""
+    rolling_high = close.rolling(window, min_periods=window).max()
     return (close / rolling_high - 1) * 100
