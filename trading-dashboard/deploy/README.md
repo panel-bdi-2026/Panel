@@ -72,7 +72,9 @@ sudo bash /opt/panel/trading-dashboard/deploy/setup_oracle_vm.sh
 Podés abrirlo y leerlo antes de correrlo, es corto. Qué hace:
 
 - Instala dependencias: Python, `Xvfb` (pantalla virtual para IB Gateway),
-  `ufw`, `curl`, `unzip`, `git`.
+  las librerías de X11 que el AWT de Java necesita en tiempo de ejecución
+  (`libxtst6`, `libxrender1`, `libxi6` — sin ellas IBC falla con
+  `UnsatisfiedLinkError` y exit code 1100), `ufw`, `curl`, `unzip`, `git`.
 - Crea un usuario de sistema sin privilegios (`trading`) para correr todo —
   ni el backend ni IB Gateway corren como root.
 - Configura `ufw` para bloquear todo el tráfico entrante salvo SSH y, una vez

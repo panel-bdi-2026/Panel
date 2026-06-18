@@ -18,7 +18,11 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 apt-get update
-apt-get install -y python3-venv python3-pip git unzip curl ufw xvfb
+# libxtst6/libxrender1/libxi6: el AWT de Java (usado por IB Gateway) las carga
+# en tiempo de ejecucion al dibujar bajo Xvfb; sin ellas IBC falla con
+# java.lang.UnsatisfiedLinkError y exit code=1100 sin mas explicacion.
+apt-get install -y python3-venv python3-pip git unzip curl ufw xvfb \
+  libxtst6 libxrender1 libxi6
 
 if ! id "$APP_USER" >/dev/null 2>&1; then
   useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"
