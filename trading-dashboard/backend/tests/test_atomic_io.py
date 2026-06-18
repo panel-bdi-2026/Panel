@@ -44,3 +44,27 @@ def test_atomic_write_preserves_original_file_if_write_fails(tmp_path, monkeypat
 
     assert target.read_text(encoding="utf-8") == "original"
     assert [p.name for p in tmp_path.iterdir()] == ["data.json"]
+
+
+def test_atomic_write_creates_missing_parent_directories(tmp_path):
+    target = tmp_path / "nested" / "deeper" / "data.json"
+    atomic_io.atomic_write_text(target, '{"a": 1}')
+    assert target.read_text(encoding="utf-8") == '{"a": 1}'
+
+
+def test_atomic_write_fsyncs_file_and_parent_directory(tmp_path, monkeypatch):
+    target = tmp_path / "data.json"
+    fsynced_fds = []
+
+    real_fsync = os.fsync
+
+    def spy_fsync(fd):
+        fsynced_fds.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(atomic_io.os, "fsync", spy_fsync)
+    atomic_io.atomic_write_text(target, "contenido")
+
+    assert target.read_text(encoding="utf-8") == "contenido"
+    # Se espera un fsync del archivo y otro del directorio padre.
+    assert len(fsynced_fds) == 2
