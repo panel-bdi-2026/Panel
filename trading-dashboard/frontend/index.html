@@ -96,6 +96,10 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .modal-close{background:none;border:none;font-size:18px;cursor:pointer;color:var(--muted);line-height:1}
 .modal-body{padding:16px 18px}
 .modal-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.cfg-tabs{display:flex;gap:8px;margin-bottom:14px}
+.cfg-tab{padding:7px 15px;border-radius:var(--r2);border:1.5px solid var(--border);
+  background:var(--bg);color:var(--muted);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit}
+.cfg-tab.on{background:var(--primary);color:#fff;border-color:var(--primary)}
 @media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.modal-grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -111,6 +115,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
     <span class="badge paper" id="modeBadge">PAPER</span>
     <button class="btn btn-mode" id="modeBtn" onclick="toggleMode()">🔴 Activar modo LIVE</button>
     <button class="btn btn-halt" id="haltBtn" onclick="toggleHalt()">⏸ Pausar trading</button>
+    <button class="btn btn-ghost" onclick="openConfigModal()">⚙️ Configuración</button>
     <button class="btn btn-ghost" onclick="openApiKeyPrompt()">🔑 API Key</button>
   </div>
 </header>
@@ -556,6 +561,183 @@ function closeModal(){
 }
 
 let modalCharts = [];
+
+// Campos de rules.yaml expuestos en el editor. min/max/step replican los
+// Field(...) de RulesConfig (rules.py) solo como ayuda visual: la validacion
+// real la sigue haciendo el backend al recibir el PUT.
+const RULES_FIELDS = [
+  { key:'symbol_whitelist', label:'Símbolos permitidos (whitelist)', type:'list',
+    hint:'Lista vacía bloquea TODAS las órdenes por seguridad (ninguna whitelist = ningún símbolo autorizado).' },
+  { key:'max_order_value_usd', label:'Valor máximo por orden (USD)', type:'number', min:0.01, max:10000000 },
+  { key:'max_position_pct_of_equity', label:'Máximo % del equity por posición', type:'number', min:0.01, max:100 },
+  { key:'risk_per_trade_pct', label:'Riesgo por operación (% del equity, para sugerir tamaño)', type:'number', min:0.01, max:100 },
+  { key:'daily_loss_limit_pct', label:'Límite de pérdida diaria (%)', type:'number', min:0.01, max:100 },
+  { key:'max_trades_per_day', label:'Máximo de operaciones por día', type:'number', min:1, max:1000, step:1, integer:true },
+  { key:'require_stop_loss_on_buy', label:'Exigir stop-loss en toda compra', type:'checkbox' },
+  { key:'max_stop_loss_pct', label:'Stop-loss máximo permitido (%)', type:'number', min:0.01, max:100 },
+  { key:'allow_short_selling', label:'Permitir short selling', type:'checkbox' },
+  { key:'manual_approval_threshold_usd', label:'Umbral de aprobación manual (USD)', type:'number', min:0, max:100000000 },
+  { key:'allow_extended_hours', label:'Permitir horario extendido', type:'checkbox' },
+  { key:'trading_hours_start', label:'Inicio horario de trading (HH:MM)', type:'text' },
+  { key:'trading_hours_end', label:'Fin horario de trading (HH:MM)', type:'text' },
+  { key:'trading_hours_timezone', label:'Zona horaria (IANA, ej. America/New_York)', type:'text' },
+];
+
+// Campos de screener.yaml. 'universe' se maneja aparte (puede tener cientos
+// de símbolos) en vez de mezclarse en esta grilla de 2 columnas.
+const SCREENER_FIELDS = [
+  { key:'benchmark_symbol', label:'Símbolo de referencia (benchmark)', type:'text' },
+  { key:'lookback_days', label:'Días de histórico a descargar', type:'number', min:1, step:1, integer:true },
+  { key:'scan_request_delay_seconds', label:'Pausa entre símbolos al escanear (seg.)', type:'number', min:0 },
+  { key:'sma_fast', label:'SMA rápida (días)', type:'number', min:1, step:1, integer:true },
+  { key:'sma_slow', label:'SMA lenta (días)', type:'number', min:1, step:1, integer:true },
+  { key:'momentum_lookback_days', label:'Ventana de momentum (días)', type:'number', min:1, step:1, integer:true },
+  { key:'momentum_short_days', label:'Ventana corta de momentum (días)', type:'number', min:1, step:1, integer:true },
+  { key:'rsi_period', label:'Período del RSI', type:'number', min:1, step:1, integer:true },
+  { key:'rsi_min', label:'RSI mínimo', type:'number' },
+  { key:'rsi_max', label:'RSI máximo', type:'number' },
+  { key:'min_avg_dollar_volume', label:'Volumen promedio mínimo (USD)', type:'number', min:0 },
+  { key:'top_n', label:'Cantidad de candidatos a rankear (top N)', type:'number', min:1, step:1, integer:true },
+  { key:'atr_period', label:'Período del ATR', type:'number', min:1, step:1, integer:true },
+  { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss sugerido', type:'number', min:0 },
+  { key:'max_holding_days', label:'Máximo de días en una posición', type:'number', min:1, step:1, integer:true },
+  { key:'regime_filter_enabled', label:'Filtro de régimen de mercado activo', type:'checkbox' },
+  { key:'regime_sma_period', label:'SMA de régimen (días)', type:'number', min:1, step:1, integer:true },
+  { key:'earnings_blackout_days', label:'Días de blackout antes de earnings', type:'number', min:0, step:1, integer:true },
+  { key:'near_high_filter_enabled', label:'Filtro de cercanía al máximo de 52 semanas activo', type:'checkbox' },
+  { key:'max_pct_below_52w_high', label:'Máximo % por debajo del máximo de 52 semanas', type:'number', min:0 },
+  { key:'backtest_years', label:'Años de histórico para el backtest', type:'number', min:1, step:1, integer:true },
+  { key:'backtest_assumed_capital_usd', label:'Capital asumido en el backtest (USD)', type:'number', min:0 },
+  { key:'commission_per_trade_usd', label:'Comisión por operación (USD)', type:'number', min:0 },
+  { key:'slippage_pct', label:'Slippage asumido (%)', type:'number', min:0 },
+  { key:'auto_scan_enabled', label:'Escaneo proactivo en background activo', type:'checkbox' },
+  { key:'auto_scan_interval_minutes', label:'Intervalo del escaneo proactivo (minutos)', type:'number', min:1, step:1, integer:true },
+  { key:'max_auto_drafts_per_cycle', label:'Máx. borradores por ciclo de escaneo proactivo', type:'number', min:0, step:1, integer:true },
+];
+
+function renderConfigField(f, values){
+  const id = 'cfg-' + f.key;
+  if(f.type === 'checkbox'){
+    return `<div class="fg"><label class="fl" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+      <input type="checkbox" id="${id}" ${values[f.key] ? 'checked' : ''}> ${esc(f.label)}
+    </label></div>`;
+  }
+  if(f.type === 'list'){
+    return `<div class="fg"><label class="fl">${esc(f.label)}</label>
+      <textarea id="${id}" class="fi" rows="3" style="resize:vertical;font-family:monospace;font-size:11px">${esc((values[f.key]||[]).join(', '))}</textarea>
+      ${f.hint ? `<p class="muted-sm" style="margin-top:3px">${esc(f.hint)}</p>` : ''}</div>`;
+  }
+  const attrs = [];
+  if(f.type === 'number'){
+    attrs.push(`step="${f.step ?? 'any'}"`);
+    if(f.min !== undefined) attrs.push(`min="${f.min}"`);
+    if(f.max !== undefined) attrs.push(`max="${f.max}"`);
+  }
+  return `<div class="fg"><label class="fl">${esc(f.label)}</label>
+    <input id="${id}" class="fi" type="${f.type}" value="${esc(values[f.key])}" ${attrs.join(' ')}></div>`;
+}
+
+function renderConfigFields(fields, values){
+  return fields.map(f => renderConfigField(f, values)).join('');
+}
+
+function readConfigFields(fields){
+  const out = {};
+  fields.forEach(f => {
+    const el = document.getElementById('cfg-' + f.key);
+    if(f.type === 'checkbox') out[f.key] = el.checked;
+    else if(f.type === 'list') out[f.key] = el.value.split(/[,\n]/).map(s => s.trim().toUpperCase()).filter(Boolean);
+    else if(f.type === 'number') out[f.key] = f.integer ? parseInt(el.value, 10) : parseFloat(el.value);
+    else out[f.key] = el.value.trim();
+  });
+  return out;
+}
+
+function formatValidationErrors(detail){
+  if(Array.isArray(detail)){
+    return detail.map(e => `${(e.loc||[]).filter(p => p !== 'body').join('.')}: ${e.msg}`).join(' | ');
+  }
+  return String(detail || 'Error al guardar.');
+}
+
+function openConfigModal(){
+  openModal('⚙️ Configuración', `
+    <div class="cfg-tabs">
+      <button type="button" class="cfg-tab on" id="cfgTabRules" onclick="showConfigTab('rules')">Reglas de riesgo</button>
+      <button type="button" class="cfg-tab" id="cfgTabScreener" onclick="showConfigTab('screener')">Screener</button>
+    </div>
+    <div id="cfgRulesPane"><p class="muted-sm">Cargando…</p></div>
+    <div id="cfgScreenerPane" style="display:none"><p class="muted-sm">Cargando…</p></div>
+  `);
+  loadConfigForms();
+}
+
+function showConfigTab(tab){
+  document.getElementById('cfgRulesPane').style.display = tab === 'rules' ? 'block' : 'none';
+  document.getElementById('cfgScreenerPane').style.display = tab === 'screener' ? 'block' : 'none';
+  document.getElementById('cfgTabRules').classList.toggle('on', tab === 'rules');
+  document.getElementById('cfgTabScreener').classList.toggle('on', tab === 'screener');
+}
+
+async function loadConfigForms(){
+  try{
+    const rules = await api('/api/rules', { auth:true });
+    document.getElementById('cfgRulesPane').innerHTML = `
+      <div class="modal-grid">${renderConfigFields(RULES_FIELDS, rules)}</div>
+      <div class="violations" id="cfgRulesErr"></div>
+      <button class="btn-submit" onclick="saveRulesConfig()">Guardar reglas</button>
+    `;
+  }catch(e){
+    document.getElementById('cfgRulesPane').innerHTML = `<p class="muted-sm">No se pudo cargar (revisá tu API key). ${esc(e.message||'')}</p>`;
+  }
+  try{
+    const screener = await api('/api/signals/config', { auth:true });
+    document.getElementById('cfgScreenerPane').innerHTML = `
+      <div class="modal-grid">${renderConfigFields(SCREENER_FIELDS, screener)}</div>
+      <div class="fg" style="margin-top:6px">
+        <label class="fl">Universo de símbolos a escanear (${(screener.universe||[]).length} actualmente)</label>
+        <textarea id="cfg-universe" class="fi" rows="6" style="resize:vertical;font-family:monospace;font-size:11px">${esc((screener.universe||[]).join(', '))}</textarea>
+        <p class="muted-sm" style="margin-top:3px">Separados por coma o salto de línea. Un universo más chico escanea más rápido y consume menos cuota de la API gratuita de datos.</p>
+      </div>
+      <div class="violations" id="cfgScreenerErr"></div>
+      <button class="btn-submit" onclick="saveScreenerConfig()">Guardar screener</button>
+    `;
+  }catch(e){
+    document.getElementById('cfgScreenerPane').innerHTML = `<p class="muted-sm">No se pudo cargar (revisá tu API key). ${esc(e.message||'')}</p>`;
+  }
+}
+
+async function saveRulesConfig(){
+  const errBox = document.getElementById('cfgRulesErr');
+  errBox.classList.remove('show');
+  try{
+    const payload = readConfigFields(RULES_FIELDS);
+    await api('/api/rules', { method:'PUT', auth:true, body:{ rules: payload } });
+    toast('✅ Reglas actualizadas.');
+    loadConfigForms();
+    showConfigTab('rules');
+  }catch(e){
+    errBox.textContent = e.status === 422 ? formatValidationErrors(e.data && e.data.detail) : (e.message || 'Error al guardar.');
+    errBox.classList.add('show');
+  }
+}
+
+async function saveScreenerConfig(){
+  const errBox = document.getElementById('cfgScreenerErr');
+  errBox.classList.remove('show');
+  try{
+    const payload = readConfigFields(SCREENER_FIELDS);
+    payload.universe = document.getElementById('cfg-universe').value
+      .split(/[,\n]/).map(s => s.trim().toUpperCase()).filter(Boolean);
+    await api('/api/signals/config', { method:'PUT', auth:true, body:{ config: payload } });
+    toast('✅ Configuración del screener actualizada.');
+    loadConfigForms();
+    showConfigTab('screener');
+  }catch(e){
+    errBox.textContent = e.status === 422 ? formatValidationErrors(e.data && e.data.detail) : (e.message || 'Error al guardar.');
+    errBox.classList.add('show');
+  }
+}
 
 // Reconstruye cash y posiciones (qty/costo prom.) replicando en orden
 // cronologico los aportes/retiros y las operaciones del fondo, para estimar
