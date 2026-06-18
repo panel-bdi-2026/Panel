@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -962,6 +963,156 @@ def create_fund(body: FundCreate, _: None = Depends(require_api_key)):
     return _fund_view(fund)
 
 
+_EMPTY_ROI_HISTORY = {
+    "dates": [],
+    "fund_cumulative_return_pct": [],
+    "benchmark_cumulative_return_pct": [],
+}
+
+
+def _compute_roi_history(funds: list) -> dict:
+    """Compara el retorno acumulado (time-weighted) del capital combinado de
+    TODOS los fondos contra el del S&P 500 (SPY) en la misma ventana, para
+    responder "le estoy ganando al mercado". Se mide combinado (no fondo por
+    fondo) porque lo que importa para esa pregunta es el capital total que el
+    usuario le asigno a esta herramienta, no como se reparte entre fondos.
+
+    Es time-weighted (no dollar-weighted como `net_contributed_capital`/ROI de
+    cada fondo individual en `_fund_view`): un aporte o retiro no debe inflar
+    ni desinflar la curva solo por su timing, o se estaria confundiendo
+    timing de cash-flow con habilidad de inversion. El precio de cierre de
+    SPY del dia de cada flujo/fill es la unica fuente de calendario de
+    trading: si no esta disponible, no hay nada confiable contra que
+    comparar, asi que se devuelve la forma vacia en vez de inventar fechas.
+    """
+    all_flows = [(f.created_at, f) for fund in funds for f in fund.capital_flows]
+    if not all_flows:
+        return dict(_EMPTY_ROI_HISTORY)
+
+    start_date = min(created_at for created_at, _ in all_flows).date()
+    today = datetime.now(timezone.utc).date()
+    lookback_days = max((today - start_date).days + 15, 15)
+
+    try:
+        bench_bars = get_daily_bars("SPY", lookback_days)
+    except MarketDataError:
+        return dict(_EMPTY_ROI_HISTORY)
+
+    calendar_index = bench_bars.index[bench_bars.index.date >= start_date]
+    if len(calendar_index) == 0:
+        return dict(_EMPTY_ROI_HISTORY)
+    bench_close = bench_bars["Close"].reindex(calendar_index)
+
+    symbols = {t.symbol for fund in funds for t in fund.trades}
+    symbol_close: dict[str, "pd.Series | None"] = {}
+    last_trade_price: dict[str, float] = {}
+    for symbol in symbols:
+        try:
+            bars = get_daily_bars(symbol, lookback_days)
+            symbol_close[symbol] = bars["Close"].reindex(calendar_index).ffill()
+        except MarketDataError:
+            symbol_close[symbol] = None
+
+    # Eventos (flujos de capital + fills de TODOS los fondos) agrupados por
+    # dia de calendario de trading: se aplican todos los de un mismo dia
+    # antes de marcar a mercado ese dia, sin importar de que fondo vinieron
+    # (la curva combina el capital de todos como si fuera uno solo).
+    events_by_day: dict = {}
+    for fund in funds:
+        for flow in fund.capital_flows:
+            events_by_day.setdefault(flow.created_at.date(), []).append(("flow", flow.amount))
+        for trade in fund.trades:
+            events_by_day.setdefault(trade.executed_at.date(), []).append(
+                ("trade", trade.side, trade.symbol, trade.quantity, trade.price)
+            )
+
+    cash = 0.0
+    positions: dict[str, float] = {}
+    dates: list[str] = []
+    fund_cum_pct: list[float] = []
+    bench_cum_pct: list[float] = []
+    cum = 0.0
+    prev_equity = None
+    bench_start_close = None
+
+    for day_ts in calendar_index:
+        day = day_ts.date()
+        net_flow = 0.0
+        for event in events_by_day.get(day, []):
+            if event[0] == "flow":
+                amount = event[1]
+                cash += amount
+                net_flow += amount
+            else:
+                _, side, symbol, quantity, price = event
+                if side == Side.BUY:
+                    cash -= quantity * price
+                    positions[symbol] = positions.get(symbol, 0.0) + quantity
+                else:
+                    cash += quantity * price
+                    positions[symbol] = positions.get(symbol, 0.0) - quantity
+                last_trade_price[symbol] = price
+
+        positions_value = 0.0
+        for symbol, qty in positions.items():
+            close_series = symbol_close.get(symbol)
+            price = None
+            if close_series is not None:
+                val = close_series.get(day_ts)
+                if val is not None and not pd.isna(val):
+                    price = float(val)
+            if price is None:
+                price = last_trade_price.get(symbol, 0.0)
+            positions_value += qty * price
+        equity = cash + positions_value
+
+        if prev_equity is None:
+            if equity > 0:
+                prev_equity = equity
+                cum = 0.0
+            else:
+                continue  # sin equity todavia: no emitir un 0% ficticio
+        else:
+            r_t = (equity - net_flow - prev_equity) / prev_equity if prev_equity > 0 else 0.0
+            cum = (1 + cum) * (1 + r_t) - 1
+            prev_equity = equity
+
+        bench_close_t = bench_close.get(day_ts)
+        if bench_close_t is None or pd.isna(bench_close_t):
+            continue
+        if bench_start_close is None:
+            bench_start_close = float(bench_close_t)
+        bench_cum = bench_close_t / bench_start_close - 1
+
+        dates.append(day.isoformat())
+        fund_cum_pct.append(round(cum * 100, 2))
+        bench_cum_pct.append(round(bench_cum * 100, 2))
+
+    if not dates:
+        return dict(_EMPTY_ROI_HISTORY)
+
+    return {
+        "dates": dates,
+        "fund_cumulative_return_pct": fund_cum_pct,
+        "benchmark_cumulative_return_pct": bench_cum_pct,
+    }
+
+
+@app.get("/api/funds/roi-history")
+def get_funds_roi_history(_: None = Depends(require_api_key)):
+    """Retorno acumulado time-weighted del capital combinado de todos los
+    fondos vs. el S&P 500 (SPY) en la misma ventana -- ver _compute_roi_history
+    para el detalle de por que es time-weighted y no dollar-weighted como el
+    ROI por fondo de `_fund_view`. Es aparte del bar chart de ROI actual por
+    fondo (ese es un snapshot del momento, este es una serie historica)."""
+    return _compute_roi_history(funds_store.list())
+
+
+# IMPORTANTE: esta ruta con parametro dinamico {fund_id} debe registrarse
+# DESPUES de "/api/funds/roi-history" (arriba) -- FastAPI/Starlette matchea
+# rutas en orden de registro, asi que si quedara antes capturaria
+# "roi-history" como un fund_id literal y la ruta de mas arriba nunca se
+# alcanzaria (404 enmascarado como "fondo no encontrado").
 @app.get("/api/funds/{fund_id}")
 def get_fund(fund_id: str, _: None = Depends(require_api_key)):
     fund = funds_store.get(fund_id)

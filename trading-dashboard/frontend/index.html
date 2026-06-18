@@ -161,6 +161,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
           </p>
           <div id="fundsBody"><div class="empty">Sin fondos creados aún</div></div>
           <div class="chart-wrap sm" id="roiChartWrap" style="display:none"><canvas id="roiChart"></canvas></div>
+          <div class="chart-wrap sm" id="roiHistoryChartWrap" style="display:none"><canvas id="roiHistoryChart"></canvas></div>
           <div class="frow" style="margin-top:12px">
             <div class="fg">
               <label class="fl">Nombre del fondo</label>
@@ -548,10 +549,37 @@ function renderRoiChart(funds){
   });
 }
 
+let roiHistoryChart = null;
+
+function renderRoiHistoryChart(data){
+  const wrap = document.getElementById('roiHistoryChartWrap');
+  if(!data.dates.length){ wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  if(roiHistoryChart) roiHistoryChart.destroy();
+  roiHistoryChart = new Chart(document.getElementById('roiHistoryChart'), {
+    type: 'line',
+    data: {
+      labels: data.dates,
+      datasets: [
+        { label: 'Tu cartera', data: data.fund_cumulative_return_pct, borderColor: '#0073CF', backgroundColor: 'rgba(0,115,207,.15)', fill: false, tension: .15, pointRadius: 0 },
+        { label: 'S&P 500 (SPY)', data: data.benchmark_cumulative_return_pct, borderColor: '#6b7280', backgroundColor: 'rgba(107,114,128,.1)', fill: false, tension: .15, pointRadius: 0 },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { display: true }, title: { display: true, text: 'Tu cartera vs. S&P 500 (retorno acumulado)', font: { size: 11 } } },
+      scales: { y: { ticks: { callback: v => v + '%' } } },
+    },
+  });
+}
+
 async function refreshFunds(){
   try{
     renderFunds(await api('/api/funds', { auth:true }));
   }catch(e){ /* sin API key todavia */ }
+  try{
+    renderRoiHistoryChart(await api('/api/funds/roi-history', { auth:true }));
+  }catch(e){ /* fallo del benchmark no debe romper el resto del refresh de fondos */ }
 }
 
 function openModal(title, bodyHtml){

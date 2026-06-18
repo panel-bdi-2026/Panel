@@ -24,13 +24,17 @@ os.environ["AUDIT_DB_PATH"] = str(Path(_tmp_dir) / "audit.db")
 os.environ["STATE_PATH"] = str(Path(_tmp_dir) / "state.json")
 os.environ["FUNDS_PATH"] = str(Path(_tmp_dir) / "funds.json")
 
+from datetime import datetime, timezone
+
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app import main as main_module
-from app.funds import FundsStore
-from app.models import AccountSummary
+from app.funds import CapitalFlow, Fund, FundsStore, FundTrade
+from app.market_data import MarketDataError
+from app.models import AccountSummary, Side
 from app.rules import RulesConfig
 from app.screener_config import ScreenerConfig
 
@@ -368,3 +372,170 @@ def test_capital_flow_withdrawal_allowed_even_when_disconnected(monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["cash_usd"] == 2_000
+
+
+# ---------------------------------------------------------------------------
+# Comparativa de retorno acumulado vs. benchmark (/api/funds/roi-history)
+# ---------------------------------------------------------------------------
+
+
+def _bars_from_closes(dates: list[str], closes: list[float]) -> pd.DataFrame:
+    idx = pd.DatetimeIndex([pd.Timestamp(d) for d in dates])
+    close = pd.Series(closes, index=idx)
+    return pd.DataFrame(
+        {"Open": close, "High": close, "Low": close, "Close": close, "Volume": 1_000_000},
+        index=idx,
+    )
+
+
+def test_roi_history_rejects_missing_api_key():
+    resp = client.get("/api/funds/roi-history")
+    assert resp.status_code == 401
+
+
+def test_roi_history_empty_when_no_funds():
+    resp = client.get("/api/funds/roi-history", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "dates": [],
+        "fund_cumulative_return_pct": [],
+        "benchmark_cumulative_return_pct": [],
+    }
+
+
+def test_roi_history_empty_when_fund_has_no_capital_flows(monkeypatch):
+    # Un fondo sin ningun aporte registrado (no deberia poder existir via la
+    # API real, pero el endpoint no debe asumirlo) tampoco tiene fecha de
+    # arranque para la comparacion: misma forma vacia que "sin fondos".
+    fund = Fund(id="f1", name="Vacio", cash_usd=0.0, created_at=datetime.now(timezone.utc))
+    main_module.funds_store.funds["f1"] = fund
+
+    def fail_if_called(symbol, lookback_days):
+        raise AssertionError("no deberia consultar market data sin capital_flows")
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fail_if_called)
+    resp = client.get("/api/funds/roi-history", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+    assert resp.json()["dates"] == []
+
+
+def test_roi_history_empty_when_spy_data_unavailable(monkeypatch):
+    flow = CapitalFlow(id="cf1", amount=10_000, created_at=datetime(2024, 1, 2, tzinfo=timezone.utc))
+    fund = Fund(id="f1", name="Test", cash_usd=10_000, created_at=flow.created_at, capital_flows=[flow])
+    main_module.funds_store.funds["f1"] = fund
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        raise MarketDataError("sin datos")
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fake_get_daily_bars)
+    resp = client.get("/api/funds/roi-history", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "dates": [],
+        "fund_cumulative_return_pct": [],
+        "benchmark_cumulative_return_pct": [],
+    }
+
+
+def test_roi_history_computes_time_weighted_return_vs_benchmark(monkeypatch):
+    """Un fondo, un aporte y una compra el mismo dia (el dia de arranque de
+    la comparacion), seguido de dos dias de mark-to-market sin nuevos flujos.
+
+    Valores hand-computed a partir de los precios sinteticos de abajo:
+      - dia 1 (2024-01-02, dia del aporte+compra): cash=10000-1000=9000,
+        10 AAPL @ cierre 100 -> equity=10000. Primer dia con equity>0: cum=0%.
+        SPY cierra 400 (mismo dia, indexa el benchmark en 0%).
+      - dia 2 (2024-01-03): AAPL cierra 110 -> equity=9000+1100=10100.
+        r = (10100-10000)/10000 = 1% -> cum=1.00%. SPY cierra 404 -> +1.00%.
+      - dia 3 (2024-01-04): AAPL cierra 121 -> equity=9000+1210=10210.
+        r = (10210-10100)/10100 = 1.089...% -> cum=(1.01*1.0108910891)-1=2.10%.
+        SPY cierra 412 -> 412/400-1 = 3.00%.
+    El dia previo (2024-01-01) tiene barra de SPY pero es anterior al aporte:
+    no debe aparecer en la respuesta.
+    """
+    flow = CapitalFlow(id="cf1", amount=10_000, created_at=datetime(2024, 1, 2, tzinfo=timezone.utc))
+    trade = FundTrade(
+        id="t1",
+        symbol="AAPL",
+        side=Side.BUY,
+        quantity=10,
+        price=100,
+        executed_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+    )
+    fund = Fund(
+        id="f1",
+        name="Test",
+        cash_usd=9_000,
+        created_at=flow.created_at,
+        capital_flows=[flow],
+        trades=[trade],
+    )
+    main_module.funds_store.funds["f1"] = fund
+
+    spy_bars = _bars_from_closes(
+        ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"],
+        [395.0, 400.0, 404.0, 412.0],
+    )
+    aapl_bars = _bars_from_closes(
+        ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04"],
+        [99.0, 100.0, 110.0, 121.0],
+    )
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol == "SPY":
+            return spy_bars
+        if symbol == "AAPL":
+            return aapl_bars
+        raise MarketDataError(f"sin datos sinteticos para {symbol}")
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fake_get_daily_bars)
+    resp = client.get("/api/funds/roi-history", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["dates"] == ["2024-01-02", "2024-01-03", "2024-01-04"]
+    assert body["fund_cumulative_return_pct"] == [0.0, 1.0, 2.1]
+    assert body["benchmark_cumulative_return_pct"] == [0.0, 1.0, 3.0]
+
+
+def test_roi_history_falls_back_to_last_trade_price_when_symbol_data_unavailable(monkeypatch):
+    """Si falla la descarga de precios del simbolo operado (pero no la de
+    SPY), el endpoint no debe romperse: usa el ultimo precio de fill conocido
+    como aproximacion plana del valor de esa posicion en mark-to-market."""
+    flow = CapitalFlow(id="cf1", amount=10_000, created_at=datetime(2024, 1, 2, tzinfo=timezone.utc))
+    trade = FundTrade(
+        id="t1",
+        symbol="ZZZZ",
+        side=Side.BUY,
+        quantity=10,
+        price=100,
+        executed_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+    )
+    fund = Fund(
+        id="f1",
+        name="Test",
+        cash_usd=9_000,
+        created_at=flow.created_at,
+        capital_flows=[flow],
+        trades=[trade],
+    )
+    main_module.funds_store.funds["f1"] = fund
+
+    spy_bars = _bars_from_closes(
+        ["2024-01-02", "2024-01-03"],
+        [400.0, 404.0],
+    )
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol == "SPY":
+            return spy_bars
+        raise MarketDataError("sin datos para ZZZZ")
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fake_get_daily_bars)
+    resp = client.get("/api/funds/roi-history", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+    body = resp.json()
+    # Con ZZZZ marcado siempre al precio de fill (100), el equity no cambia
+    # de un dia al otro (9000 + 10*100 = 10000 ambos dias) -> retorno 0%.
+    assert body["dates"] == ["2024-01-02", "2024-01-03"]
+    assert body["fund_cumulative_return_pct"] == [0.0, 0.0]
+    assert body["benchmark_cumulative_return_pct"] == [0.0, 1.0]
