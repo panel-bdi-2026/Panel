@@ -1006,23 +1006,13 @@ async function submitOrder(){
 }
 
 let lastSignals = {};
+let lastScanResults = [];
+let signalsDisplayCount = 20;
 
-async function scanSignals(force=false){
+function renderSignalsTable(){
   const body = document.getElementById('signalsBody');
-  const meta = document.getElementById('signalsMeta');
-  if(!getApiKey()){
-    body.innerHTML = '<tr><td colspan="8" class="empty">Define tu API Key (🔑 arriba) para escanear el mercado</td></tr>';
-    return;
-  }
-  body.innerHTML = '<tr><td colspan="8" class="empty">Escaneando…</td></tr>';
-  try{
-    const data = await api(`/api/signals/scan${force ? '?force=true' : ''}`, { auth:true });
-    lastSignals = {};
-    if(!data.results.length){
-      body.innerHTML = '<tr><td colspan="8" class="empty">Sin candidatos que pasen los filtros configurados</td></tr>';
-    } else {
-      data.results.forEach(r => lastSignals[r.symbol] = r);
-      body.innerHTML = data.results.map(r => `
+  const visible = lastScanResults.slice(0, signalsDisplayCount);
+  let rowsHtml = visible.map(r => `
         <tr>
           <td><b>${esc(r.symbol)}</b>${r.passes_filters ? '' : ' <span class="muted-sm">(no pasa filtros)</span>'}</td>
           <td>${r.score.toFixed(1)}</td>
@@ -1036,6 +1026,35 @@ async function scanSignals(force=false){
             <button class="info-btn" onclick="showSignalDetail('${esc(r.symbol)}')" title="Ver más datos de esta señal">ⓘ</button>
           </td>
         </tr>`).join('');
+  if(signalsDisplayCount < lastScanResults.length){
+    rowsHtml += `
+        <tr>
+          <td colspan="8" style="text-align:center">
+            <button class="btn btn-ghost" onclick="signalsDisplayCount = Math.min(signalsDisplayCount + 20, lastScanResults.length); renderSignalsTable()">Ver más (mostrando ${signalsDisplayCount} de ${lastScanResults.length})</button>
+          </td>
+        </tr>`;
+  }
+  body.innerHTML = rowsHtml;
+}
+
+async function scanSignals(force=false){
+  const body = document.getElementById('signalsBody');
+  const meta = document.getElementById('signalsMeta');
+  if(!getApiKey()){
+    body.innerHTML = '<tr><td colspan="8" class="empty">Define tu API Key (🔑 arriba) para escanear el mercado</td></tr>';
+    return;
+  }
+  body.innerHTML = '<tr><td colspan="8" class="empty">Escaneando…</td></tr>';
+  try{
+    const data = await api(`/api/signals/scan${force ? '?force=true' : ''}`, { auth:true });
+    lastSignals = {};
+    lastScanResults = data.results;
+    signalsDisplayCount = 20;
+    if(!data.results.length){
+      body.innerHTML = '<tr><td colspan="8" class="empty">Sin candidatos que pasen los filtros configurados</td></tr>';
+    } else {
+      data.results.forEach(r => lastSignals[r.symbol] = r);
+      renderSignalsTable();
     }
     meta.textContent = `Actualizado: ${new Date(data.as_of).toLocaleString()}${data.cached ? ' (cache)' : ''} · ${data.results.length} símbolos con datos`;
     renderSignalsChart(data.results);
