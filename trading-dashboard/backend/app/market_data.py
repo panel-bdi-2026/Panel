@@ -21,6 +21,15 @@ class MarketDataError(RuntimeError):
     pass
 
 
+# La API gratuita de Yahoo Finance a veces responde vacio o con error de forma
+# transitoria (rate limiting silencioso, hiccup de red) sin que el simbolo sea
+# realmente invalido. Reintentar con backoff evita descartar un simbolo valido
+# por un fallo pasajero, a costa de una demora acotada en el peor caso (simbolo
+# realmente invalido o limite sostenido).
+_MAX_FETCH_RETRIES = 3
+_RETRY_BACKOFF_BASE_SECONDS = 0.5
+
+
 def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.DataFrame:
     """Barras diarias OHLCV ajustadas para `symbol`, cubriendo ~lookback_days dias de trading.
 
@@ -31,6 +40,10 @@ def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.D
     `force=True` ignora el cache (usado por el boton "forzar rescan" del
     dashboard): sin esto, forzar un rescan dentro de los 15 minutos del cache
     no traia datos nuevos a pesar de que el usuario lo pidio explicitamente.
+
+    Reintenta hasta `_MAX_FETCH_RETRIES` veces con backoff exponencial ante
+    excepcion o respuesta vacia, ya que ambas pueden ser un fallo transitorio
+    de la API gratuita (ver comentario de `_MAX_FETCH_RETRIES`).
     """
     key = (symbol.upper(), lookback_days)
     now = time.time()
@@ -42,14 +55,26 @@ def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.D
     # *1.6 para convertir dias de trading aproximados a dias calendario (fines de
     # semana/feriados) mas un margen.
     start = end - timedelta(days=int(lookback_days * 1.6) + 10)
-    try:
-        df = yf.Ticker(symbol).history(start=start.date(), end=end.date(), interval="1d", auto_adjust=True)
-    except Exception as exc:
-        raise MarketDataError(f"No se pudo obtener datos de {symbol}: {exc}") from exc
+
+    df = None
+    last_error: Exception | None = None
+    for attempt in range(_MAX_FETCH_RETRIES):
+        try:
+            df = yf.Ticker(symbol).history(start=start.date(), end=end.date(), interval="1d", auto_adjust=True)
+            last_error = None
+            if df is not None and not df.empty:
+                break
+        except Exception as exc:
+            df = None
+            last_error = exc
+        if attempt < _MAX_FETCH_RETRIES - 1:
+            time.sleep(_RETRY_BACKOFF_BASE_SECONDS * (2 ** attempt))
 
     if df is None or df.empty:
+        detail = f" ({last_error})" if last_error else ""
         raise MarketDataError(
-            f"Sin datos para {symbol}: simbolo invalido o limite de la API gratuita alcanzado."
+            f"Sin datos para {symbol} tras {_MAX_FETCH_RETRIES} intentos{detail}: "
+            f"simbolo invalido o limite de la API gratuita alcanzado."
         )
 
     df = df.rename(columns=str.title)
