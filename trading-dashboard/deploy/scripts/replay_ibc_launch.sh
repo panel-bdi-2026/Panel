@@ -36,6 +36,11 @@ echo "Comando encontrado:"
 echo "$CMD"
 echo
 
+# Si quedo un archivo de una corrida anterior (p.ej. con permisos heredados de
+# trading:trading), pisarlo directamente con ">" puede dar "Permission denied"
+# aunque se corra como root. Borrarlo primero asegura un archivo nuevo limpio.
+rm -f /tmp/_ibc_replay_cmd.sh
+
 {
   echo '#!/usr/bin/env bash'
   echo "export DISPLAY=$DISPLAY_NUM"
