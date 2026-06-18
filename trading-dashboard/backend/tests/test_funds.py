@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.funds import FundsStore
@@ -196,3 +198,52 @@ def test_partial_sell_keeps_opened_at_and_stop_loss(store):
     pos = store.get(fund.id).positions["AAPL"]
     assert pos.opened_at == original_opened_at
     assert pos.stop_loss_price == 90
+
+
+def test_load_skips_corrupt_fund_entry_but_keeps_valid_ones(tmp_path):
+    path = tmp_path / "funds.json"
+    good = FundsStore(path).create("Bueno", 1000)
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["fondo-roto"] = {"id": "fondo-roto", "name": "Roto"}  # falta cash_usd/created_at
+    path.write_text(json.dumps(raw, default=str), encoding="utf-8")
+
+    store2 = FundsStore(path)
+    assert store2.get(good.id) is not None
+    assert store2.get(good.id).cash_usd == 1000
+    assert "fondo-roto" not in store2.funds
+
+    backups = list(tmp_path.glob("funds.corrupt.*.bak"))
+    assert len(backups) == 1
+
+
+def test_load_with_invalid_json_backs_up_and_starts_empty(tmp_path):
+    path = tmp_path / "funds.json"
+    path.write_text("{esto no es json valido", encoding="utf-8")
+
+    store = FundsStore(path)
+    assert store.funds == {}
+
+    backups = list(tmp_path.glob("funds.corrupt.*.bak"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "{esto no es json valido"
+
+
+def test_load_with_non_dict_json_backs_up_and_starts_empty(tmp_path):
+    path = tmp_path / "funds.json"
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+
+    store = FundsStore(path)
+    assert store.funds == {}
+
+    backups = list(tmp_path.glob("funds.corrupt.*.bak"))
+    assert len(backups) == 1
+
+
+def test_load_does_not_back_up_a_clean_file(tmp_path):
+    path = tmp_path / "funds.json"
+    FundsStore(path).create("Test", 5000)
+
+    FundsStore(path)
+
+    assert list(tmp_path.glob("funds.corrupt.*.bak")) == []

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .atomic_io import atomic_write_text
 from .models import Side
+
+logger = logging.getLogger(__name__)
 
 
 class FundPosition(BaseModel):
@@ -185,14 +189,49 @@ class FundsStore:
         self.path = path
         self.funds: dict[str, Fund] = self._load()
 
+    def _backup_corrupt_file(self) -> None:
+        """Copia funds.json a un .bak con timestamp antes de descartar lo
+        que no se pudo leer. Sin esto, el primer save() posterior a un
+        arranque con datos corruptos sobreescribe el original con el
+        estado parcial en memoria y lo corrupto se pierde para siempre."""
+        if not self.path.exists():
+            return
+        backup_path = self.path.with_suffix(
+            f".corrupt.{datetime.now(timezone.utc):%Y%m%dT%H%M%S%f}.bak"
+        )
+        try:
+            shutil.copy2(self.path, backup_path)
+            logger.error("funds store corrupto, respaldado en %s", backup_path)
+        except OSError:
+            logger.exception("no se pudo respaldar el archivo de fondos corrupto")
+
     def _load(self) -> dict[str, Fund]:
         if not self.path.exists():
             return {}
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
+            self._backup_corrupt_file()
             return {}
-        return {fid: Fund(**f) for fid, f in data.items()}
+
+        if not isinstance(raw, dict):
+            self._backup_corrupt_file()
+            return {}
+
+        # Cada fondo se valida por separado: un solo fondo malformado (ej.
+        # editado a mano, o de una version vieja del esquema) no debe tirar
+        # abajo el resto de los fondos validos ni el arranque del backend.
+        funds: dict[str, Fund] = {}
+        any_corrupt = False
+        for fid, f in raw.items():
+            try:
+                funds[fid] = Fund(**f)
+            except ValidationError:
+                any_corrupt = True
+                logger.error("fondo %s corrupto, se descarta (ver backup)", fid)
+        if any_corrupt:
+            self._backup_corrupt_file()
+        return funds
 
     def save(self) -> None:
         atomic_write_text(
