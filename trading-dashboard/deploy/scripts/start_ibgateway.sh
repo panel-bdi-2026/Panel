@@ -15,4 +15,6 @@ trap 'kill "$XVFB_PID" 2>/dev/null || true' EXIT
 export DISPLAY="$DISPLAY_NUM"
 sleep 2  # darle tiempo a Xvfb a levantar antes de lanzar IBC
 
-exec "$IBC_DIR/gatewaystart.sh"
+# -inline evita que gatewaystart.sh abra una xterm en segundo plano y termine
+# enseguida (lo que systemd interpretaria como el servicio ya finalizado).
+exec "$IBC_DIR/gatewaystart.sh" -inline
