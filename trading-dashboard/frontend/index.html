@@ -280,20 +280,34 @@ function getApiKey(){ return localStorage.getItem(apiKeyStorageKey) || ''; }
 function setApiKey(v){ localStorage.setItem(apiKeyStorageKey, v); }
 
 function openApiKeyPrompt(){
-  const v = prompt('API Key del backend (header X-API-Key, definida en .env):', getApiKey());
-  if(v !== null){
-    setApiKey(v.trim());
-    // El WS tambien requiere la API key (como query param, ya que el navegador
-    // no puede mandar headers en el handshake): reconectar para que tome la
-    // key recien guardada sin esperar al reintento automatico de 4s.
-    if(ws) ws.close();
-    connectWs();
-    // Recien ahora se puede escanear/leer la cuenta: refresca todo con la key.
-    refreshAll();
-    refreshPositions();
-    refreshFunds();
-    scanSignals(false);
-  }
+  openModal('API Key', `
+    <p class="muted-sm" style="margin-bottom:10px">
+      Se manda en el header <code>X-API-Key</code> (definida como <code>API_KEY</code> en el
+      <code>.env</code> del backend) para autenticar las llamadas al API y al WebSocket.
+    </p>
+    <div class="fg">
+      <label class="fl">API Key</label>
+      <input id="apikey-input" class="fi" type="password" autocomplete="off"
+        value="${esc(getApiKey())}" onkeydown="if(event.key==='Enter') saveApiKey()">
+    </div>
+    <button class="btn-submit" onclick="saveApiKey()">Guardar</button>
+  `);
+  document.getElementById('apikey-input').focus();
+}
+
+function saveApiKey(){
+  setApiKey(document.getElementById('apikey-input').value.trim());
+  closeModal();
+  // El WS tambien requiere la API key (como query param, ya que el navegador
+  // no puede mandar headers en el handshake): reconectar para que tome la
+  // key recien guardada sin esperar al reintento automatico de 4s.
+  if(ws) ws.close();
+  connectWs();
+  // Recien ahora se puede escanear/leer la cuenta: refresca todo con la key.
+  refreshAll();
+  refreshPositions();
+  refreshFunds();
+  scanSignals(false);
 }
 
 function toast(msg, ms=3500){
