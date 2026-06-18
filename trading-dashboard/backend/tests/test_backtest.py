@@ -252,6 +252,70 @@ def _trade(symbol, entry_day, exit_day, return_pct=1.0):
     )
 
 
+def _bench_bars_for_stats(n_days=10):
+    return _bars([100.0 + i for i in range(n_days)])
+
+
+def test_breakeven_trades_excluded_from_losses_and_win_rate():
+    from app.backtest import _compute_summary_stats
+    # Dos ganadoras, una empate exacto (0%): el empate no debe contar ni como
+    # ganadora ni como perdedora, y no debe distorsionar avg_loss.
+    trades = [
+        _trade("A", 1, 2, return_pct=2.0),
+        _trade("B", 2, 3, return_pct=0.0),
+        _trade("C", 3, 4, return_pct=4.0),
+    ]
+    summary = _compute_summary_stats(trades, top_n=10, bench_bars=_bench_bars_for_stats())
+    assert summary.total_trades == 3
+    # win_rate solo cuenta retornos > 0 sobre el total: 2/3.
+    assert summary.win_rate_pct == round(2 / 3 * 100, 1)
+    assert summary.avg_loss_pct == 0.0  # losses list vacia -> default 0.0, no contaminada por el 0% literal
+
+
+def test_profit_factor_is_infinite_when_no_losing_trades():
+    from app.backtest import _compute_summary_stats
+    trades = [_trade("A", 1, 2, return_pct=3.0), _trade("B", 2, 3, return_pct=5.0)]
+    summary = _compute_summary_stats(trades, top_n=10, bench_bars=_bench_bars_for_stats())
+    assert summary.profit_factor is None
+    assert summary.profit_factor_is_infinite is True
+
+
+def test_profit_factor_is_none_and_finite_when_all_trades_breakeven():
+    from app.backtest import _compute_summary_stats
+    trades = [_trade("A", 1, 2, return_pct=0.0), _trade("B", 2, 3, return_pct=0.0)]
+    summary = _compute_summary_stats(trades, top_n=10, bench_bars=_bench_bars_for_stats())
+    assert summary.profit_factor is None
+    assert summary.profit_factor_is_infinite is False
+
+
+def test_profit_factor_is_finite_ratio_when_mixed_wins_and_losses():
+    from app.backtest import _compute_summary_stats
+    trades = [_trade("A", 1, 2, return_pct=4.0), _trade("B", 2, 3, return_pct=-2.0)]
+    summary = _compute_summary_stats(trades, top_n=10, bench_bars=_bench_bars_for_stats())
+    assert summary.profit_factor == 2.0
+    assert summary.profit_factor_is_infinite is False
+
+
+def test_sharpe_uses_sample_stdev_not_population_stdev():
+    from app.backtest import _compute_summary_stats
+    import statistics as _stats
+    returns_pct = [2.0, -1.0, 3.0, -0.5, 1.5]
+    trades = [_trade(f"S{i}", i + 1, i + 2, return_pct=r) for i, r in enumerate(returns_pct)]
+    summary = _compute_summary_stats(trades, top_n=10, bench_bars=_bench_bars_for_stats())
+
+    returns_decimal = [r / 100 for r in returns_pct]
+    span_days = max((trades[-1].exit_date - trades[0].entry_date).days, 1)
+    trades_per_year = len(trades) / (span_days / 365.25)
+    expected_sharpe_sample = round(
+        (_stats.mean(returns_decimal) / _stats.stdev(returns_decimal)) * (trades_per_year ** 0.5), 2
+    )
+    expected_sharpe_population = round(
+        (_stats.mean(returns_decimal) / _stats.pstdev(returns_decimal)) * (trades_per_year ** 0.5), 2
+    )
+    assert summary.sharpe_ratio == expected_sharpe_sample
+    assert summary.sharpe_ratio != expected_sharpe_population
+
+
 def test_cap_concurrent_positions_limits_simultaneous_trades():
     from app.backtest import cap_concurrent_positions
     # 3 operaciones que se solapan completamente (todas abiertas dia 1-10) con

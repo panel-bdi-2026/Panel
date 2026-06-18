@@ -146,6 +146,7 @@ class BacktestSummary(BaseModel):
     avg_win_pct: float
     avg_loss_pct: float
     profit_factor: Optional[float] = None
+    profit_factor_is_infinite: bool = False
     expectancy_pct: float
     strategy_cumulative_return_pct: float
     benchmark_cumulative_return_pct: float

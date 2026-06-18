@@ -138,6 +138,75 @@ def cap_concurrent_positions(trades: list[BacktestTrade], top_n: int) -> list[Ba
     return taken
 
 
+def _compute_summary_stats(
+    all_trades: list[BacktestTrade], top_n: int, bench_bars: pd.DataFrame
+) -> BacktestSummary:
+    """Calcula las metricas resumen a partir de la lista final de operaciones
+    (ya filtrada por cap_concurrent_positions). Separado de run_backtest para
+    poder testearlo con operaciones sinteticas, sin pasar por todo el pipeline
+    de datos de mercado."""
+    returns = [t.return_pct for t in all_trades]
+    wins = [r for r in returns if r > 0]
+    losses = [r for r in returns if r < 0]
+    win_rate = len(wins) / len(returns) * 100
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+    gross_profit = sum(wins)
+    gross_loss = abs(sum(losses))
+    # gross_loss == 0 es ambiguo: puede ser "nunca hubo perdidas" (profit factor
+    # infinito, no representable en JSON estandar) o "no hubo ni ganancias ni
+    # perdidas" (indefinido). profit_factor_is_infinite distingue ambos casos
+    # para el frontend sin depender de float('inf').
+    profit_factor = (gross_profit / gross_loss) if gross_loss else None
+    profit_factor_is_infinite = gross_loss == 0 and gross_profit > 0
+    expectancy = sum(returns) / len(returns)
+
+    equity = 1.0
+    peak = 1.0
+    max_drawdown = 0.0
+    equity_curve: list[EquityCurvePoint] = [
+        EquityCurvePoint(date=all_trades[0].entry_date, equity_pct=0.0)
+    ]
+    for t in all_trades:
+        weight = 1.0 / top_n
+        equity *= 1 + weight * t.return_pct / 100
+        peak = max(peak, equity)
+        drawdown = (equity - peak) / peak * 100
+        max_drawdown = min(max_drawdown, drawdown)
+        equity_curve.append(EquityCurvePoint(date=t.exit_date, equity_pct=round((equity - 1) * 100, 2)))
+    cumulative_return = (equity - 1) * 100
+
+    benchmark_cumulative = float(bench_bars["Close"].iloc[-1] / bench_bars["Close"].iloc[0] - 1) * 100
+
+    sharpe_ratio = None
+    returns_decimal = [r / 100 for r in returns]
+    if len(returns_decimal) >= 2:
+        std_r = statistics.stdev(returns_decimal)
+        if std_r > 0:
+            span_days = max((all_trades[-1].exit_date - all_trades[0].entry_date).days, 1)
+            trades_per_year = len(all_trades) / (span_days / 365.25)
+            sharpe_ratio = (statistics.mean(returns_decimal) / std_r) * (trades_per_year ** 0.5)
+
+    return BacktestSummary(
+        start_date=all_trades[0].entry_date,
+        end_date=all_trades[-1].exit_date,
+        total_trades=len(all_trades),
+        win_rate_pct=round(win_rate, 1),
+        avg_return_pct=round(expectancy, 2),
+        avg_win_pct=round(avg_win, 2),
+        avg_loss_pct=round(avg_loss, 2),
+        profit_factor=round(profit_factor, 2) if profit_factor is not None else None,
+        profit_factor_is_infinite=profit_factor_is_infinite,
+        expectancy_pct=round(expectancy, 2),
+        strategy_cumulative_return_pct=round(cumulative_return, 2),
+        benchmark_cumulative_return_pct=round(benchmark_cumulative, 2),
+        max_drawdown_pct=round(max_drawdown, 2),
+        sharpe_ratio=round(sharpe_ratio, 2) if sharpe_ratio is not None else None,
+        trades=all_trades[-50:],
+        equity_curve=equity_curve,
+    )
+
+
 def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     """Backtest simplificado de la estrategia momentum sobre el universo configurado.
 
@@ -201,57 +270,4 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
 
-    returns = [t.return_pct for t in all_trades]
-    wins = [r for r in returns if r > 0]
-    losses = [r for r in returns if r <= 0]
-    win_rate = len(wins) / len(returns) * 100
-    avg_win = sum(wins) / len(wins) if wins else 0.0
-    avg_loss = sum(losses) / len(losses) if losses else 0.0
-    gross_profit = sum(wins)
-    gross_loss = abs(sum(losses))
-    profit_factor = (gross_profit / gross_loss) if gross_loss else None
-    expectancy = sum(returns) / len(returns)
-
-    equity = 1.0
-    peak = 1.0
-    max_drawdown = 0.0
-    equity_curve: list[EquityCurvePoint] = [
-        EquityCurvePoint(date=all_trades[0].entry_date, equity_pct=0.0)
-    ]
-    for t in all_trades:
-        weight = 1.0 / cfg.top_n
-        equity *= 1 + weight * t.return_pct / 100
-        peak = max(peak, equity)
-        drawdown = (equity - peak) / peak * 100
-        max_drawdown = min(max_drawdown, drawdown)
-        equity_curve.append(EquityCurvePoint(date=t.exit_date, equity_pct=round((equity - 1) * 100, 2)))
-    cumulative_return = (equity - 1) * 100
-
-    benchmark_cumulative = float(bench_bars["Close"].iloc[-1] / bench_bars["Close"].iloc[0] - 1) * 100
-
-    sharpe_ratio = None
-    returns_decimal = [r / 100 for r in returns]
-    if len(returns_decimal) >= 2:
-        std_r = statistics.pstdev(returns_decimal)
-        if std_r > 0:
-            span_days = max((all_trades[-1].exit_date - all_trades[0].entry_date).days, 1)
-            trades_per_year = len(all_trades) / (span_days / 365.25)
-            sharpe_ratio = (statistics.mean(returns_decimal) / std_r) * (trades_per_year ** 0.5)
-
-    return BacktestSummary(
-        start_date=all_trades[0].entry_date,
-        end_date=all_trades[-1].exit_date,
-        total_trades=len(all_trades),
-        win_rate_pct=round(win_rate, 1),
-        avg_return_pct=round(expectancy, 2),
-        avg_win_pct=round(avg_win, 2),
-        avg_loss_pct=round(avg_loss, 2),
-        profit_factor=round(profit_factor, 2) if profit_factor is not None else None,
-        expectancy_pct=round(expectancy, 2),
-        strategy_cumulative_return_pct=round(cumulative_return, 2),
-        benchmark_cumulative_return_pct=round(benchmark_cumulative, 2),
-        max_drawdown_pct=round(max_drawdown, 2),
-        sharpe_ratio=round(sharpe_ratio, 2) if sharpe_ratio is not None else None,
-        trades=all_trades[-50:],
-        equity_curve=equity_curve,
-    )
+    return _compute_summary_stats(all_trades, cfg.top_n, bench_bars)
