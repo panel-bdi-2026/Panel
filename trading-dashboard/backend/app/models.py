@@ -132,6 +132,11 @@ class BacktestTrade(BaseModel):
     exit_reason: str  # stop_loss | max_holding_days | trend_break
 
 
+class EquityCurvePoint(BaseModel):
+    date: datetime
+    equity_pct: float  # retorno acumulado de la estrategia (%), 0 al inicio
+
+
 class BacktestSummary(BaseModel):
     start_date: datetime
     end_date: datetime
@@ -147,3 +152,4 @@ class BacktestSummary(BaseModel):
     max_drawdown_pct: float
     sharpe_ratio: Optional[float] = None
     trades: list[BacktestTrade] = []
+    equity_curve: list[EquityCurvePoint] = []

@@ -7,7 +7,7 @@ import pandas as pd
 
 from .indicators import atr, pct_from_high, rate_of_change, rsi, sma
 from .market_data import MarketDataError, get_daily_bars
-from .models import BacktestSummary, BacktestTrade
+from .models import BacktestSummary, BacktestTrade, EquityCurvePoint
 from .screener_config import ScreenerConfig
 
 
@@ -215,12 +215,16 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     equity = 1.0
     peak = 1.0
     max_drawdown = 0.0
+    equity_curve: list[EquityCurvePoint] = [
+        EquityCurvePoint(date=all_trades[0].entry_date, equity_pct=0.0)
+    ]
     for t in all_trades:
         weight = 1.0 / cfg.top_n
         equity *= 1 + weight * t.return_pct / 100
         peak = max(peak, equity)
         drawdown = (equity - peak) / peak * 100
         max_drawdown = min(max_drawdown, drawdown)
+        equity_curve.append(EquityCurvePoint(date=t.exit_date, equity_pct=round((equity - 1) * 100, 2)))
     cumulative_return = (equity - 1) * 100
 
     benchmark_cumulative = float(bench_bars["Close"].iloc[-1] / bench_bars["Close"].iloc[0] - 1) * 100
@@ -249,4 +253,5 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
         max_drawdown_pct=round(max_drawdown, 2),
         sharpe_ratio=round(sharpe_ratio, 2) if sharpe_ratio is not None else None,
         trades=all_trades[-50:],
+        equity_curve=equity_curve,
     )

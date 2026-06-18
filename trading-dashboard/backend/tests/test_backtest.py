@@ -85,6 +85,16 @@ def test_backtest_raises_when_no_trades_generated(monkeypatch):
         run_backtest(config)
 
 
+def test_backtest_includes_equity_curve_anchored_at_zero(patched_market_data):
+    config = ScreenerConfig(universe=["MOM", "FLAT"], benchmark_symbol="SPY", backtest_years=1)
+    summary = run_backtest(config)
+    assert len(summary.equity_curve) == summary.total_trades + 1
+    assert summary.equity_curve[0].equity_pct == 0.0
+    assert summary.equity_curve[0].date == summary.start_date
+    assert summary.equity_curve[-1].date == summary.end_date
+    assert summary.equity_curve[-1].equity_pct == summary.strategy_cumulative_return_pct
+
+
 def test_backtest_includes_sharpe_ratio_when_enough_trades(patched_market_data):
     config = ScreenerConfig(universe=["MOM", "FLAT"], benchmark_symbol="SPY", backtest_years=1)
     summary = run_backtest(config)
