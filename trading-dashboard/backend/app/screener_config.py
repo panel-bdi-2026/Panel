@@ -14,7 +14,7 @@ from .models import validate_symbol
 # en vez de punto para que coincidan con la convencion de yfinance. Editalo en
 # screener.yaml segun tu criterio (un universo mas chico escanea mas rapido y
 # consume menos cuota de la API gratuita de datos).
-DEFAULT_UNIVERSE = [
+_SP500_TICKERS = [
     "A", "AAPL", "ABBV", "ABNB", "ABT", "ACGL", "ACN", "ADBE", "ADI", "ADM",
     "ADP", "ADSK", "AEE", "AEP", "AES", "AFL", "AIG", "AIZ", "AJG", "AKAM",
     "ALB", "ALGN", "ALL", "ALLE", "AMAT", "AMCR", "AMD", "AME", "AMGN", "AMP",
@@ -67,6 +67,37 @@ DEFAULT_UNIVERSE = [
     "WSM", "WST", "WTW", "WY", "WYNN", "XEL", "XOM", "XYL", "XYZ", "YUM",
     "ZBH", "ZBRA", "ZTS",
 ]
+
+# Complemento al S&P 500: empresas mas chicas, mas jovenes y de mayor
+# potencial de crecimiento (small/mid-cap) que el indice de las 500 mas
+# grandes deja afuera por definicion. No es la replica mecanica de un indice
+# (S&P 400/600 o Russell 2000): no hubo forma de descargar esos constituyentes
+# completos de forma verificable desde este entorno (Wikipedia, iShares/SPDR y
+# similares devuelven error al intentar leerlos). En su lugar, cada ticker de
+# esta lista fue confirmado individualmente via busqueda web contra al menos
+# una fuente financiera real (Yahoo Finance, Nasdaq, stockanalysis.com, etc.)
+# para minimizar el riesgo de incluir un simbolo inventado, deslistado o mal
+# escrito. Cubre sectores de alto crecimiento (IA/software, biotech,
+# fintech, ciberseguridad, semiconductores, espacio/defensa, robotica,
+# vehiculos electricos/baterias, computacion cuantica, nuclear/SMR, minerales
+# criticos) para diversificar la oportunidad mas alla de las mismas 500
+# empresas grandes de siempre. Lista a revisar periodicamente: estas
+# compañias son mas volatiles y menos liquidas que el S&P 500, por lo que el
+# filtro de min_avg_dollar_volume es el que las saca del scan si se vuelven
+# demasiado ilíquidas.
+_GROWTH_TICKERS = [
+    "ABAT", "ACHR", "ACMR", "ADMA", "AEHR", "ALRM", "AMBA", "AMPX", "AMRC", "AOSL",
+    "ASYS", "ATLX", "AVAV", "BB", "BKSY", "CAMT", "CEVA", "CHYM", "COHU", "CRBU",
+    "CRCL", "CRML", "CRNX", "CRWV", "CURO", "ELVA", "EOSE", "FIVN", "FLNC", "GDOT",
+    "GRC", "GWH", "ICHR", "INO", "INOD", "IONQ", "JOBY", "KLIC", "KRMD", "KTOS",
+    "LC", "LUNR", "MAMA", "MDXH", "MP", "MUX", "MWA", "NAK", "NG", "OKLO",
+    "OMCL", "ONDS", "OTLY", "OUST", "PATH", "PVLA", "QBTS", "QFIN", "QLYS", "QS",
+    "QUBT", "RDW", "RDWR", "RGTI", "RKLB", "RPAY", "RR", "RUN", "S", "SCWX",
+    "SERV", "SEZL", "SGMO", "SIDU", "SLDP", "SOFI", "SOUN", "STEM", "TDC", "TERN",
+    "TMC", "USAR", "VKTX", "VRNS", "WTTR", "ZS",
+]
+
+DEFAULT_UNIVERSE = _SP500_TICKERS + _GROWTH_TICKERS
 
 
 class ScreenerConfig(BaseModel):

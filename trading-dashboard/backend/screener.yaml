@@ -515,6 +515,96 @@ universe:
   - ZBH
   - ZBRA
   - ZTS
+  # Complemento al S&P 500: empresas mas chicas/jovenes de alto potencial de
+  # crecimiento (small/mid-cap), confirmadas individualmente via busqueda web
+  # contra al menos una fuente financiera real para evitar tickers inventados
+  # o deslistados. Ver comentario de _GROWTH_TICKERS en screener_config.py.
+  - ABAT
+  - ACHR
+  - ACMR
+  - ADMA
+  - AEHR
+  - ALRM
+  - AMBA
+  - AMPX
+  - AMRC
+  - AOSL
+  - ASYS
+  - ATLX
+  - AVAV
+  - BB
+  - BKSY
+  - CAMT
+  - CEVA
+  - CHYM
+  - COHU
+  - CRBU
+  - CRCL
+  - CRML
+  - CRNX
+  - CRWV
+  - CURO
+  - ELVA
+  - EOSE
+  - FIVN
+  - FLNC
+  - GDOT
+  - GRC
+  - GWH
+  - ICHR
+  - INO
+  - INOD
+  - IONQ
+  - JOBY
+  - KLIC
+  - KRMD
+  - KTOS
+  - LC
+  - LUNR
+  - MAMA
+  - MDXH
+  - MP
+  - MUX
+  - MWA
+  - NAK
+  - NG
+  - OKLO
+  - OMCL
+  - ONDS
+  - OTLY
+  - OUST
+  - PATH
+  - PVLA
+  - QBTS
+  - QFIN
+  - QLYS
+  - QS
+  - QUBT
+  - RDW
+  - RDWR
+  - RGTI
+  - RKLB
+  - RPAY
+  - RR
+  - RUN
+  - S
+  - SCWX
+  - SERV
+  - SEZL
+  - SGMO
+  - SIDU
+  - SLDP
+  - SOFI
+  - SOUN
+  - STEM
+  - TDC
+  - TERN
+  - TMC
+  - USAR
+  - VKTX
+  - VRNS
+  - WTTR
+  - ZS
 
 # Simbolo contra el que se mide la fuerza relativa (momentum vs el mercado).
 benchmark_symbol: SPY
