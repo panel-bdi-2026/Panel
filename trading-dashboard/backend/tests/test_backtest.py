@@ -213,6 +213,49 @@ def test_stop_loss_triggers_on_intraday_low_not_close():
     assert bars["Close"].iloc[9] > trades[0].exit_price  # el cierre nunca perforo el stop, solo el minimo intradiario
 
 
+def test_entry_fills_at_next_day_open_not_signal_day_close():
+    from app.backtest import _simulate_symbol
+    from app.indicators import rate_of_change
+
+    closes = [100.0 + i for i in range(30)]
+    bars = _bars(closes)
+    # Con esta configuracion (igual a test_stop_loss_triggers_on_intraday_low_
+    # not_close) el filtro de entrada se confirma con el cierre del dia index
+    # 6; el fill realista es la apertura del dia siguiente (index 7), no el
+    # cierre del dia de la senal (eso seria mirar al futuro, ya que los
+    # indicadores recien se conocen al cierre). Se fuerza un gap de apertura
+    # bien marcado en ese dia para distinguir numericamente ambos precios.
+    entry_day_idx = 7
+    bars.loc[bars.index[entry_day_idx], "Open"] = bars["Close"].iloc[entry_day_idx - 1] + 50.0
+
+    bench_bars = _bars([100.0] * 30)
+    cfg = ScreenerConfig(
+        universe=["MOM"],
+        benchmark_symbol="SPY",
+        sma_fast=3,
+        sma_slow=5,
+        momentum_lookback_days=5,
+        momentum_short_days=2,
+        rsi_period=3,
+        rsi_min=0,
+        rsi_max=100,
+        atr_period=3,
+        stop_loss_atr_multiplier=1.0,
+        max_holding_days=50,
+        regime_filter_enabled=False,
+        top_n=10,
+    )
+    benchmark_roc = rate_of_change(bench_bars["Close"], cfg.momentum_lookback_days)
+    regime_ok = pd.Series(True, index=bars.index)
+
+    trades = _simulate_symbol("MOM", bars, cfg, benchmark_roc, regime_ok)
+
+    assert trades[0].entry_date == bars.index[entry_day_idx]
+    assert trades[0].entry_price == round(float(bars["Open"].iloc[entry_day_idx]), 2)
+    signal_day_close = float(bars["Close"].iloc[entry_day_idx - 1])
+    assert trades[0].entry_price != round(signal_day_close, 2)
+
+
 def test_regime_filter_blocks_entries_when_benchmark_below_regime_sma(monkeypatch):
     n = 300
     closes = [100.0 + 0.12 * i + 4 * np.sin(i / 5) for i in range(n)]

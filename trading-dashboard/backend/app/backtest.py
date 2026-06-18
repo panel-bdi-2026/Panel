@@ -25,10 +25,13 @@ def _simulate_symbol(
     """Simula la misma logica de entrada/salida del screener sobre historia.
 
     Entra cuando se cumplen los mismos filtros que en `scan()` (tendencia,
-    momentum, RSI, fuerza relativa vs benchmark, regimen de mercado). Sale por
-    stop-loss (basado en ATR, igual que la sugerencia en vivo), por ruptura de
-    tendencia, o por tiempo maximo en la posicion. Una sola posicion por
-    simbolo a la vez.
+    momentum, RSI, fuerza relativa vs benchmark, regimen de mercado). Como
+    esos indicadores recien se conocen al cierre del dia que los confirma, el
+    fill de entrada se simula a la apertura del dia siguiente (no al cierre
+    del dia de la senal, que seria mirar al futuro). Sale por stop-loss
+    (basado en el ATR del dia de la senal, igual que la sugerencia en vivo),
+    por ruptura de tendencia, o por tiempo maximo en la posicion. Una sola
+    posicion por simbolo a la vez.
 
     El stop-loss se chequea contra el minimo intradiario (no el cierre): si el
     precio perfora el stop durante el dia, en la realidad se sale ahi (o peor,
@@ -53,6 +56,7 @@ def _simulate_symbol(
     entry_idx = 0
     entry_date = None
     stop_price = 0.0
+    pending_entry_atr = None  # ATR del dia en que se detecto la senal (ver mas abajo)
 
     start_idx = max(cfg.sma_slow, cfg.momentum_lookback_days, cfg.atr_period) + 1
     for i in range(start_idx, len(bars)):
@@ -60,6 +64,20 @@ def _simulate_symbol(
         price = float(close.iloc[i])
         low_price = float(bars["Low"].iloc[i])
         open_price = float(bars["Open"].iloc[i])
+
+        if pending_entry_atr is not None:
+            # La senal se detecto con el cierre del dia anterior: los
+            # indicadores (SMA, RSI, momentum) recien se conocen una vez
+            # cerrado ese dia, asi que en la realidad la orden se coloca al
+            # dia siguiente. Entrar al cierre del mismo dia de la senal seria
+            # mirar al futuro; el fill realista es la apertura de este dia.
+            in_position = True
+            entry_price = open_price
+            entry_idx = i
+            entry_date = date
+            stop_price = entry_price - cfg.stop_loss_atr_multiplier * pending_entry_atr
+            pending_entry_atr = None
+            continue
 
         if in_position:
             held_days = i - entry_idx
@@ -110,11 +128,7 @@ def _simulate_symbol(
         )
 
         if trend_ok and rsi_ok and rel_strength_ok and momentum_ok and regime_ok and near_high_ok:
-            in_position = True
-            entry_price = price
-            entry_idx = i
-            entry_date = date
-            stop_price = price - cfg.stop_loss_atr_multiplier * atr_s.iloc[i]
+            pending_entry_atr = atr_s.iloc[i]
 
     return trades
 
@@ -217,8 +231,12 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     retornos por operacion (no de una curva de equity diaria), asi que no es
     comparable 1:1 con un Sharpe calculado sobre retornos diarios. Si modela
     comision/slippage estimados y un fill de stop-loss realista (minimo
-    intradiario, no el cierre). Sirve para validar la direccion de la idea
-    antes de arriesgar capital real, no como promesa de resultados futuros.
+    intradiario, no el cierre), y entra a la apertura del dia siguiente a la
+    senal (no al cierre del mismo dia, que seria mirar al futuro). Esto ultimo
+    lo hace mas conservador que el motor de auto-trading en vivo, que coloca
+    la orden ya con el ultimo cierre conocido en el mismo ciclo de scan. Sirve
+    para validar la direccion de la idea antes de arriesgar capital real, no
+    como promesa de resultados futuros.
     """
     history_days = int(cfg.backtest_years * 365)
 
