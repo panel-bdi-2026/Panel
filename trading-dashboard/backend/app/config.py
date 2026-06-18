@@ -10,25 +10,47 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def _int_env(name: str, raw: str) -> int:
+    """Convierte una variable de entorno a int con un error claro: sin esto,
+    un valor mal escrito (ej. IB_PORT="74977" con una letra de mas, o vacio)
+    tira un ValueError crudo de int() al importar app.config, con un
+    traceback que no dice cual variable de entorno fue ni que se esperaba."""
+    try:
+        return int(raw)
+    except ValueError:
+        raise RuntimeError(f"{name} invalido: {raw!r}. Debe ser un numero entero.") from None
+
+
+def _float_env(name: str, raw: str) -> float:
+    try:
+        return float(raw)
+    except ValueError:
+        raise RuntimeError(f"{name} invalido: {raw!r}. Debe ser un numero.") from None
+
+
 class Settings:
     def __init__(self) -> None:
         self.trading_mode = os.getenv("TRADING_MODE", "paper").strip().lower()
         self.live_confirm = os.getenv("LIVE_CONFIRM", "")
 
         self.ib_host = os.getenv("IB_HOST", "127.0.0.1")
-        self.ib_port = int(os.getenv("IB_PORT", "7497"))  # 7497 = TWS paper trading (default seguro)
-        self.ib_client_id = int(os.getenv("IB_CLIENT_ID", "17"))
+        # 7497 = TWS paper trading (default seguro)
+        self.ib_port = _int_env("IB_PORT", os.getenv("IB_PORT", "7497"))
+        self.ib_client_id = _int_env("IB_CLIENT_ID", os.getenv("IB_CLIENT_ID", "17"))
 
         # Puertos usados al cambiar de modo desde el boton del dashboard (sin
         # reiniciar el backend). TWS: 7497 paper / 7496 live. IB Gateway: 4002
         # paper / 4001 live. Si no se definen, se asume que IB_PORT ya es el
         # puerto correcto para el modo con el que arranca el backend.
-        self.ib_port_paper = int(
-            os.getenv("IB_PORT_PAPER", str(self.ib_port if self.trading_mode == "paper" else 7497))
+        self.ib_port_paper = _int_env(
+            "IB_PORT_PAPER",
+            os.getenv("IB_PORT_PAPER", str(self.ib_port if self.trading_mode == "paper" else 7497)),
         )
         live_port_env = os.getenv("IB_PORT_LIVE")
         self.ib_port_live = (
-            int(live_port_env) if live_port_env else (self.ib_port if self.trading_mode == "live" else None)
+            _int_env("IB_PORT_LIVE", live_port_env)
+            if live_port_env
+            else (self.ib_port if self.trading_mode == "live" else None)
         )
 
         self.api_key = os.getenv("API_KEY", "")
@@ -47,7 +69,7 @@ class Settings:
         self.audit_db_path = Path(os.getenv("AUDIT_DB_PATH", str(BASE_DIR / "audit.db")))
         self.state_path = Path(os.getenv("STATE_PATH", str(BASE_DIR / "state.json")))
         self.funds_path = Path(os.getenv("FUNDS_PATH", str(BASE_DIR / "funds.json")))
-        self.poll_interval_seconds = float(os.getenv("POLL_INTERVAL_SECONDS", "5"))
+        self.poll_interval_seconds = _float_env("POLL_INTERVAL_SECONDS", os.getenv("POLL_INTERVAL_SECONDS", "5"))
 
         self._validate()
 
