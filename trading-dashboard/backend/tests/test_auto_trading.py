@@ -23,6 +23,7 @@ from app.broker import StopLossRejectedError
 from app.funds import FundsStore
 from app.models import AccountSummary, SignalResult
 from app.rules import RulesConfig
+from app.screener_config import ScreenerConfig
 
 
 def make_account(net_liq: float = 100_000, daily_pnl_pct: float = 0.0) -> AccountSummary:
@@ -65,6 +66,13 @@ def reset_state(monkeypatch, tmp_path):
     main_module.state["connected"] = True
     main_module.state["pending_orders"] = {}
     monkeypatch.setattr(main_module, "funds_store", FundsStore(tmp_path / "funds.json"))
+    # Algunos tests mutan atributos de screener_config directamente (ej.
+    # max_holding_days, sma_fast) sin pasar por monkeypatch. Sin aislar el
+    # objeto, esa mutacion persiste mas alla del test (y del archivo, ya que
+    # screener_config es un singleton de modulo compartido con
+    # test_signal_engine.py), filtrando estado entre tests. Una instancia
+    # nueva por test, swapeada con monkeypatch, se revierte sola al terminar.
+    monkeypatch.setattr(main_module, "screener_config", ScreenerConfig())
     main_module.rules_engine.reload(RulesConfig(
         symbol_whitelist=["AAPL", "MSFT"],
         allow_extended_hours=True,

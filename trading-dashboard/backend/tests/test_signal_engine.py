@@ -21,6 +21,7 @@ import pytest
 from app import main as main_module
 from app.models import AccountSummary, OrderDecision, PendingOrder, SignalResult
 from app.rules import RulesConfig
+from app.screener_config import ScreenerConfig
 
 
 def make_account(net_liq: float = 100_000, daily_pnl_pct: float = 0.0) -> AccountSummary:
@@ -58,6 +59,13 @@ def reset_state(monkeypatch):
     main_module.state["halted"] = False
     main_module.state["connected"] = True
     main_module._signal_state["previously_passing"] = None
+    # Varios tests mutan atributos de screener_config directamente (ej.
+    # auto_scan_enabled, top_n) sin pasar por monkeypatch. Sin aislar el
+    # objeto, esa mutacion persiste mas alla del test (y del archivo, ya que
+    # screener_config es un singleton de modulo compartido con
+    # test_auto_trading.py), filtrando estado entre tests. Una instancia
+    # nueva por test, swapeada con monkeypatch, se revierte sola al terminar.
+    monkeypatch.setattr(main_module, "screener_config", ScreenerConfig())
     main_module.rules_engine.reload(RulesConfig(
         symbol_whitelist=["AAPL", "MSFT"],
         allow_extended_hours=True,
