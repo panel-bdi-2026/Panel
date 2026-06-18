@@ -22,7 +22,10 @@ if [[ -z "$LOG_FILE" ]]; then
   exit 1
 fi
 
-CMD=$(tac "$LOG_FILE" | grep -m1 'ibcalpha.ibc.IbcGateway') || true
+# "ibcsessionid=" solo aparece en la linea real de lanzamiento (con el
+# classpath completo), no en la entrada corta "sun.java.command = ..." del
+# volcado de System Properties, que tambien menciona IbcGateway.
+CMD=$(tac "$LOG_FILE" | grep -m1 -i 'ibcsessionid=') || true
 if [[ -z "$CMD" ]]; then
   echo "No se encontro la linea de lanzamiento de java en $LOG_FILE" >&2
   exit 1
@@ -47,4 +50,7 @@ trap 'kill "$XVFB_PID" 2>/dev/null || true' EXIT
 sleep 2
 
 echo "Lanzando ahora en primer plano como usuario trading (Ctrl+C para cortar)..."
-su - trading -c /tmp/_ibc_replay_cmd.sh
+# -s /bin/bash evita que su intente usar el shell de login del usuario
+# trading (tipicamente nologin en una cuenta de servicio), que es lo que
+# causaba "This account is currently not available."
+su -s /bin/bash trading -c /tmp/_ibc_replay_cmd.sh
