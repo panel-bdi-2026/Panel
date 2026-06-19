@@ -185,6 +185,8 @@ def test_suggested_quantity_zero_when_stop_not_below_entry(engine):
     ("max_order_value_usd", -1),
     ("max_position_pct_of_equity", 0),
     ("max_position_pct_of_equity", 101),
+    ("max_sector_concentration_pct", 0),
+    ("max_sector_concentration_pct", 101),
     ("risk_per_trade_pct", 0),
     ("risk_per_trade_pct", 101),
     ("max_trades_per_day", 0),
@@ -203,6 +205,7 @@ def test_rules_config_accepts_values_at_the_bounds():
         daily_loss_limit_pct=100,
         max_order_value_usd=10_000_000,
         max_position_pct_of_equity=100,
+        max_sector_concentration_pct=100,
         risk_per_trade_pct=100,
         max_trades_per_day=1000,
         max_stop_loss_pct=100,
@@ -210,3 +213,64 @@ def test_rules_config_accepts_values_at_the_bounds():
     )
     assert config.daily_loss_limit_pct == 100
     assert config.manual_approval_threshold_usd == 100_000_000
+
+
+# ---------------------------------------------------------------------------
+# max_sector_concentration_pct: limite a la exposicion combinada (posiciones
+# existentes + la orden en evaluacion) a un mismo sector GICS, como % del
+# equity. Solo se evalua si se conoce el sector de la orden (order_sector);
+# sin ese dato, la regla no bloquea (ver razonamiento en rules.py).
+# ---------------------------------------------------------------------------
+
+def test_rejects_order_exceeding_sector_concentration(engine):
+    order = buy_order(quantity=10)  # resulting_value = 10*200 = 2,000 (2% del equity)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 0, 200, 0, False,
+        order_sector="Information Technology",
+        sector_exposure_usd={"Information Technology": 29_000},  # 29% ya expuesto -> 31% combinado
+    )
+    assert not decision.approved
+    assert any(v.rule == "max_sector_concentration_pct" for v in decision.violations)
+
+
+def test_approves_order_within_sector_concentration_limit(engine):
+    order = buy_order(quantity=10)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 0, 200, 0, False,
+        order_sector="Information Technology",
+        sector_exposure_usd={"Information Technology": 10_000},  # 10% + 2% = 12%, bajo el limite (30%)
+    )
+    assert decision.approved
+
+
+def test_order_sector_none_bypasses_sector_concentration_check(engine):
+    order = buy_order(quantity=10)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 0, 200, 0, False,
+        order_sector=None,  # sector desconocido: no hay forma de evaluar el limite
+        sector_exposure_usd={"Information Technology": 1_000_000},
+    )
+    assert decision.approved
+    assert not any(v.rule == "max_sector_concentration_pct" for v in decision.violations)
+
+
+def test_sector_concentration_only_counts_matching_sector(engine):
+    order = buy_order(quantity=10)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 0, 200, 0, False,
+        order_sector="Information Technology",
+        sector_exposure_usd={"Health Care": 1_000_000, "Information Technology": 1_000},
+    )
+    assert decision.approved
+    assert not any(v.rule == "max_sector_concentration_pct" for v in decision.violations)
+
+
+def test_sector_concentration_defaults_to_zero_exposure_when_not_provided(engine):
+    order = buy_order(quantity=10)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 0, 200, 0, False,
+        order_sector="Information Technology",
+        sector_exposure_usd=None,
+    )
+    assert decision.approved
+    assert not any(v.rule == "max_sector_concentration_pct" for v in decision.violations)

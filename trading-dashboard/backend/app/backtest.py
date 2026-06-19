@@ -133,6 +133,133 @@ def _simulate_symbol(
     return trades
 
 
+def _simulate_symbol_opportunistic(symbol: str, bars: pd.DataFrame, cfg: ScreenerConfig) -> list[BacktestTrade]:
+    """Misma logica de _simulate_symbol pero con los filtros de entrada/salida
+    de la estrategia Oportunista (ver strategies/opportunistic.py): momentum
+    de corto plazo positivo, RSI en zona de recuperacion (no de tendencia
+    establecida como Momentum) y precio bien por debajo del maximo de 52
+    semanas (espacio de crecimiento, lo opuesto al filtro de Momentum).
+    Sale por stop-loss, tiempo maximo en la posicion, o RSI sobrecomprado
+    (señal de que el rebote de corto plazo ya se jugo)."""
+    opp = cfg.opportunistic
+    close = bars["Close"]
+    roc_short = rate_of_change(close, opp.momentum_lookback_days)
+    rsi_s = rsi(close, opp.rsi_period)
+    atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
+    from_high_s = pct_from_high(close, 252)
+
+    notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
+
+    trades: list[BacktestTrade] = []
+    in_position = False
+    entry_price = 0.0
+    entry_idx = 0
+    entry_date = None
+    stop_price = 0.0
+    pending_entry_atr = None
+
+    start_idx = max(opp.momentum_lookback_days, cfg.atr_period, 252) + 1
+    for i in range(start_idx, len(bars)):
+        date = bars.index[i]
+        price = float(close.iloc[i])
+        low_price = float(bars["Low"].iloc[i])
+        open_price = float(bars["Open"].iloc[i])
+
+        if pending_entry_atr is not None:
+            in_position = True
+            entry_price = open_price
+            entry_idx = i
+            entry_date = date
+            stop_price = entry_price - opp.stop_loss_atr_multiplier * pending_entry_atr
+            pending_entry_atr = None
+            continue
+
+        if in_position:
+            held_days = i - entry_idx
+            hit_stop = low_price <= stop_price
+            timed_out = held_days >= opp.max_holding_days
+            rsi_exhausted = rsi_s.iloc[i] > opp.rsi_max
+            if hit_stop or timed_out or rsi_exhausted:
+                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "trend_break")
+                raw_exit_price = min(open_price, stop_price) if hit_stop else price
+
+                entry_fill = entry_price * (1 + cfg.slippage_pct / 100)
+                exit_fill = raw_exit_price * (1 - cfg.slippage_pct / 100)
+                commission_pct = (
+                    (2 * cfg.commission_per_trade_usd / notional_per_trade) * 100
+                    if notional_per_trade
+                    else 0.0
+                )
+                ret_pct = (exit_fill - entry_fill) / entry_fill * 100 - commission_pct
+
+                trades.append(BacktestTrade(
+                    symbol=symbol,
+                    entry_date=entry_date,
+                    exit_date=date,
+                    entry_price=round(entry_price, 2),
+                    exit_price=round(raw_exit_price, 2),
+                    return_pct=round(ret_pct, 2),
+                    exit_reason=exit_reason,
+                ))
+                in_position = False
+            continue
+
+        if pd.isna(atr_s.iloc[i]) or pd.isna(roc_short.iloc[i]):
+            continue
+
+        last_atr = atr_s.iloc[i]
+        volatility_pct = (last_atr / price * 100) if price else 0.0
+        fh = from_high_s.iloc[i]
+
+        momentum_ok = roc_short.iloc[i] > 0
+        rsi_ok = opp.rsi_min <= rsi_s.iloc[i] <= opp.rsi_max
+        volatility_ok = volatility_pct >= opp.min_volatility_pct
+        room_to_grow_ok = pd.isna(fh) or fh <= -opp.min_pct_below_52w_high
+
+        if momentum_ok and rsi_ok and volatility_ok and room_to_grow_ok:
+            pending_entry_atr = last_atr
+
+    return trades
+
+
+def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
+    """Backtest de la estrategia Oportunista, en paralelo a run_backtest
+    (Momentum). Misma estructura y mismas simplificaciones documentadas ahi
+    (curva de equity secuencial 1/top_n, sharpe aproximado por operacion);
+    aca solo cambia la logica de entrada/salida por simbolo (ver
+    _simulate_symbol_opportunistic)."""
+    history_days = int(cfg.backtest_years * 365)
+
+    all_trades: list[BacktestTrade] = []
+    delay = cfg.scan_request_delay_seconds
+    for i, symbol in enumerate(cfg.universe):
+        if i > 0 and delay > 0:
+            time.sleep(delay)
+        try:
+            bars = get_daily_bars(symbol, history_days)
+        except MarketDataError:
+            continue
+        if len(bars) < cfg.opportunistic.momentum_lookback_days + 252:
+            continue
+        all_trades.extend(_simulate_symbol_opportunistic(symbol, bars, cfg))
+
+    if not all_trades:
+        raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
+
+    all_trades.sort(key=lambda t: t.entry_date)
+    all_trades = cap_concurrent_positions(all_trades, cfg.top_n)
+
+    if not all_trades:
+        raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
+
+    try:
+        bench_bars = get_daily_bars(cfg.benchmark_symbol, history_days)
+    except MarketDataError as exc:
+        raise BacktestError(str(exc)) from exc
+
+    return _compute_summary_stats(all_trades, cfg.top_n, bench_bars)
+
+
 def cap_concurrent_positions(trades: list[BacktestTrade], top_n: int) -> list[BacktestTrade]:
     """Filtra una lista de operaciones a un maximo de top_n posiciones abiertas
     a la vez, recorriendolas por fecha de entrada y descartando las que no

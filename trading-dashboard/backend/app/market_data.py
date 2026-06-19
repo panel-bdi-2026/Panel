@@ -16,6 +16,13 @@ _cache: dict[tuple[str, int], tuple[float, pd.DataFrame]] = {}
 _EARNINGS_CACHE_TTL_SECONDS = 24 * 3600
 _earnings_cache: dict[str, tuple[float, "date | None"]] = {}
 
+# Los fundamentals (PE, ROE, crecimiento, dividend yield, etc.) cambian a lo
+# sumo trimestralmente: mismo cache largo que earnings, por la misma razon
+# (no vale la pena pagar la cuota de la API en cada scan por un dato que casi
+# nunca cambia de un dia a otro).
+_FUNDAMENTALS_CACHE_TTL_SECONDS = 24 * 3600
+_fundamentals_cache: dict[str, tuple[float, dict]] = {}
+
 
 class MarketDataError(RuntimeError):
     pass
@@ -110,3 +117,50 @@ def get_next_earnings_date(symbol: str, force: bool = False) -> "date | None":
 
     _earnings_cache[key] = (now, next_date)
     return next_date
+
+
+# Mapeo de las claves crudas de yfinance (Ticker.get_info(), un dict de
+# estructura libre y no documentada formalmente) a nombres estables que el
+# resto del codigo consume, para que un cambio interno de yfinance quede
+# aislado a esta sola linea por campo.
+_INFO_FIELD_MAP = {
+    "trailing_pe": "trailingPE",
+    "forward_pe": "forwardPE",
+    "price_to_book": "priceToBook",
+    "return_on_equity": "returnOnEquity",
+    "revenue_growth": "revenueGrowth",
+    "earnings_growth": "earningsGrowth",
+    "debt_to_equity": "debtToEquity",
+    "profit_margins": "profitMargins",
+    "dividend_yield": "dividendYield",
+    "payout_ratio": "payoutRatio",
+}
+
+
+def get_fundamentals(symbol: str, force: bool = False) -> dict:
+    """Datos fundamentales de `symbol` para las estrategias Largo plazo y
+    Dividendos (ver app/strategies/). Devuelve un dict con las claves de
+    _INFO_FIELD_MAP; un campo ausente en la respuesta de yfinance queda en
+    None (dato no disponible, no es un error) en vez de levantar excepcion,
+    ya que estas estrategias tratan cada campo faltante de forma puntual
+    (algunos bloquean el filtro, otros son solo bonus de score).
+
+    Igual que get_next_earnings_date: si yfinance falla o no devuelve nada
+    util, se cachea un dict de Nones en vez de reintentar en cada llamada
+    (la causa mas comun es falta de cobertura para ese simbolo, no un fallo
+    transitorio, a diferencia de las barras de precio).
+    """
+    key = symbol.upper()
+    now = time.time()
+    cached = _fundamentals_cache.get(key)
+    if not force and cached and now - cached[0] < _FUNDAMENTALS_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    try:
+        info = yf.Ticker(symbol).get_info() or {}
+    except Exception:
+        info = {}
+
+    result = {name: info.get(raw_key) for name, raw_key in _INFO_FIELD_MAP.items()}
+    _fundamentals_cache[key] = (now, result)
+    return result

@@ -99,8 +99,83 @@ _GROWTH_TICKERS = [
 
 DEFAULT_UNIVERSE = _SP500_TICKERS + _GROWTH_TICKERS
 
+STRATEGY_IDS = ("momentum", "opportunistic", "long_term", "dividend")
+
+
+class OpportunisticConfig(BaseModel):
+    """Estrategia de corto plazo (dias/semanas): busca acciones algo mas
+    volatiles que ya muestran señales de giro al alza (RSI recuperandose
+    desde zona baja) y que todavia cotizan bien por debajo de su maximo de 52
+    semanas (espacio de crecimiento), a diferencia de Momentum que busca
+    lideres ya en tendencia cerca de maximos."""
+
+    momentum_lookback_days: int = 10  # ~2 semanas
+    rsi_period: int = 14
+    rsi_min: float = 35
+    rsi_max: float = 60
+    # ATR como % del precio: piso de volatilidad para calificar como "un poco
+    # mas volatil" (si no, el filtro deja pasar nombres tan tranquilos como
+    # los de Momentum, que no es el objetivo de esta estrategia).
+    min_volatility_pct: float = 3.0
+    # Cuanto debe estar por debajo del maximo de 52 semanas (lo opuesto al
+    # filtro de "cerca del maximo" de Momentum): da el espacio de crecimiento.
+    min_pct_below_52w_high: float = 10.0
+    stop_loss_atr_multiplier: float = 2.0
+    max_holding_days: int = 15
+
+    score_weight_momentum: float = 0.4
+    score_weight_volatility: float = 0.2
+    score_weight_rsi_recovery: float = 0.2
+    score_weight_room_to_grow: float = 0.2
+
+
+class LongTermConfig(BaseModel):
+    """Estrategia de largo plazo (meses/1 año): fundamentales fuertes
+    (crecimiento, rentabilidad) y precio bajo respecto a su valoracion
+    (PE bajo), buscando apreciacion en el mediano plazo. No es backtesteable
+    con datos gratuitos de yfinance (sin historia de fundamentals point-in-
+    time): solo disponible para escaneo en vivo."""
+
+    max_pe_ratio: float = 25.0
+    min_revenue_growth_pct: float = 5.0
+    min_earnings_growth_pct: float = 5.0
+    min_return_on_equity_pct: float = 10.0
+    max_debt_to_equity: float = 150.0
+    min_profit_margin_pct: float = 5.0
+    stop_loss_atr_multiplier: float = 2.5
+
+    score_weight_value: float = 0.35
+    score_weight_growth: float = 0.30
+    score_weight_quality: float = 0.20
+    score_weight_margin: float = 0.15
+
+
+class DividendConfig(BaseModel):
+    """Estrategia de dividend yield: prioriza buen yield con un payout ratio
+    sostenible (ni muy bajo ni tan alto que arriesgue un recorte), valorando
+    tambien fundamentales sanos (ROE, margen). Tampoco es backtesteable con
+    datos gratuitos de yfinance: solo escaneo en vivo."""
+
+    min_dividend_yield_pct: float = 3.0
+    min_payout_ratio_pct: float = 20.0
+    max_payout_ratio_pct: float = 75.0
+    min_return_on_equity_pct: float = 8.0
+    min_profit_margin_pct: float = 5.0
+    stop_loss_atr_multiplier: float = 2.5
+
+    score_weight_yield: float = 0.45
+    score_weight_payout_quality: float = 0.25
+    score_weight_quality: float = 0.30
+
 
 class ScreenerConfig(BaseModel):
+    # Estrategia activa para el escaneo proactivo en background y el
+    # auto-trading (ver _run_signal_scan_cycle en main.py): un solo valor
+    # determinista, ya que ese ciclo corre sin intervencion del usuario. El
+    # dashboard puede explorar cualquier estrategia ad-hoc via el query param
+    # strategy_id de /api/signals/scan sin cambiar este valor persistido.
+    strategy_id: str = "momentum"
+
     universe: list[str] = DEFAULT_UNIVERSE
     benchmark_symbol: str = "SPY"
     lookback_days: int = 400
@@ -122,6 +197,16 @@ class ScreenerConfig(BaseModel):
     rsi_period: int = 14
     rsi_min: float = 40
     rsi_max: float = 75
+
+    # Pesos del score de ranking de Momentum (ver evaluate_symbol en
+    # strategies/momentum.py). No necesitan sumar 1: son pesos relativos, no
+    # una probabilidad. Los valores default reproducen el score que estaba
+    # hardcodeado antes de hacerlo configurable.
+    score_weight_relative_strength: float = 0.35
+    score_weight_momentum_3m: float = 0.25
+    score_weight_momentum_1m: float = 0.15
+    score_weight_trend: float = 0.15
+    score_weight_rsi: float = 0.10
 
     # Volumen promedio en DOLARES (precio x acciones), no en cantidad de
     # acciones: una accion barata puede superar un umbral de acciones y
@@ -181,6 +266,22 @@ class ScreenerConfig(BaseModel):
     # posicion. Ademas del tope, no se draftea mas alla de los "cupos" libres
     # respecto a top_n contando lo que ya esta pendiente.
     max_auto_drafts_per_cycle: int = 3
+
+    # Configuracion especifica de las estrategias adicionales (ver
+    # app/strategies/). Los campos compartidos arriba (universe, lookback_days,
+    # min_avg_dollar_volume, atr_period, top_n, earnings_blackout_days, etc.)
+    # se reutilizan para las cuatro estrategias en vez de duplicarlos en cada
+    # bloque anidado.
+    opportunistic: OpportunisticConfig = OpportunisticConfig()
+    long_term: LongTermConfig = LongTermConfig()
+    dividend: DividendConfig = DividendConfig()
+
+    @field_validator("strategy_id")
+    @classmethod
+    def validate_strategy_id(cls, v: str) -> str:
+        if v not in STRATEGY_IDS:
+            raise ValueError(f"strategy_id invalido: {v!r}. Debe ser uno de {STRATEGY_IDS}.")
+        return v
 
     @field_validator("universe")
     @classmethod

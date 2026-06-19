@@ -427,3 +427,153 @@ def test_near_high_filter_reduces_entries_far_from_52w_high(monkeypatch):
     without = run_backtest(ScreenerConfig(**base, near_high_filter_enabled=False))
     with_filter = run_backtest(ScreenerConfig(**base, near_high_filter_enabled=True, max_pct_below_52w_high=15.0))
     assert with_filter.total_trades < without.total_trades
+
+
+# ---------------------------------------------------------------------------
+# Oportunista (_simulate_symbol_opportunistic / run_opportunistic_backtest):
+# misma estructura de backtest que Momentum pero con la logica de entrada
+# (momentum de corto plazo + RSI en zona de recuperacion + espacio de
+# crecimiento respecto al maximo de 52 semanas) y salida (stop-loss, tiempo
+# maximo, o RSI sobrecomprado) de strategies/opportunistic.py. La funcion
+# fija "252" para la ventana de maximo de 52 semanas y para start_idx (ver
+# backtest.py), por lo que toda serie de prueba necesita 253+ dias sin
+# importar que tan chicos sean los demas periodos configurados.
+# ---------------------------------------------------------------------------
+
+def _opportunistic_oscillating_bars(n=320, amplitude=2.0, period=4.0):
+    """Oscilacion pura (sin tendencia neta). Combinada con el suavizado
+    Wilder de rsi_period=14, el RSI recorre naturalmente tanto la zona de
+    recuperacion (35-60, dispara la entrada) como la de sobrecompra (>60,
+    dispara la salida trend_break) varias veces a lo largo de la serie."""
+    i = np.arange(n)
+    close_vals = 100.0 + amplitude * np.sin(i / period)
+    idx = pd.date_range("2021-01-01", periods=n, freq="D")
+    close = pd.Series(close_vals, index=idx)
+    return pd.DataFrame(
+        {"Open": close, "High": close + 1, "Low": close - 1, "Close": close, "Volume": 5_000_000},
+        index=idx,
+    )
+
+
+def _opportunistic_cfg(**overrides):
+    from app.screener_config import OpportunisticConfig
+
+    # min_volatility_pct y min_pct_below_52w_high en 0: la serie sintetica de
+    # oscilacion pura tiene muy poca amplitud y no aleja el precio de su
+    # maximo de 52 semanas, asi que esos dos filtros (irrelevantes para lo
+    # que testean estos casos) se dejan siempre pasantes.
+    defaults = dict(
+        momentum_lookback_days=10,
+        rsi_period=14,
+        rsi_min=35,
+        rsi_max=60,
+        min_volatility_pct=0,
+        min_pct_below_52w_high=0,
+        stop_loss_atr_multiplier=2.0,
+        max_holding_days=30,
+    )
+    defaults.update(overrides)
+    return ScreenerConfig(universe=["OPP"], atr_period=14, opportunistic=OpportunisticConfig(**defaults))
+
+
+def test_opportunistic_trend_break_exit_on_rsi_exhaustion():
+    from app.backtest import _simulate_symbol_opportunistic
+
+    bars = _opportunistic_oscillating_bars()
+    cfg = _opportunistic_cfg(max_holding_days=30)
+
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg)
+
+    assert trades[0].exit_reason == "trend_break"
+    assert trades[0].entry_date == bars.index[263]
+    assert trades[0].exit_date == bars.index[278]
+
+
+def test_opportunistic_max_holding_days_exit_takes_priority_over_trend_break():
+    # Mismo escenario que el test de trend_break: el RSI cruza rsi_max justo
+    # el dia en que tambien se cumplen los max_holding_days configurados aqui
+    # (15). Verifica que el timeout tiene prioridad sobre el RSI sobrecomprado
+    # cuando ambas condiciones de salida coinciden (ver el orden del ternario
+    # en _simulate_symbol_opportunistic).
+    from app.backtest import _simulate_symbol_opportunistic
+
+    bars = _opportunistic_oscillating_bars()
+    cfg = _opportunistic_cfg(max_holding_days=15)
+
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg)
+
+    assert trades[0].exit_reason == "max_holding_days"
+    assert trades[0].exit_date == bars.index[278]
+
+
+def test_opportunistic_stop_loss_triggers_on_intraday_low_not_close():
+    from app.backtest import _simulate_symbol_opportunistic
+
+    bars = _opportunistic_oscillating_bars()
+    bars.loc[bars.index[264], "Low"] = 50.0  # mecha intradiaria el dia siguiente al fill, perfora el stop sin que el cierre lo refleje
+    cfg = _opportunistic_cfg(max_holding_days=30)
+
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg)
+
+    assert trades[0].exit_reason == "stop_loss"
+    assert trades[0].exit_date == bars.index[264]
+    assert bars["Close"].iloc[264] > trades[0].exit_price
+
+
+def test_opportunistic_backtest_produces_trades_and_metrics(monkeypatch):
+    bars = _opportunistic_oscillating_bars()
+    bench_bars = _bars([100.0] * len(bars))
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol == "SPY":
+            return bench_bars
+        if symbol == "OPP":
+            return bars
+        raise MarketDataError("no data")
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+    config = _opportunistic_cfg()
+    config = config.model_copy(update={"benchmark_symbol": "SPY", "backtest_years": 1})
+
+    summary = backtest_module.run_opportunistic_backtest(config)
+
+    assert summary.total_trades > 0
+    assert all(t.symbol == "OPP" for t in summary.trades)
+    assert 0 <= summary.win_rate_pct <= 100
+    assert summary.start_date < summary.end_date
+
+
+def test_opportunistic_backtest_raises_when_benchmark_unavailable(monkeypatch):
+    bars = _opportunistic_oscillating_bars()
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol == "OPP":
+            return bars
+        raise MarketDataError("no data")
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+    config = _opportunistic_cfg()
+    config = config.model_copy(update={"benchmark_symbol": "SPY", "backtest_years": 1})
+
+    with pytest.raises(BacktestError):
+        backtest_module.run_opportunistic_backtest(config)
+
+
+def test_opportunistic_backtest_raises_when_no_trades_generated(monkeypatch):
+    # Serie sin tendencia ni oscilacion (precio plano): roc nunca es positivo,
+    # asi que el filtro de momentum jamas deja pasar una entrada.
+    flat_bars = _bars([100.0] * 320)
+    bench_bars = _bars([100.0] * 320)
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol == "FLAT":
+            return flat_bars
+        if symbol == "SPY":
+            return bench_bars
+        raise MarketDataError("no data")
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+    config = ScreenerConfig(universe=["FLAT"], benchmark_symbol="SPY", backtest_years=1)
+
+    with pytest.raises(BacktestError):
+        backtest_module.run_opportunistic_backtest(config)

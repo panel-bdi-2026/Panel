@@ -16,17 +16,19 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from .audit import AuditLog
-from .backtest import BacktestError, run_backtest
+from .backtest import BacktestError, run_backtest, run_opportunistic_backtest
 from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
 from .funds import FundsStore
 from .indicators import sma
 from .market_data import MarketDataError, get_daily_bars
-from .models import OrderRequest, OrderType, PendingOrder, SignalResult, Side, validate_symbol
+from .models import OrderRequest, OrderType, PendingOrder, Position, SignalResult, Side, validate_symbol
 from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
 from .screener_config import ScreenerConfig
+from .sectors import get_sector
 from .state_store import load_state, save_state
+from .strategies import STRATEGY_CLASSES, reload_strategy_registry
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 
@@ -37,6 +39,17 @@ broker = IBKRBroker(settings.ib_host, settings.ib_port, settings.ib_client_id)
 
 screener_config = ScreenerConfig.load(settings.screener_path)
 screener = MomentumScreener(screener_config)
+
+# screener (singleton de Momentum, instanciado arriba) es el mismo objeto que
+# strategy_registry["momentum"]: los tests existentes (test_signal_engine.py)
+# hacen monkeypatch.setattr(main_module.screener, "scan", ...) directo sobre
+# la instancia, asi que no se puede reconstruir un MomentumScreener nuevo aca.
+strategy_registry: dict[str, object] = {screener.id: screener}
+for _strategy_cls in STRATEGY_CLASSES:
+    if _strategy_cls is MomentumScreener:
+        continue
+    _instance = _strategy_cls(screener_config)
+    strategy_registry[_instance.id] = _instance
 
 
 def _sync_whitelist_with_universe() -> None:
@@ -73,7 +86,10 @@ state: dict = {
 clients: list[WebSocket] = []
 
 SIGNAL_CACHE_TTL_SECONDS = 900  # evita re-escanear el mercado en cada refresh
-signal_cache: dict = {"as_of": None, "results": []}
+# Cacheado por strategy_id: cada estrategia escanea el mismo universo pero con
+# filtros/scores distintos, asi que comparten cache llevaria a devolver
+# resultados de una estrategia bajo el nombre de otra.
+signal_cache: dict[str, dict] = {}
 
 # Serializa scan y backtest (manuales y el ciclo proactivo en background):
 # ambos golpean la misma API gratuita de datos para todo el universo
@@ -148,7 +164,27 @@ async def _broadcast_loop() -> None:
         await _broadcast(payload)
 
 
-def _draft_order_from_signal(result: SignalResult) -> PendingOrder | None:
+def _compute_sector_exposure(positions: list[Position], exclude_symbol: str) -> dict[str, float]:
+    """Valor de mercado (USD, en valor absoluto) agrupado por sector GICS de
+    las posiciones actuales, para que RulesEngine.evaluate() pueda chequear
+    max_sector_concentration_pct. `exclude_symbol` se descarta del total
+    porque ese simbolo ya se suma aparte como `resulting_value` (la orden en
+    evaluacion), para no contarlo dos veces. Posiciones en simbolos sin sector
+    conocido (get_sector devuelve None) no aportan al total: no hay forma de
+    saber a que sector concentrarlas."""
+    exposure: dict[str, float] = {}
+    for p in positions:
+        if p.symbol == exclude_symbol:
+            continue
+        sector = get_sector(p.symbol)
+        if sector is None:
+            continue
+        price = p.market_price if p.market_price is not None else p.avg_cost
+        exposure[sector] = exposure.get(sector, 0.0) + abs(p.quantity) * price
+    return exposure
+
+
+def _draft_order_from_signal(result: SignalResult, positions: list[Position]) -> PendingOrder | None:
     """Convierte una señal recien pasada a passes_filters=True en una orden de
     compra en borrador, sizeada por riesgo via RulesEngine.suggested_quantity().
 
@@ -192,6 +228,8 @@ def _draft_order_from_signal(result: SignalResult) -> PendingOrder | None:
         reference_price=result.last_price,
         trades_today=trades_today,
         halted=state["halted"],
+        order_sector=get_sector(symbol),
+        sector_exposure_usd=_compute_sector_exposure(positions, symbol),
     )
     if not decision.approved:
         audit.record("signal_order_rejected", order.model_dump(), decision.model_dump())
@@ -228,6 +266,7 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
 
         account_summary = broker.get_account_summary()
         position_qty = broker.get_position_qty(symbol)
+        sector_exposure_usd = _compute_sector_exposure(await broker.get_positions(), symbol)
 
         fund = None
         quantity = 0.0
@@ -263,6 +302,8 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
             reference_price=result.last_price,
             trades_today=trades_today,
             halted=state["halted"],
+            order_sector=get_sector(symbol),
+            sector_exposure_usd=sector_exposure_usd,
         )
         if not decision.approved:
             audit.record("auto_trade_rejected", order.model_dump(), decision.model_dump())
@@ -294,9 +335,10 @@ async def _run_signal_scan_cycle() -> None:
     """
     if not screener_config.auto_scan_enabled or state["halted"] or not state["connected"]:
         return
+    active_strategy = strategy_registry[screener_config.strategy_id]
     try:
         async with _market_scan_lock:
-            results = await asyncio.to_thread(screener.scan)
+            results = await asyncio.to_thread(active_strategy.scan)
     except Exception as exc:
         audit.record("signal_scan_failed", {}, {"error": str(exc)})
         return
@@ -335,7 +377,8 @@ async def _run_signal_scan_cycle() -> None:
     free_slots = max(0, screener_config.top_n - len(state["pending_orders"]))
     cap = min(screener_config.max_auto_drafts_per_cycle, free_slots)
     new_signals = new_signals[:cap]
-    drafted = [p for p in (_draft_order_from_signal(r) for r in new_signals) if p is not None]
+    positions = await broker.get_positions()
+    drafted = [p for p in (_draft_order_from_signal(r, positions) for r in new_signals) if p is not None]
 
     await _broadcast({
         "type": "signal_alert",
@@ -660,6 +703,17 @@ def get_audit(limit: int = 100, _: None = Depends(require_api_key)):
     return audit.recent(limit)
 
 
+@app.get("/api/strategies")
+def list_strategies(_: None = Depends(require_api_key)):
+    """Metadata de las estrategias disponibles, para el selector del
+    dashboard: id/name para mostrar, supports_backtest para saber si ofrecer
+    el boton de backtest o no (Largo plazo y Dividendos no lo soportan)."""
+    return [
+        {"id": s.id, "name": s.name, "supports_backtest": s.supports_backtest}
+        for s in strategy_registry.values()
+    ]
+
+
 @app.get("/api/signals/config")
 def get_screener_config(_: None = Depends(require_api_key)):
     return screener_config.model_dump()
@@ -678,7 +732,7 @@ def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_k
         raise HTTPException(status_code=422, detail=exc.errors())
     screener_config = new_config
     screener_config.save(settings.screener_path)
-    screener.reload(screener_config)
+    reload_strategy_registry(strategy_registry, screener_config)
     _sync_whitelist_with_universe()
     # Tras un cambio manual de config, los filtros pudieron cambiar por
     # completo: se descarta la base de simbolos "pasando" para que el proximo
@@ -690,11 +744,12 @@ def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_k
 
 
 @app.get("/api/signals/scan")
-async def scan_signals(force: bool = False, _: None = Depends(require_api_key)):
-    """Radar de oportunidades momentum/tecnico. No es una recomendacion de
-    inversion ni ejecuta nada: solo rankea candidatos del universo configurado
-    en screener.yaml. Cacheado para no agotar la cuota de la API gratuita de
-    datos en cada refresh del dashboard.
+async def scan_signals(force: bool = False, strategy_id: str | None = None, _: None = Depends(require_api_key)):
+    """Radar de oportunidades. No es una recomendacion de inversion ni ejecuta
+    nada: solo rankea candidatos del universo configurado en screener.yaml
+    segun la estrategia activa (`strategy_id`, default la persistida en
+    screener_config). Cacheado por estrategia para no agotar la cuota de la
+    API gratuita de datos en cada refresh del dashboard.
 
     Requiere API key: aunque no mueve dinero, escanear (sobre todo con
     force=true) golpea la API gratuita de datos para todo el universo, asi que
@@ -706,32 +761,61 @@ async def scan_signals(force: bool = False, _: None = Depends(require_api_key)):
     demas endpoints de la API, pudiendo demorar pedidos no relacionados. El
     lock evita que un scan se cruce con un backtest o con el ciclo proactivo
     en background, que pegan a la misma API de datos."""
+    resolved_id = strategy_id or screener_config.strategy_id
+    strategy = strategy_registry.get(resolved_id)
+    if strategy is None:
+        raise HTTPException(status_code=422, detail=f"strategy_id desconocido: {resolved_id}")
+
     now = datetime.now(timezone.utc)
-    cached_at = signal_cache["as_of"]
-    if not force and cached_at and (now - cached_at).total_seconds() < SIGNAL_CACHE_TTL_SECONDS:
-        return {"as_of": cached_at, "cached": True, "results": signal_cache["results"]}
+    cached = signal_cache.get(resolved_id)
+    if not force and cached and (now - cached["as_of"]).total_seconds() < SIGNAL_CACHE_TTL_SECONDS:
+        return {"as_of": cached["as_of"], "cached": True, "results": cached["results"]}
     try:
         async with _market_scan_lock:
-            results = await asyncio.to_thread(screener.scan, force=force)
+            results = await asyncio.to_thread(strategy.scan, force=force)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Error al escanear el mercado: {exc}")
-    signal_cache["as_of"] = now
-    signal_cache["results"] = [r.model_dump() for r in results]
-    return {"as_of": now, "cached": False, "results": signal_cache["results"]}
+    signal_cache[resolved_id] = {"as_of": now, "results": [r.model_dump() for r in results]}
+    return {"as_of": now, "cached": False, "results": signal_cache[resolved_id]["results"]}
+
+
+_BACKTEST_RUNNERS = {
+    "momentum": run_backtest,
+    "opportunistic": run_opportunistic_backtest,
+}
 
 
 @app.get("/api/signals/backtest")
-async def backtest_strategy(_: None = Depends(require_api_key)):
-    """Backtest simplificado de la estrategia momentum sobre el universo
-    configurado. Ver docstring de run_backtest() para las simplificaciones
+async def backtest_strategy(strategy_id: str | None = None, _: None = Depends(require_api_key)):
+    """Backtest simplificado sobre el universo configurado, de la estrategia
+    indicada (default la persistida en screener_config). Ver docstring de
+    run_backtest()/run_opportunistic_backtest() para las simplificaciones
     asumidas (sin comisiones/slippage, curva de equity aproximada).
+
+    Largo plazo y Dividendos NO son backtesteables (supports_backtest=False):
+    sin historia point-in-time de fundamentales en yfinance gratuito no hay
+    forma de simular sus filtros en el pasado sin inventar datos.
 
     Requiere API key: es la operacion mas pesada del backend (descarga anos de
     historia de todo el universo), dejarla abierta seria un vector de DoS.
     async + asyncio.to_thread + lock por el mismo motivo que scan_signals."""
+    resolved_id = strategy_id or screener_config.strategy_id
+    strategy = strategy_registry.get(resolved_id)
+    if strategy is None:
+        raise HTTPException(status_code=422, detail=f"strategy_id desconocido: {resolved_id}")
+    if not strategy.supports_backtest:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"La estrategia '{strategy.name}' no soporta backtest: no hay historia "
+                "point-in-time de sus datos fundamentales disponible en la fuente de "
+                "datos gratuita. Solo esta disponible para escaneo en vivo."
+            ),
+        )
+    runner = _BACKTEST_RUNNERS[resolved_id]
     try:
         async with _market_scan_lock:
-            return await asyncio.to_thread(run_backtest, screener_config)
+            return await asyncio.to_thread(runner, screener_config)
     except BacktestError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except MarketDataError as exc:
@@ -838,6 +922,8 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
             reference_price=reference_price,
             trades_today=trades_today,
             halted=state["halted"],
+            order_sector=get_sector(order.symbol),
+            sector_exposure_usd=_compute_sector_exposure(await broker.get_positions(), order.symbol),
         )
 
         audit.record("order_submitted", order.model_dump(), decision.model_dump())

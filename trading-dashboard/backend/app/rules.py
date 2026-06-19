@@ -21,6 +21,11 @@ class RulesConfig(BaseModel):
     # real llegaria nunca a ese umbral.
     max_order_value_usd: float = Field(default=5000, gt=0, le=10_000_000)
     max_position_pct_of_equity: float = Field(default=10, gt=0, le=100)
+    # Limite de exposicion combinada a un mismo sector GICS (posiciones
+    # existentes en ese sector + la orden en evaluacion), como % del equity.
+    # Solo se aplica si se puede determinar el sector de la orden (ver
+    # app/sectors.py); si no, la regla no bloquea (sin dato, no se rechaza).
+    max_sector_concentration_pct: float = Field(default=30, gt=0, le=100)
     # Riesgo maximo a arriesgar por operacion, como % del equity, si se toca el
     # stop-loss. Se usa solo para sugerir un tamano de posicion (no rechaza
     # ordenes por si solo): el tamano final igual queda limitado tambien por
@@ -86,7 +91,18 @@ class RulesEngine:
         reference_price: float,
         trades_today: int,
         halted: bool,
+        order_sector: str | None = None,
+        sector_exposure_usd: dict[str, float] | None = None,
     ) -> OrderDecision:
+        """`order_sector` y `sector_exposure_usd` son opcionales y se ignoran
+        si `order_sector` es None: sin sector conocido para el simbolo no hay
+        forma de evaluar el limite de concentracion, y se prefiere no
+        bloquear la orden por falta de un dato secundario (mismo criterio que
+        otros filtros best-effort del codebase, ej. earnings/near-high del
+        screener). `sector_exposure_usd` debe excluir la posicion actual del
+        propio simbolo de la orden si correspondiera evitar contarla dos
+        veces junto con `resulting_value` (queda a cargo del llamador, que
+        tiene visibilidad del portfolio completo)."""
         violations: list[RuleViolation] = []
 
         if halted:
@@ -147,6 +163,20 @@ class RulesEngine:
                         f"{self.config.max_position_pct_of_equity}%)."
                     ),
                 ))
+
+            if order_sector:
+                other_sector_value = (sector_exposure_usd or {}).get(order_sector, 0.0)
+                resulting_sector_value = other_sector_value + resulting_value
+                sector_pct = (resulting_sector_value / account.net_liquidation) * 100
+                if sector_pct > self.config.max_sector_concentration_pct:
+                    violations.append(RuleViolation(
+                        rule="max_sector_concentration_pct",
+                        message=(
+                            f"La exposicion combinada al sector {order_sector} seria "
+                            f"{sector_pct:.1f}% del equity (maximo "
+                            f"{self.config.max_sector_concentration_pct}%)."
+                        ),
+                    ))
 
         if account.daily_pnl_pct <= -abs(self.config.daily_loss_limit_pct):
             violations.append(RuleViolation(

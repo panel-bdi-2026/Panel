@@ -120,6 +120,18 @@ class SignalResult(BaseModel):
     suggested_stop_loss_pct: float
     passes_filters: bool
     notes: list[str] = []
+    # Estrategia que produjo esta fila (ver app/strategies/): permite mostrar
+    # resultados de varias estrategias en la misma tabla sin ambiguedad.
+    strategy_id: str = "momentum"
+    # Sector GICS de app/sectors.py, o None si el ticker no esta clasificado
+    # todavia. Se usa para mostrar el sector en el radar y para el limite de
+    # concentracion por sector de RulesEngine.
+    sector: Optional[str] = None
+    # Datos fundamentales (estrategias Largo plazo / Dividendos). None para
+    # Momentum/Oportunista, que no los consultan.
+    pe_ratio: Optional[float] = None
+    dividend_yield_pct: Optional[float] = None
+    payout_ratio_pct: Optional[float] = None
 
 
 class BacktestTrade(BaseModel):

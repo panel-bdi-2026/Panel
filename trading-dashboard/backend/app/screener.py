@@ -9,6 +9,7 @@ from .indicators import atr, pct_from_high, rate_of_change, rsi, sma
 from .market_data import MarketDataError, get_daily_bars, get_next_earnings_date
 from .models import SignalResult
 from .screener_config import ScreenerConfig
+from .sectors import get_sector
 
 
 class MomentumScreener:
@@ -19,6 +20,12 @@ class MomentumScreener:
     pasar por el RulesEngine (whitelist, stop-loss, limites, etc.) como
     cualquier otra. No es una recomendacion de inversion.
     """
+
+    # Identifica esta estrategia en el registro de app/main.py (ver
+    # app/strategies/ para las demas estrategias).
+    id = "momentum"
+    name = "Momentum"
+    supports_backtest = True
 
     def __init__(self, config: ScreenerConfig):
         self.config = config
@@ -139,11 +146,11 @@ class MomentumScreener:
         relative_strength = last_roc_3m - benchmark_roc_3m if benchmark_roc_3m is not None else 0.0
 
         score = (
-            0.35 * relative_strength
-            + 0.25 * last_roc_3m
-            + 0.15 * last_roc_1m
-            + 0.15 * (10 if trend_ok else -10)
-            + 0.10 * (last_rsi - 50)
+            cfg.score_weight_relative_strength * relative_strength
+            + cfg.score_weight_momentum_3m * last_roc_3m
+            + cfg.score_weight_momentum_1m * last_roc_1m
+            + cfg.score_weight_trend * (10 if trend_ok else -10)
+            + cfg.score_weight_rsi * (last_rsi - 50)
         )
 
         stop_loss_price = max(0.0, last_price - cfg.stop_loss_atr_multiplier * last_atr)
@@ -164,6 +171,8 @@ class MomentumScreener:
             suggested_stop_loss_pct=round(stop_loss_pct, 2),
             passes_filters=trend_ok and liquidity_ok and rsi_ok and regime_ok and earnings_ok and near_high_ok,
             notes=notes,
+            strategy_id=self.id,
+            sector=get_sector(symbol),
         )
 
     def scan(self, force: bool = False) -> list[SignalResult]:
