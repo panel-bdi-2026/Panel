@@ -71,6 +71,12 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .frow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
 .toolbar .fi,.toolbar .fs{width:auto;min-width:140px}
+.scores-cell{display:flex;flex-wrap:wrap;gap:4px;max-width:160px}
+.score-badge{display:inline-flex;gap:3px;align-items:baseline;padding:2px 5px;border-radius:5px;
+  background:var(--bg);border:1px solid var(--border);font-size:11px;color:var(--muted);white-space:nowrap}
+.score-badge b{color:var(--text);font-weight:700}
+.score-badge.active{border-color:var(--primary);color:var(--primary-mid);background:rgba(34,211,238,0.08)}
+.score-badge.active b{color:var(--primary)}
 .side-sel{display:flex;border:1.5px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:11px}
 .side-opt{flex:1;padding:8px;border:none;background:var(--card2);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;color:var(--muted)}
 .side-opt.on-buy{background:var(--green-bg);color:var(--green)}
@@ -209,7 +215,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
             <button class="btn btn-ghost" id="refreshSectorsBtn" style="background:var(--bg);color:var(--muted)" onclick="refreshSectors()">🌐 Refrescar sectores</button>
           </div>
           <table>
-            <thead><tr><th>Símbolo</th><th>Sector</th><th>Score</th><th>Precio</th><th>3M%</th><th>1M%</th><th>RSI</th><th>Stop sugerido</th><th></th></tr></thead>
+            <thead><tr><th>Símbolo</th><th>Sector</th><th title="Score de este candidato bajo cada estrategia: la activa queda resaltada">Scores por estrategia</th><th>Precio</th><th>3M%</th><th>1M%</th><th>RSI</th><th>Stop sugerido</th><th></th></tr></thead>
             <tbody id="signalsBody"><tr><td colspan="9" class="empty">Sin escanear aún</td></tr></tbody>
           </table>
           <div id="signalsMeta" class="muted-sm" style="margin-top:8px"></div>
@@ -1232,6 +1238,27 @@ function visibleSignalResults(){
   );
 }
 
+function strategyShortLabel(strategyId){
+  const strat = STRATEGIES.find(s => s.id === strategyId);
+  return strat ? strat.name.slice(0, 3) : strategyId.slice(0, 3);
+}
+
+function scoresCellHtml(r){
+  const scores = r.scores || {};
+  const ids = STRATEGIES.length ? STRATEGIES.map(s => s.id) : [currentStrategyId];
+  return `<div class="scores-cell">${ids.map(id => {
+    // El score de la estrategia activa viene siempre de r.score (la fuente
+    // primaria de /api/signals/scan); el resto viene del merge de
+    // /api/signals/scan/all, que puede no haber resuelto todavia.
+    const value = id === currentStrategyId ? r.score : scores[id];
+    const label = esc(strategyShortLabel(id));
+    const strat = STRATEGIES.find(s => s.id === id);
+    const title = strat ? esc(strat.name) : label;
+    const activeCls = id === currentStrategyId ? ' active' : '';
+    return `<span class="score-badge${activeCls}" title="${title}">${label} <b>${value != null ? value.toFixed(1) : '—'}</b></span>`;
+  }).join('')}</div>`;
+}
+
 function renderSignalsTable(){
   const body = document.getElementById('signalsBody');
   const filtered = visibleSignalResults();
@@ -1245,7 +1272,7 @@ function renderSignalsTable(){
         <tr>
           <td><b>${esc(r.symbol)}</b>${r.passes_filters ? '' : ' <span class="muted-sm">(no pasa filtros)</span>'}</td>
           <td>${esc(r.sector || '—')}</td>
-          <td>${r.score.toFixed(1)}</td>
+          <td>${scoresCellHtml(r)}</td>
           <td>${fmtUsd(r.last_price)}</td>
           <td style="color:${r.momentum_3m_pct>=0?'var(--green)':'var(--red)'}">${r.momentum_3m_pct.toFixed(1)}%</td>
           <td style="color:${r.momentum_1m_pct>=0?'var(--green)':'var(--red)'}">${r.momentum_1m_pct.toFixed(1)}%</td>
@@ -1290,6 +1317,21 @@ async function scanSignals(force=false){
     }
     meta.textContent = `Actualizado: ${new Date(data.as_of).toLocaleString()}${data.cached ? ' (cache)' : ''} · ${data.results.length} símbolos con datos`;
     renderSignalsChart(data.results);
+    // El score de las otras estrategias se trae aparte y nunca con force: la
+    // activa ya se forzo arriba si correspondia, y las demas usan su propio
+    // cache de 15 min (ver /api/signals/scan/all) para no multiplicar por 4
+    // el costo de un rescan forzado.
+    if(data.results.length){
+      try{
+        const matrix = await api('/api/signals/scan/all', { auth:true });
+        const scoresBySymbol = {};
+        (matrix.results || []).forEach(m => scoresBySymbol[m.symbol] = m.scores || {});
+        lastScanResults.forEach(r => { r.scores = scoresBySymbol[r.symbol] || {}; });
+        renderSignalsTable();
+      }catch(e){
+        // No bloquea el radar: sin esto igual se ve el score de la estrategia activa.
+      }
+    }
   }catch(e){
     body.innerHTML = `<tr><td colspan="${SIGNALS_COLSPAN}" class="empty">${e.message}</td></tr>`;
     document.getElementById('signalsChartWrap').style.display = 'none';

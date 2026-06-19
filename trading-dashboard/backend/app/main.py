@@ -743,6 +743,23 @@ def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_k
     return screener_config.model_dump()
 
 
+async def _get_or_scan(strategy_id: str, force: bool) -> tuple[datetime, bool, list[dict]]:
+    """Resultados de strategy.scan() para `strategy_id`: desde signal_cache si
+    esta fresco, corriendo el scan si no. Comun a /api/signals/scan y
+    /api/signals/scan/all para que ambos compartan el mismo cache por
+    estrategia (ver SIGNAL_CACHE_TTL_SECONDS) en vez de pagar la cuota de la
+    API de datos dos veces por lo mismo."""
+    now = datetime.now(timezone.utc)
+    cached = signal_cache.get(strategy_id)
+    if not force and cached and (now - cached["as_of"]).total_seconds() < SIGNAL_CACHE_TTL_SECONDS:
+        return cached["as_of"], True, cached["results"]
+    strategy = strategy_registry[strategy_id]
+    async with _market_scan_lock:
+        results = await asyncio.to_thread(strategy.scan, force=force)
+    signal_cache[strategy_id] = {"as_of": now, "results": [r.model_dump() for r in results]}
+    return now, False, signal_cache[strategy_id]["results"]
+
+
 @app.get("/api/signals/scan")
 async def scan_signals(force: bool = False, strategy_id: str | None = None, _: None = Depends(require_api_key)):
     """Radar de oportunidades. No es una recomendacion de inversion ni ejecuta
@@ -762,21 +779,39 @@ async def scan_signals(force: bool = False, strategy_id: str | None = None, _: N
     lock evita que un scan se cruce con un backtest o con el ciclo proactivo
     en background, que pegan a la misma API de datos."""
     resolved_id = strategy_id or screener_config.strategy_id
-    strategy = strategy_registry.get(resolved_id)
-    if strategy is None:
+    if resolved_id not in strategy_registry:
         raise HTTPException(status_code=422, detail=f"strategy_id desconocido: {resolved_id}")
-
-    now = datetime.now(timezone.utc)
-    cached = signal_cache.get(resolved_id)
-    if not force and cached and (now - cached["as_of"]).total_seconds() < SIGNAL_CACHE_TTL_SECONDS:
-        return {"as_of": cached["as_of"], "cached": True, "results": cached["results"]}
     try:
-        async with _market_scan_lock:
-            results = await asyncio.to_thread(strategy.scan, force=force)
+        as_of, cached, results = await _get_or_scan(resolved_id, force)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Error al escanear el mercado: {exc}")
-    signal_cache[resolved_id] = {"as_of": now, "results": [r.model_dump() for r in results]}
-    return {"as_of": now, "cached": False, "results": signal_cache[resolved_id]["results"]}
+    return {"as_of": as_of, "cached": cached, "results": results}
+
+
+@app.get("/api/signals/scan/all")
+async def scan_signals_all_strategies(force: bool = False, _: None = Depends(require_api_key)):
+    """Como /api/signals/scan pero corre TODAS las estrategias registradas
+    sobre el mismo universo y devuelve, por simbolo, el score que le dio cada
+    una. Pensado para el radar: el mismo candidato puede rankear distinto en
+    Momentum, Oportunista, Largo plazo y Dividendos, y comparar eso lado a
+    lado es mas util que tener que cambiar de estrategia una por una.
+
+    Comparte signal_cache (por estrategia) con /api/signals/scan via
+    _get_or_scan: si ya escaneaste alguna estrategia hace poco, esta no la
+    vuelve a correr."""
+    now = datetime.now(timezone.utc)
+    merged: dict[str, dict] = {}
+    for strategy_id in strategy_registry:
+        try:
+            _, _, results = await _get_or_scan(strategy_id, force)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Error al escanear el mercado ({strategy_id}): {exc}")
+        for r in results:
+            entry = merged.setdefault(r["symbol"], {"symbol": r["symbol"], "sector": r.get("sector"), "scores": {}})
+            entry["scores"][strategy_id] = r["score"]
+            if entry["sector"] is None and r.get("sector") is not None:
+                entry["sector"] = r["sector"]
+    return {"as_of": now, "results": list(merged.values())}
 
 
 class SectorRefreshRequest(BaseModel):

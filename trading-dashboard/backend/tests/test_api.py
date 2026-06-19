@@ -34,7 +34,7 @@ from starlette.websockets import WebSocketDisconnect
 from app import main as main_module
 from app.funds import CapitalFlow, Fund, FundsStore, FundTrade
 from app.market_data import MarketDataError
-from app.models import AccountSummary, Side
+from app.models import AccountSummary, Side, SignalResult
 from app.rules import RulesConfig
 from app.screener_config import ScreenerConfig
 
@@ -591,3 +591,128 @@ def test_refresh_sectors_defaults_to_screener_universe_when_no_symbols_given(mon
     resp = client.post("/api/sectors/refresh", json={}, headers={"X-API-Key": "test-key"})
     assert resp.status_code == 200
     assert resp.json()["resolved"] == {"NEWCO": "Energy"}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/signals/scan y /api/signals/scan/all
+# ---------------------------------------------------------------------------
+
+def _make_signal(symbol, score, strategy_id="momentum", sector=None, passes=True) -> SignalResult:
+    return SignalResult(
+        symbol=symbol,
+        as_of=datetime.now(timezone.utc),
+        last_price=100.0,
+        score=score,
+        momentum_3m_pct=10.0,
+        momentum_1m_pct=5.0,
+        trend_ok=True,
+        rsi=55.0,
+        avg_volume=1_000_000,
+        suggested_stop_loss_price=95.0,
+        suggested_stop_loss_pct=5.0,
+        passes_filters=passes,
+        strategy_id=strategy_id,
+        sector=sector,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _clear_signal_cache():
+    main_module.signal_cache.clear()
+    yield
+    main_module.signal_cache.clear()
+
+
+def test_scan_signals_rejects_missing_api_key():
+    resp = client.get("/api/signals/scan")
+    assert resp.status_code == 401
+
+
+def test_scan_signals_rejects_unknown_strategy_id():
+    resp = client.get("/api/signals/scan", params={"strategy_id": "no-existe"}, headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 422
+
+
+def test_scan_signals_uses_active_strategy_by_default(monkeypatch):
+    main_module.screener_config.strategy_id = "momentum"
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [_make_signal("AAPL", 8.0)])
+    resp = client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["cached"] is False
+    assert [r["symbol"] for r in body["results"]] == ["AAPL"]
+
+
+def test_scan_signals_serves_from_cache_within_ttl(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: calls.append(1) or [_make_signal("AAPL", 8.0)])
+    client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    resp = client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    assert resp.json()["cached"] is True
+    assert calls == [1]
+
+
+def test_scan_signals_force_bypasses_cache(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: calls.append(1) or [_make_signal("AAPL", 8.0)])
+    client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    resp = client.get("/api/signals/scan", params={"force": "true"}, headers={"X-API-Key": "test-key"})
+    assert resp.json()["cached"] is False
+    assert calls == [1, 1]
+
+
+def test_scan_signals_all_rejects_missing_api_key():
+    resp = client.get("/api/signals/scan/all")
+    assert resp.status_code == 401
+
+
+def test_scan_signals_all_merges_scores_per_symbol_across_strategies(monkeypatch):
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [
+        _make_signal("AAPL", 9.0, strategy_id="momentum", sector="Information Technology"),
+        _make_signal("XOM", 2.0, strategy_id="momentum"),
+    ])
+    monkeypatch.setattr(main_module.strategy_registry["opportunistic"], "scan", lambda force=False: [
+        _make_signal("AAPL", 5.0, strategy_id="opportunistic"),
+    ])
+    monkeypatch.setattr(main_module.strategy_registry["long_term"], "scan", lambda force=False: [
+        _make_signal("AAPL", 7.0, strategy_id="long_term"),
+    ])
+    monkeypatch.setattr(main_module.strategy_registry["dividend"], "scan", lambda force=False: [
+        _make_signal("AAPL", 3.0, strategy_id="dividend", sector="Information Technology"),
+    ])
+
+    resp = client.get("/api/signals/scan/all", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+    body = resp.json()
+    by_symbol = {r["symbol"]: r for r in body["results"]}
+
+    assert by_symbol["AAPL"]["scores"] == {
+        "momentum": 9.0, "opportunistic": 5.0, "long_term": 7.0, "dividend": 3.0,
+    }
+    assert by_symbol["AAPL"]["sector"] == "Information Technology"
+    # XOM solo aparece en momentum: las demas estrategias no la trajeron.
+    assert by_symbol["XOM"]["scores"] == {"momentum": 2.0}
+
+
+def test_scan_signals_all_reuses_cache_already_warmed_by_single_strategy_scan(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        main_module.screener, "scan",
+        lambda force=False: calls.append("momentum") or [_make_signal("AAPL", 9.0, strategy_id="momentum")],
+    )
+    for sid in ("opportunistic", "long_term", "dividend"):
+        monkeypatch.setattr(main_module.strategy_registry[sid], "scan", lambda force=False, sid=sid: [])
+
+    client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})  # calienta el cache de momentum
+    client.get("/api/signals/scan/all", headers={"X-API-Key": "test-key"})
+
+    assert calls == ["momentum"]  # no se volvio a escanear momentum, ya estaba fresco
+
+
+def test_scan_signals_all_propagates_strategy_failure_as_502(monkeypatch):
+    def failing_scan(force=False):
+        raise RuntimeError("fallo de datos de mercado")
+
+    monkeypatch.setattr(main_module.screener, "scan", failing_scan)
+    resp = client.get("/api/signals/scan/all", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 502
