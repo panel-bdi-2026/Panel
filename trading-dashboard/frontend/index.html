@@ -1518,8 +1518,8 @@ async function runBacktest(){
       <b>Backtest ${new Date(r.start_date).toLocaleDateString()} → ${new Date(r.end_date).toLocaleDateString()}</b><br>
       ${r.total_trades} operaciones · win rate ${r.win_rate_pct}% · profit factor ${r.profit_factor_is_infinite ? '∞' : (r.profit_factor ?? '—')} · Sharpe ${r.sharpe_ratio ?? '—'}<br>
       Retorno estrategia (neto de comisión/slippage estimados): ${r.strategy_cumulative_return_pct}% vs benchmark (${r.benchmark_cumulative_return_pct}%)<br>
-      Max drawdown: ${r.max_drawdown_pct}%
-      <p class="muted-sm" style="margin-top:6px">Backtest simplificado: incluye comisión/slippage estimados, stop-loss con fill realista (mínimo intradiario) y filtro de régimen de mercado; el Sharpe es aproximado a partir de retornos por operación, no de una curva de equity diaria. Resultados pasados no garantizan resultados futuros.</p>`;
+      Max drawdown: ${r.max_drawdown_pct}% · Exposición promedio del capital: ${r.avg_exposure_pct ?? '—'}%
+      <p class="muted-sm" style="margin-top:6px">Backtest simplificado: incluye comisión/slippage estimados, stop-loss con fill realista (mínimo intradiario) y filtro de régimen de mercado. La curva de equity, el drawdown y el Sharpe se calculan día por día sobre el universo configurado HOY (sin supervivencia histórica) y aproximan el camino intradiario de cada operación con interpolación lineal entre entrada y salida. Resultados pasados no garantizan resultados futuros.</p>`;
     if(r.equity_curve && r.equity_curve.length){
       chartWrap.style.display = 'block';
       if(backtestChart) backtestChart.destroy();

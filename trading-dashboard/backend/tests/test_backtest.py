@@ -88,7 +88,10 @@ def test_backtest_raises_when_no_trades_generated(monkeypatch):
 def test_backtest_includes_equity_curve_anchored_at_zero(patched_market_data):
     config = ScreenerConfig(universe=["MOM", "FLAT"], benchmark_symbol="SPY", backtest_years=1)
     summary = run_backtest(config)
-    assert len(summary.equity_curve) == summary.total_trades + 1
+    # La curva es diaria (un punto por dia de trading entre la primera entrada
+    # y la ultima salida), no un punto por operacion: con mas de un dia de
+    # historia entre operaciones tiene que haber mas puntos que operaciones.
+    assert len(summary.equity_curve) > summary.total_trades
     assert summary.equity_curve[0].equity_pct == 0.0
     assert summary.equity_curve[0].date == summary.start_date
     assert summary.equity_curve[-1].date == summary.end_date
@@ -282,12 +285,12 @@ def test_regime_filter_blocks_entries_when_benchmark_below_regime_sma(monkeypatc
 
 
 def _trade(symbol, entry_day, exit_day, return_pct=1.0):
-    from datetime import datetime, timezone
+    from datetime import datetime
     from app.models import BacktestTrade
     return BacktestTrade(
         symbol=symbol,
-        entry_date=datetime(2024, 1, entry_day, tzinfo=timezone.utc),
-        exit_date=datetime(2024, 1, exit_day, tzinfo=timezone.utc),
+        entry_date=datetime(2024, 1, entry_day),
+        exit_date=datetime(2024, 1, exit_day),
         entry_price=100.0,
         exit_price=100.0 * (1 + return_pct / 100),
         return_pct=return_pct,
@@ -343,20 +346,54 @@ def test_sharpe_uses_sample_stdev_not_population_stdev():
     from app.backtest import _compute_summary_stats
     import statistics as _stats
     returns_pct = [2.0, -1.0, 3.0, -0.5, 1.5]
+    # Operaciones consecutivas de 1 dia cada una (la salida de una coincide
+    # con la entrada de la siguiente): con esa cadencia cada operacion aporta
+    # un unico retorno diario igual a weight*return_pct, sin interpolacion
+    # parcial de por medio, asi que los retornos diarios de la curva
+    # coinciden exactamente con los retornos por operacion ponderados.
     trades = [_trade(f"S{i}", i + 1, i + 2, return_pct=r) for i, r in enumerate(returns_pct)]
-    summary = _compute_summary_stats(trades, top_n=10, bench_bars=_bench_bars_for_stats())
+    top_n = 10
+    summary = _compute_summary_stats(trades, top_n=top_n, bench_bars=_bench_bars_for_stats())
 
-    returns_decimal = [r / 100 for r in returns_pct]
-    span_days = max((trades[-1].exit_date - trades[0].entry_date).days, 1)
-    trades_per_year = len(trades) / (span_days / 365.25)
+    daily_returns = [(1.0 / top_n) * r / 100 for r in returns_pct]
     expected_sharpe_sample = round(
-        (_stats.mean(returns_decimal) / _stats.stdev(returns_decimal)) * (trades_per_year ** 0.5), 2
+        (_stats.mean(daily_returns) / _stats.stdev(daily_returns)) * (252 ** 0.5), 2
     )
     expected_sharpe_population = round(
-        (_stats.mean(returns_decimal) / _stats.pstdev(returns_decimal)) * (trades_per_year ** 0.5), 2
+        (_stats.mean(daily_returns) / _stats.pstdev(daily_returns)) * (252 ** 0.5), 2
     )
     assert summary.sharpe_ratio == expected_sharpe_sample
     assert summary.sharpe_ratio != expected_sharpe_population
+
+
+def test_daily_equity_curve_reflects_overlapping_open_positions():
+    from app.backtest import _compute_summary_stats
+    # A queda abierta los dias 1-11 (ganadora, +10%) mientras B esta abierta
+    # en paralelo los dias 1-6 (perdedora, -20%). El modelo anterior solo
+    # actualizaba la curva al cerrar cada operacion y nunca acreditaba la
+    # ganancia no realizada de A mientras seguia abierta: el cierre de B se
+    # veia como una caida al -10% (1*(1+0.5*-20/100)), mas profunda de lo que
+    # realmente era con A ya compensando en paralelo (+2.5% no realizado a
+    # esa fecha).
+    trades = [_trade("A", 1, 11, return_pct=10.0), _trade("B", 1, 6, return_pct=-20.0)]
+    summary = _compute_summary_stats(trades, top_n=2, bench_bars=_bench_bars_for_stats())
+
+    points = {p.date: p.equity_pct for p in summary.equity_curve}
+    assert points[trades[0].entry_date] == 0.0
+    assert points[trades[1].exit_date] == -7.75
+    assert points[trades[0].exit_date] == -5.5  # resultado final, no depende del camino
+    assert summary.max_drawdown_pct == -7.75  # mas leve que el -10.0% que mostraria el modelo anterior
+    assert summary.strategy_cumulative_return_pct == -5.5
+
+
+def test_avg_exposure_pct_reflects_capital_utilization():
+    from app.backtest import _compute_summary_stats
+    # Mismo escenario que el test anterior: dia 1, las 2 posiciones de
+    # top_n=2 estan ocupadas (100% de exposicion); dia 6, B ya cerro y solo
+    # queda A (50%); dia 11, A tambien cerro (0%). Promedio: (100+50+0)/3.
+    trades = [_trade("A", 1, 11, return_pct=10.0), _trade("B", 1, 6, return_pct=-20.0)]
+    summary = _compute_summary_stats(trades, top_n=2, bench_bars=_bench_bars_for_stats())
+    assert summary.avg_exposure_pct == 50.0
 
 
 def test_cap_concurrent_positions_limits_simultaneous_trades():

@@ -45,7 +45,17 @@ class LongTermStrategy:
             return None
 
         fundamentals = get_fundamentals(symbol, force=force)
-        pe = fundamentals.get("trailing_pe") or fundamentals.get("forward_pe")
+        # trailing_pe (ganancias ya reportadas) y forward_pe (estimado por
+        # analistas a futuro) son metodologias distintas: mezclarlas sin
+        # distincion comparaba, entre simbolos distintos, un PE real contra
+        # una proyeccion sin que el usuario lo supiera. Se prefiere trailing
+        # (dato real) y forward queda solo como respaldo cuando no hay
+        # trailing, con una nota explicita de que es una estimacion.
+        pe = fundamentals.get("trailing_pe")
+        pe_is_forward_estimate = False
+        if pe is None:
+            pe = fundamentals.get("forward_pe")
+            pe_is_forward_estimate = pe is not None
         earnings_growth = fundamentals.get("earnings_growth")
         revenue_growth = fundamentals.get("revenue_growth")
         roe = fundamentals.get("return_on_equity")
@@ -75,6 +85,8 @@ class LongTermStrategy:
             notes.append("Sin dato de PE disponible: no se puede evaluar la valoracion.")
         elif not value_ok:
             notes.append(f"PE {pe:.1f} excede el maximo configurado ({lt.max_pe_ratio}).")
+        if pe_is_forward_estimate:
+            notes.append("PE calculado con forward PE (estimado por analistas): no hay PE trailing disponible.")
         if earnings_growth is None:
             notes.append("Sin dato de crecimiento de ganancias disponible.")
         elif not growth_ok:
@@ -91,7 +103,15 @@ class LongTermStrategy:
         if debt_to_equity is not None and debt_to_equity > lt.max_debt_to_equity:
             notes.append(f"Deuda/equity {debt_to_equity:.0f} por encima del umbral preferido ({lt.max_debt_to_equity}).")
 
-        value_score = (lt.max_pe_ratio - pe) if pe is not None else 0.0
+        # PE negativo (ganancias negativas, ej. eps muy cercano a 0 por
+        # debajo) puede dar un numero arbitrariamente grande en valor
+        # absoluto: sin este resguardo, "max_pe_ratio - pe" premiaba sin
+        # limite a una empresa con perdidas como si fuera la mejor
+        # oportunidad de valor, cuando en realidad ni siquiera pasa el
+        # filtro (value_ok exige pe > 0). Un PE alto pero positivo (empresa
+        # cara, no en perdida) si sigue dando un value_score negativo
+        # acotado, que es el comportamiento original e intencional.
+        value_score = (lt.max_pe_ratio - pe) if pe is not None and pe > 0 else 0.0
         growth_pct = (earnings_growth or 0.0) * 100
         roe_pct = (roe or 0.0) * 100
         margin_pct = (profit_margins or 0.0) * 100

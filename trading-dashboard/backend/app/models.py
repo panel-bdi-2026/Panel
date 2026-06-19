@@ -172,5 +172,12 @@ class BacktestSummary(BaseModel):
     benchmark_cumulative_return_pct: float
     max_drawdown_pct: float
     sharpe_ratio: Optional[float] = None
+    # % promedio del capital asumido (backtest_assumed_capital_usd) que estuvo
+    # efectivamente invertido en algun momento del periodo (1/top_n por cada
+    # posicion abierta ese dia), no solo en los dias con una operacion activa
+    # de muestra: un avg_exposure_pct bajo indica que la estrategia paso buena
+    # parte del tiempo sin suficientes señales como para usar el capital
+    # asignado a top_n posiciones.
+    avg_exposure_pct: float = 0.0
     trades: list[BacktestTrade] = []
     equity_curve: list[EquityCurvePoint] = []

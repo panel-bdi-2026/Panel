@@ -225,8 +225,8 @@ def _simulate_symbol_opportunistic(symbol: str, bars: pd.DataFrame, cfg: Screene
 def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     """Backtest de la estrategia Oportunista, en paralelo a run_backtest
     (Momentum). Misma estructura y mismas simplificaciones documentadas ahi
-    (curva de equity secuencial 1/top_n, sharpe aproximado por operacion);
-    aca solo cambia la logica de entrada/salida por simbolo (ver
+    (curva de equity diaria con cupo top_n, sin supervivencia historica del
+    universo); aca solo cambia la logica de entrada/salida por simbolo (ver
     _simulate_symbol_opportunistic)."""
     history_days = int(cfg.backtest_years * 365)
 
@@ -279,6 +279,74 @@ def cap_concurrent_positions(trades: list[BacktestTrade], top_n: int) -> list[Ba
     return taken
 
 
+def _daily_equity_curve(
+    all_trades: list[BacktestTrade], top_n: int, bench_bars: pd.DataFrame
+) -> tuple[list[EquityCurvePoint], list[float], float]:
+    """Construye la curva de equity dia por dia (no solo en cada evento de
+    salida): cada operacion abierta aporta un retorno NO realizado que se
+    interpola linealmente entre 0% (en su entry_date) y su return_pct final
+    (en su exit_date), ponderado por 1/top_n igual que una operacion cerrada.
+    Antes la curva solo se actualizaba al cerrar una operacion, como si una
+    posicion abierta no existiera (no aportaba nada, ni ganancia ni perdida)
+    hasta su cierre -- eso ocultaba el drawdown combinado real cuando varias
+    operaciones se solapan en el tiempo. La interpolacion lineal es una
+    aproximacion al camino real de precio intradiario de cada operacion (no
+    se vuelve a pedir la serie de precios aca, que ya se descarto despues de
+    simular las entradas/salidas), pero sigue siendo mucho mas fiel que
+    tratar cada operacion como un salto instantaneo en su fecha de cierre.
+
+    El calendario de fechas es el del benchmark (mismos dias de trading que
+    las acciones individuales) recortado al rango de la primera entrada a la
+    ultima salida, mas las fechas exactas de entrada/salida de cada operacion
+    por si alguna no cae justo en una fecha del benchmark.
+
+    Devuelve (equity_curve, equity_diaria_en_factor, avg_exposure_pct).
+    """
+    weight = 1.0 / top_n
+    start, end = all_trades[0].entry_date, all_trades[-1].exit_date
+    calendar = sorted(
+        set(bench_bars.index[(bench_bars.index >= start) & (bench_bars.index <= end)])
+        | {t.entry_date for t in all_trades}
+        | {t.exit_date for t in all_trades}
+    )
+    pos_by_date = {d: i for i, d in enumerate(calendar)}
+
+    trades_by_entry = sorted(all_trades, key=lambda t: t.entry_date)
+    next_entry_idx = 0
+    open_trades: list[BacktestTrade] = []
+    closed_factor = 1.0
+    equity_curve: list[EquityCurvePoint] = []
+    daily_equity: list[float] = []
+    exposure_sum = 0.0
+
+    for day_idx, date in enumerate(calendar):
+        while next_entry_idx < len(trades_by_entry) and trades_by_entry[next_entry_idx].entry_date <= date:
+            open_trades.append(trades_by_entry[next_entry_idx])
+            next_entry_idx += 1
+
+        still_open = []
+        for t in open_trades:
+            if t.exit_date <= date:
+                closed_factor *= 1 + weight * t.return_pct / 100
+            else:
+                still_open.append(t)
+        open_trades = still_open
+
+        unrealized_pct = 0.0
+        for t in open_trades:
+            entry_pos, exit_pos = pos_by_date[t.entry_date], pos_by_date[t.exit_date]
+            frac = (day_idx - entry_pos) / (exit_pos - entry_pos) if exit_pos > entry_pos else 1.0
+            unrealized_pct += weight * t.return_pct * frac
+
+        equity = closed_factor * (1 + unrealized_pct / 100)
+        daily_equity.append(equity)
+        exposure_sum += len(open_trades) * weight
+        equity_curve.append(EquityCurvePoint(date=date, equity_pct=round((equity - 1) * 100, 2)))
+
+    avg_exposure_pct = round(exposure_sum / len(calendar) * 100, 1)
+    return equity_curve, daily_equity, avg_exposure_pct
+
+
 def _compute_summary_stats(
     all_trades: list[BacktestTrade], top_n: int, bench_bars: pd.DataFrame
 ) -> BacktestSummary:
@@ -302,31 +370,31 @@ def _compute_summary_stats(
     profit_factor_is_infinite = gross_loss == 0 and gross_profit > 0
     expectancy = sum(returns) / len(returns)
 
-    equity = 1.0
+    equity_curve, daily_equity, avg_exposure_pct = _daily_equity_curve(all_trades, top_n, bench_bars)
+
     peak = 1.0
     max_drawdown = 0.0
-    equity_curve: list[EquityCurvePoint] = [
-        EquityCurvePoint(date=all_trades[0].entry_date, equity_pct=0.0)
-    ]
-    for t in all_trades:
-        weight = 1.0 / top_n
-        equity *= 1 + weight * t.return_pct / 100
+    for equity in daily_equity:
         peak = max(peak, equity)
         drawdown = (equity - peak) / peak * 100
         max_drawdown = min(max_drawdown, drawdown)
-        equity_curve.append(EquityCurvePoint(date=t.exit_date, equity_pct=round((equity - 1) * 100, 2)))
-    cumulative_return = (equity - 1) * 100
+    cumulative_return = (daily_equity[-1] - 1) * 100
 
     benchmark_cumulative = float(bench_bars["Close"].iloc[-1] / bench_bars["Close"].iloc[0] - 1) * 100
 
+    # Sharpe a partir de los retornos DIARIOS de la curva de equity (no de los
+    # retornos por operacion): asi es comparable con un Sharpe convencional
+    # (anualizado por sqrt(252), dias de trading/año), y no solo una
+    # aproximacion ad-hoc por "operaciones por año" inferidas del periodo. Con
+    # menos de 2 operaciones el resultado no es estadisticamente significativo
+    # sin importar cuantos puntos diarios genere la interpolacion de esa unica
+    # operacion, asi que se exige el mismo minimo de 2 operaciones que antes.
     sharpe_ratio = None
-    returns_decimal = [r / 100 for r in returns]
-    if len(returns_decimal) >= 2:
-        std_r = statistics.stdev(returns_decimal)
+    if len(all_trades) >= 2 and len(daily_equity) >= 3:
+        daily_returns = [daily_equity[i] / daily_equity[i - 1] - 1 for i in range(1, len(daily_equity))]
+        std_r = statistics.stdev(daily_returns)
         if std_r > 0:
-            span_days = max((all_trades[-1].exit_date - all_trades[0].entry_date).days, 1)
-            trades_per_year = len(all_trades) / (span_days / 365.25)
-            sharpe_ratio = (statistics.mean(returns_decimal) / std_r) * (trades_per_year ** 0.5)
+            sharpe_ratio = (statistics.mean(daily_returns) / std_r) * (252 ** 0.5)
 
     return BacktestSummary(
         start_date=all_trades[0].entry_date,
@@ -343,6 +411,7 @@ def _compute_summary_stats(
         benchmark_cumulative_return_pct=round(benchmark_cumulative, 2),
         max_drawdown_pct=round(max_drawdown, 2),
         sharpe_ratio=round(sharpe_ratio, 2) if sharpe_ratio is not None else None,
+        avg_exposure_pct=avg_exposure_pct,
         trades=all_trades[-50:],
         equity_curve=equity_curve,
     )
@@ -351,19 +420,30 @@ def _compute_summary_stats(
 def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     """Backtest simplificado de la estrategia momentum sobre el universo configurado.
 
+    La curva de equity, el max_drawdown_pct y el sharpe_ratio se calculan dia
+    por dia sobre una cartera con cupo para top_n posiciones concurrentes (ver
+    _daily_equity_curve): una posicion abierta aporta su retorno no realizado
+    (interpolado linealmente entre 0% y su return_pct final) a la curva todos
+    los dias que esta abierta, no solo en su cierre, asi que el drawdown
+    combinado de operaciones solapadas en el tiempo queda reflejado. El
+    sharpe_ratio se anualiza con sqrt(252) sobre esos retornos diarios, igual
+    que un Sharpe convencional.
+
     Simplificaciones explicitas que siguen sin modelarse (no es un backtester
-    de produccion): la curva de equity asume que cada operacion ocupa 1/top_n
-    del capital de forma secuencial (no rastrea solapamiento real de
-    posiciones concurrentes), y el sharpe_ratio se aproxima a partir de los
-    retornos por operacion (no de una curva de equity diaria), asi que no es
-    comparable 1:1 con un Sharpe calculado sobre retornos diarios. Si modela
-    comision/slippage estimados y un fill de stop-loss realista (minimo
-    intradiario, no el cierre), y entra a la apertura del dia siguiente a la
-    senal (no al cierre del mismo dia, que seria mirar al futuro). Esto ultimo
-    lo hace mas conservador que el motor de auto-trading en vivo, que coloca
-    la orden ya con el ultimo cierre conocido en el mismo ciclo de scan. Sirve
-    para validar la direccion de la idea antes de arriesgar capital real, no
-    como promesa de resultados futuros.
+    de produccion): el universo de simbolos es el configurado HOY (sin
+    supervivencia historica -- una accion que quebro o fue excluida del
+    indice durante el periodo analizado no aparece, lo que tipicamente infla
+    el resultado frente a la realidad de esa epoca); el camino intradiario
+    de cada operacion se interpola de forma lineal entre entrada y salida en
+    vez de usar el precio real dia por dia (no se vuelve a pedir esa serie en
+    el calculo de resumen). Si modela comision/slippage estimados y un fill
+    de stop-loss realista (minimo intradiario, no el cierre), y entra a la
+    apertura del dia siguiente a la senal (no al cierre del mismo dia, que
+    seria mirar al futuro). Esto ultimo lo hace mas conservador que el motor
+    de auto-trading en vivo, que coloca la orden ya con el ultimo cierre
+    conocido en el mismo ciclo de scan. Sirve para validar la direccion de la
+    idea antes de arriesgar capital real, no como promesa de resultados
+    futuros.
     """
     history_days = int(cfg.backtest_years * 365)
 

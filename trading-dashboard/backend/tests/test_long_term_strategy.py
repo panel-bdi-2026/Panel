@@ -54,6 +54,16 @@ FUNDAMENTALS = {
         trailing_pe=15.0, forward_pe=14.0, earnings_growth=0.20, revenue_growth=0.15,
         return_on_equity=0.25, debt_to_equity=80.0, profit_margins=0.18,
     ),
+    "LOSSMAKING": dict(
+        # eps negativo muy cercano a 0 -> trailing_pe negativo y enorme en
+        # valor absoluto (simula una empresa con perdidas, no una de valor).
+        trailing_pe=-5000.0, forward_pe=14.0, earnings_growth=0.20, revenue_growth=0.15,
+        return_on_equity=0.25, debt_to_equity=80.0, profit_margins=0.18,
+    ),
+    "FORWARDONLY": dict(
+        trailing_pe=None, forward_pe=14.0, earnings_growth=0.20, revenue_growth=0.15,
+        return_on_equity=0.25, debt_to_equity=80.0, profit_margins=0.18,
+    ),
 }
 
 
@@ -166,3 +176,29 @@ def test_evaluate_symbol_attaches_sector(strategy, monkeypatch):
     monkeypatch.setattr(long_term_module, "get_sector", lambda symbol: "Health Care")
     result = strategy.evaluate_symbol("STRONG")
     assert result.sector == "Health Care"
+
+
+def test_negative_pe_does_not_inflate_value_score(strategy):
+    # trailing_pe=-5000 (empresa con perdidas, eps casi 0 por debajo): sin el
+    # resguardo, "max_pe_ratio - pe" daria un value_score absurdamente alto
+    # (25 - (-5000) = 5025), premiando a la empresa con perdidas como si
+    # fuera la mejor oportunidad de valor. Debe quedar en 0, no pasar el
+    # filtro de valoracion, y el score total debe quedar muy por debajo del
+    # de una empresa con fundamentales igualmente fuertes pero PE sano.
+    lossmaking = strategy.evaluate_symbol("LOSSMAKING")
+    strong = strategy.evaluate_symbol("STRONG")
+    assert not lossmaking.passes_filters
+    assert lossmaking.pe_ratio == -5000.0
+    assert lossmaking.score < strong.score
+
+
+def test_forward_pe_used_as_fallback_with_disclosure_note(strategy):
+    result = strategy.evaluate_symbol("FORWARDONLY")
+    assert result.pe_ratio == 14.0
+    assert any("forward pe" in note.lower() for note in result.notes)
+
+
+def test_trailing_pe_preferred_over_forward_pe_when_both_present(strategy):
+    result = strategy.evaluate_symbol("STRONG")
+    assert result.pe_ratio == 15.0  # trailing_pe, no forward_pe (14.0)
+    assert not any("forward pe" in note.lower() for note in result.notes)
