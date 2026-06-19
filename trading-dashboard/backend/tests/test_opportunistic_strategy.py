@@ -122,6 +122,13 @@ def test_illiquid_symbol_fails_liquidity_filter_despite_same_price(strategy):
     assert any("volumen" in note.lower() for note in result.notes)
 
 
+def test_evaluate_symbol_exposes_score_components(strategy):
+    result = strategy.evaluate_symbol("GROW")
+    assert set(result.score_components.keys()) == {
+        "momentum", "volatility", "rsi_recovery", "room_to_grow",
+    }
+
+
 def test_results_sorted_descending_by_score(strategy):
     results = strategy.scan()
     scores = [r.score for r in results]

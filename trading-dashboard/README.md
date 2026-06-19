@@ -202,6 +202,18 @@ la API gratuita de datos).
   acciones — así una acción barata no pasa el filtro solo por moverse en
   volúmenes altos de acciones baratas). El stop-loss sugerido se calcula con
   ATR(14).
+- **Ranking comparable entre símbolos**: el `score` final de cada estrategia
+  (Momentum, Oportunista, Dividendos, Largo plazo) no suma directamente los
+  valores crudos de sus componentes (que tienen escalas muy distintas entre
+  sí, ej. RSI acotado 0-100 vs. un PE invertido sin techo): cada `scan()`
+  convierte primero cada componente a su percentil (0-100) dentro del propio
+  universo escaneado en ese ciclo, y solo después aplica los pesos
+  configurados. Esto evita que un solo valor extremo en un componente (un PE
+  absurdo, un retorno puntual atípico) dispare el score total de un símbolo
+  por delante de candidatos parejos en todos los componentes. El score de
+  `evaluate_symbol()` llamado de forma aislada (fuera de un `scan()`, ej. en
+  tests) sigue siendo la suma cruda, ya que no hay un universo contra el cual
+  calcular percentiles.
 - **Filtro de régimen** (`regime_filter_enabled`, `regime_sma_period`): no se
   sugieren entradas nuevas si el benchmark (`SPY` por defecto) está por
   debajo de su propia SMA de largo plazo (200 días por defecto) — evita

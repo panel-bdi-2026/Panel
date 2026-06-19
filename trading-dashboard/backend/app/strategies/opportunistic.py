@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from ..indicators import rate_of_change, rsi
 from ..market_data import MarketDataError, get_daily_bars
 from ..models import SignalResult
+from ..scoring import apply_cross_sectional_normalization
 from ..screener_config import ScreenerConfig
 from ..sectors import get_sector
 from .common import avg_dollar_volume, avg_volume, context_technicals, earnings_blackout_ok
@@ -85,11 +86,17 @@ class OpportunisticStrategy:
         if not earnings_ok:
             notes.append(f"Earnings estimados en {days_to_earnings} dia(s): dentro de la ventana de blackout.")
 
+        components = {
+            "momentum": last_roc,
+            "volatility": volatility_pct,
+            "rsi_recovery": last_rsi - opp.rsi_min,
+            "room_to_grow": abs(last_from_high or 0.0),
+        }
         score = (
-            opp.score_weight_momentum * last_roc
-            + opp.score_weight_volatility * volatility_pct
-            + opp.score_weight_rsi_recovery * (last_rsi - opp.rsi_min)
-            + opp.score_weight_room_to_grow * abs(last_from_high or 0.0)
+            opp.score_weight_momentum * components["momentum"]
+            + opp.score_weight_volatility * components["volatility"]
+            + opp.score_weight_rsi_recovery * components["rsi_recovery"]
+            + opp.score_weight_room_to_grow * components["room_to_grow"]
         )
 
         stop_loss_price = max(0.0, last_price - opp.stop_loss_atr_multiplier * last_atr)
@@ -112,6 +119,7 @@ class OpportunisticStrategy:
             notes=notes,
             strategy_id=self.id,
             sector=get_sector(symbol),
+            score_components=components,
         )
 
     def scan(self, force: bool = False) -> list[SignalResult]:
@@ -129,5 +137,12 @@ class OpportunisticStrategy:
                 "configurado. Puede ser un problema de conectividad o el limite de la "
                 "API gratuita de datos."
             )
+        opp = self.config.opportunistic
+        apply_cross_sectional_normalization(results, {
+            "momentum": opp.score_weight_momentum,
+            "volatility": opp.score_weight_volatility,
+            "rsi_recovery": opp.score_weight_rsi_recovery,
+            "room_to_grow": opp.score_weight_room_to_grow,
+        })
         results.sort(key=lambda r: r.score, reverse=True)
         return results

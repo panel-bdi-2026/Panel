@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from ..market_data import MarketDataError, get_daily_bars, get_fundamentals
 from ..models import SignalResult
+from ..scoring import apply_cross_sectional_normalization
 from ..screener_config import ScreenerConfig
 from ..sectors import get_sector
 from .common import avg_dollar_volume, avg_volume, context_technicals, earnings_blackout_ok
@@ -116,11 +117,17 @@ class LongTermStrategy:
         roe_pct = (roe or 0.0) * 100
         margin_pct = (profit_margins or 0.0) * 100
 
+        components = {
+            "value": value_score,
+            "growth": growth_pct,
+            "quality": roe_pct,
+            "margin": margin_pct,
+        }
         score = (
-            lt.score_weight_value * value_score
-            + lt.score_weight_growth * growth_pct
-            + lt.score_weight_quality * roe_pct
-            + lt.score_weight_margin * margin_pct
+            lt.score_weight_value * components["value"]
+            + lt.score_weight_growth * components["growth"]
+            + lt.score_weight_quality * components["quality"]
+            + lt.score_weight_margin * components["margin"]
         )
 
         stop_loss_price = max(0.0, last_price - lt.stop_loss_atr_multiplier * ctx["atr"])
@@ -144,6 +151,7 @@ class LongTermStrategy:
             strategy_id=self.id,
             sector=get_sector(symbol),
             pe_ratio=round(pe, 2) if pe is not None else None,
+            score_components=components,
         )
 
     def scan(self, force: bool = False) -> list[SignalResult]:
@@ -161,5 +169,12 @@ class LongTermStrategy:
                 "configurado. Puede ser un problema de conectividad o el limite de la "
                 "API gratuita de datos."
             )
+        lt = self.config.long_term
+        apply_cross_sectional_normalization(results, {
+            "value": lt.score_weight_value,
+            "growth": lt.score_weight_growth,
+            "quality": lt.score_weight_quality,
+            "margin": lt.score_weight_margin,
+        })
         results.sort(key=lambda r: r.score, reverse=True)
         return results

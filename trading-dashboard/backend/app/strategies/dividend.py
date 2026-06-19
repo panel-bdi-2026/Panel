@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from ..market_data import MarketDataError, get_daily_bars, get_fundamentals
 from ..models import SignalResult
+from ..scoring import apply_cross_sectional_normalization
 from ..screener_config import ScreenerConfig
 from ..sectors import get_sector
 from .common import avg_dollar_volume, avg_volume, context_technicals, earnings_blackout_ok
@@ -97,10 +98,15 @@ class DividendStrategy:
         roe_pct = (roe or 0.0) * 100
         margin_pct = (profit_margins or 0.0) * 100
 
+        components = {
+            "yield": div_yield_pct or 0.0,
+            "payout_quality": payout_quality,
+            "quality": (roe_pct + margin_pct) / 2,
+        }
         score = (
-            dv.score_weight_yield * (div_yield_pct or 0.0)
-            + dv.score_weight_payout_quality * payout_quality
-            + dv.score_weight_quality * (roe_pct + margin_pct) / 2
+            dv.score_weight_yield * components["yield"]
+            + dv.score_weight_payout_quality * components["payout_quality"]
+            + dv.score_weight_quality * components["quality"]
         )
 
         stop_loss_price = max(0.0, last_price - dv.stop_loss_atr_multiplier * ctx["atr"])
@@ -125,6 +131,7 @@ class DividendStrategy:
             sector=get_sector(symbol),
             dividend_yield_pct=round(div_yield_pct, 2) if div_yield_pct is not None else None,
             payout_ratio_pct=round(payout_pct, 2) if payout_pct is not None else None,
+            score_components=components,
         )
 
     def scan(self, force: bool = False) -> list[SignalResult]:
@@ -142,5 +149,11 @@ class DividendStrategy:
                 "configurado. Puede ser un problema de conectividad o el limite de la "
                 "API gratuita de datos."
             )
+        dv = self.config.dividend
+        apply_cross_sectional_normalization(results, {
+            "yield": dv.score_weight_yield,
+            "payout_quality": dv.score_weight_payout_quality,
+            "quality": dv.score_weight_quality,
+        })
         results.sort(key=lambda r: r.score, reverse=True)
         return results

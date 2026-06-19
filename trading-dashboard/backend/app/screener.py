@@ -8,6 +8,7 @@ import pandas as pd
 from .indicators import atr, pct_from_high, rate_of_change, rsi, sma
 from .market_data import MarketDataError, get_daily_bars, get_next_earnings_date
 from .models import SignalResult
+from .scoring import apply_cross_sectional_normalization
 from .screener_config import ScreenerConfig
 from .sectors import get_sector
 
@@ -145,12 +146,19 @@ class MomentumScreener:
 
         relative_strength = last_roc_3m - benchmark_roc_3m if benchmark_roc_3m is not None else 0.0
 
+        components = {
+            "relative_strength": relative_strength,
+            "momentum_3m": last_roc_3m,
+            "momentum_1m": last_roc_1m,
+            "trend": 10.0 if trend_ok else -10.0,
+            "rsi": last_rsi - 50,
+        }
         score = (
-            cfg.score_weight_relative_strength * relative_strength
-            + cfg.score_weight_momentum_3m * last_roc_3m
-            + cfg.score_weight_momentum_1m * last_roc_1m
-            + cfg.score_weight_trend * (10 if trend_ok else -10)
-            + cfg.score_weight_rsi * (last_rsi - 50)
+            cfg.score_weight_relative_strength * components["relative_strength"]
+            + cfg.score_weight_momentum_3m * components["momentum_3m"]
+            + cfg.score_weight_momentum_1m * components["momentum_1m"]
+            + cfg.score_weight_trend * components["trend"]
+            + cfg.score_weight_rsi * components["rsi"]
         )
 
         stop_loss_price = max(0.0, last_price - cfg.stop_loss_atr_multiplier * last_atr)
@@ -173,6 +181,7 @@ class MomentumScreener:
             notes=notes,
             strategy_id=self.id,
             sector=get_sector(symbol),
+            score_components=components,
         )
 
     def scan(self, force: bool = False) -> list[SignalResult]:
@@ -193,5 +202,12 @@ class MomentumScreener:
                 "configurado. Puede ser un problema de conectividad o el limite de la "
                 "API gratuita de datos."
             )
+        apply_cross_sectional_normalization(results, {
+            "relative_strength": self.config.score_weight_relative_strength,
+            "momentum_3m": self.config.score_weight_momentum_3m,
+            "momentum_1m": self.config.score_weight_momentum_1m,
+            "trend": self.config.score_weight_trend,
+            "rsi": self.config.score_weight_rsi,
+        })
         results.sort(key=lambda r: r.score, reverse=True)
         return results

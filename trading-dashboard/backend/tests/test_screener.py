@@ -135,6 +135,13 @@ def test_regime_filter_does_not_block_when_benchmark_above_regime_sma(screener):
     assert result.passes_filters
 
 
+def test_evaluate_symbol_exposes_score_components(screener):
+    result = screener.evaluate_symbol("MOM", benchmark_roc_3m=5.0, regime_ok=True)
+    assert set(result.score_components.keys()) == {
+        "relative_strength", "momentum_3m", "momentum_1m", "trend", "rsi",
+    }
+
+
 def test_earnings_blackout_blocks_symbol_when_earnings_within_window(monkeypatch, patched_market_data):
     from datetime import date, timedelta
 

@@ -144,6 +144,11 @@ def test_high_debt_to_equity_adds_note_but_does_not_block_filter(monkeypatch, pa
     assert any("deuda/equity" in note.lower() for note in result.notes)
 
 
+def test_evaluate_symbol_exposes_score_components(strategy):
+    result = strategy.evaluate_symbol("STRONG")
+    assert set(result.score_components.keys()) == {"value", "growth", "quality", "margin"}
+
+
 def test_results_sorted_descending_by_score(strategy):
     results = strategy.scan()
     scores = [r.score for r in results]

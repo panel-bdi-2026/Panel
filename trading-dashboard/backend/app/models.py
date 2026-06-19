@@ -140,6 +140,12 @@ class SignalResult(BaseModel):
     pe_ratio: Optional[float] = None
     dividend_yield_pct: Optional[float] = None
     payout_ratio_pct: Optional[float] = None
+    # Componentes crudos (sin ponderar) que entraron en `score`, indexados por
+    # nombre (ver app/scoring.py). Vacio si la estrategia no los expone. Le
+    # permite a scan() recalcular `score` con normalizacion cross-sectional
+    # sin que evaluate_symbol() necesite saber nada de los demas simbolos del
+    # batch.
+    score_components: dict[str, float] = {}
 
 
 class BacktestTrade(BaseModel):
