@@ -241,20 +241,24 @@ la API gratuita de datos).
 - **Backtest** (`GET /api/signals/backtest`): corre la misma lógica de
   entrada/salida sobre la historia del universo configurado y devuelve
   métricas (win rate, profit factor, retorno acumulado vs. `SPY`, max
-  drawdown, Sharpe ratio aproximado). Modela comisión y slippage estimados
-  (`commission_per_trade_usd`, `slippage_pct`) y un fill de stop-loss
-  realista: el stop se chequea contra el **mínimo intradiario**, no el
-  cierre, y si hubo un gap por debajo del stop el fill asumido es el precio
-  de apertura (peor que el stop), no el cierre del día. El `sharpe_ratio` se
-  aproxima a partir de los retornos por operación (no de una curva de equity
-  diaria), así que no es comparable 1:1 con un Sharpe calculado sobre
-  retornos diarios; es `None` si hay menos de 2 operaciones. Limita las
-  posiciones abiertas a la vez a `top_n` (descarta las señales que no
-  tendrían cupo libre, como en la operatoria real), y pondera cada operación
-  como `1/top_n` del capital. Sigue siendo deliberadamente simple en otros
-  aspectos — no modela el efecto del cash sin invertir cuando hay menos de
-  `top_n` posiciones abiertas. Sirve para validar la dirección de la idea, no
-  como promesa de resultados futuros.
+  drawdown, Sharpe ratio) a partir de una **curva de equity diaria real**: una
+  posición abierta aporta su retorno no realizado todos los días que está
+  abierta (no solo al cerrarse), usando el cierre real de mercado de cada día
+  (no una interpolación entre la entrada y el resultado final), así que el
+  drawdown combinado de operaciones solapadas en el tiempo queda reflejado
+  con el camino de precio real. El `sharpe_ratio` se calcula sobre esos
+  retornos diarios y se anualiza con `sqrt(252)`, igual que un Sharpe
+  convencional; es `None` si hay menos de 2 operaciones. Modela comisión y
+  slippage estimados (`commission_per_trade_usd`, `slippage_pct`) y un fill de
+  stop-loss realista: el stop se chequea contra el **mínimo intradiario**, no
+  el cierre, y si hubo un gap por debajo del stop el fill asumido es el precio
+  de apertura (peor que el stop), no el cierre del día. Limita las posiciones
+  abiertas a la vez a `top_n` (descarta las señales que no tendrían cupo
+  libre, como en la operatoria real), y pondera cada operación como `1/top_n`
+  del capital. Sigue siendo deliberadamente simple en otros aspectos — no
+  modela el efecto del cash sin invertir cuando hay menos de `top_n`
+  posiciones abiertas. Sirve para validar la dirección de la idea, no como
+  promesa de resultados futuros.
 - **Endpoints**: `GET /api/signals/scan` (lista rankeada, cacheada),
   `GET /api/signals/backtest`, `GET/PUT /api/signals/config` (el `PUT`
   requiere `X-API-Key`, igual que `/api/rules`).
@@ -548,10 +552,11 @@ rojo permanente mientras `mode=live`.
   oficial, gratis, con límites de uso y sin SLA. Si falla o te quedas sin
   cuota, el dashboard lo informa en vez de inventar datos.
 - El backtest es simplificado: modela comisión, slippage, un fill de
-  stop-loss realista (mínimo intradiario, no el cierre) y un tope de `top_n`
-  posiciones concurrentes, pero no modela el efecto del cash ocioso cuando hay
-  menos de `top_n` posiciones abiertas, y su Sharpe ratio es una aproximación
-  por operación, no el cálculo estándar sobre una curva de equity diaria —
+  stop-loss realista (mínimo intradiario, no el cierre), un tope de `top_n`
+  posiciones concurrentes y una curva de equity diaria real (Sharpe estándar
+  anualizado por `sqrt(252)`), pero no modela el efecto del cash ocioso cuando
+  hay menos de `top_n` posiciones abiertas, ni la supervivencia histórica del
+  universo (usa el universo configurado hoy, no el de la época analizada) —
   útil para validar la dirección de la idea, no para proyectar retornos.
 - Pensado para uso personal/un solo usuario; no implementa multiusuario ni
   roles.

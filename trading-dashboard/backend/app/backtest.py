@@ -15,12 +15,28 @@ class BacktestError(RuntimeError):
     pass
 
 
+def _trade_daily_marks(
+    bars: pd.DataFrame, entry_idx: int, exit_idx: int, entry_fill: float, ret_pct: float
+) -> dict:
+    """Factor de retorno acumulado dia por dia de una operacion individual,
+    usando el cierre real de cada dia que estuvo abierta (no una interpolacion
+    lineal entre 0% y el retorno final). El ultimo dia se corrige para que el
+    factor coincida exactamente con el retorno final ya neto de
+    comision/slippage (ret_pct) en vez del cierre crudo, que no refleja esos
+    costos ni un eventual fill de stop-loss en el minimo intradiario."""
+    close = bars["Close"]
+    marks = {bars.index[i]: float(close.iloc[i]) / entry_fill for i in range(entry_idx, exit_idx + 1)}
+    marks[bars.index[exit_idx]] = 1 + ret_pct / 100
+    return marks
+
+
 def _simulate_symbol(
     symbol: str,
     bars: pd.DataFrame,
     cfg: ScreenerConfig,
     benchmark_roc: pd.Series,
     benchmark_regime_ok: pd.Series,
+    marks_by_trade_id: dict | None = None,
 ) -> list[BacktestTrade]:
     """Simula la misma logica de entrada/salida del screener sobre historia.
 
@@ -99,7 +115,7 @@ def _simulate_symbol(
                 )
                 ret_pct = (exit_fill - entry_fill) / entry_fill * 100 - commission_pct
 
-                trades.append(BacktestTrade(
+                trade = BacktestTrade(
                     symbol=symbol,
                     entry_date=entry_date,
                     exit_date=date,
@@ -107,7 +123,10 @@ def _simulate_symbol(
                     exit_price=round(raw_exit_price, 2),
                     return_pct=round(ret_pct, 2),
                     exit_reason=exit_reason,
-                ))
+                )
+                trades.append(trade)
+                if marks_by_trade_id is not None:
+                    marks_by_trade_id[id(trade)] = _trade_daily_marks(bars, entry_idx, i, entry_fill, ret_pct)
                 in_position = False
             continue
 
@@ -133,7 +152,9 @@ def _simulate_symbol(
     return trades
 
 
-def _simulate_symbol_opportunistic(symbol: str, bars: pd.DataFrame, cfg: ScreenerConfig) -> list[BacktestTrade]:
+def _simulate_symbol_opportunistic(
+    symbol: str, bars: pd.DataFrame, cfg: ScreenerConfig, marks_by_trade_id: dict | None = None
+) -> list[BacktestTrade]:
     """Misma logica de _simulate_symbol pero con los filtros de entrada/salida
     de la estrategia Oportunista (ver strategies/opportunistic.py): momentum
     de corto plazo positivo, RSI en zona de recuperacion (no de tendencia
@@ -192,7 +213,7 @@ def _simulate_symbol_opportunistic(symbol: str, bars: pd.DataFrame, cfg: Screene
                 )
                 ret_pct = (exit_fill - entry_fill) / entry_fill * 100 - commission_pct
 
-                trades.append(BacktestTrade(
+                trade = BacktestTrade(
                     symbol=symbol,
                     entry_date=entry_date,
                     exit_date=date,
@@ -200,7 +221,10 @@ def _simulate_symbol_opportunistic(symbol: str, bars: pd.DataFrame, cfg: Screene
                     exit_price=round(raw_exit_price, 2),
                     return_pct=round(ret_pct, 2),
                     exit_reason=exit_reason,
-                ))
+                )
+                trades.append(trade)
+                if marks_by_trade_id is not None:
+                    marks_by_trade_id[id(trade)] = _trade_daily_marks(bars, entry_idx, i, entry_fill, ret_pct)
                 in_position = False
             continue
 
@@ -231,6 +255,7 @@ def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     history_days = int(cfg.backtest_years * 365)
 
     all_trades: list[BacktestTrade] = []
+    marks_by_trade_id: dict = {}
     delay = cfg.scan_request_delay_seconds
     for i, symbol in enumerate(cfg.universe):
         if i > 0 and delay > 0:
@@ -241,7 +266,7 @@ def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
             continue
         if len(bars) < cfg.opportunistic.momentum_lookback_days + 252:
             continue
-        all_trades.extend(_simulate_symbol_opportunistic(symbol, bars, cfg))
+        all_trades.extend(_simulate_symbol_opportunistic(symbol, bars, cfg, marks_by_trade_id))
 
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
@@ -257,7 +282,7 @@ def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     except MarketDataError as exc:
         raise BacktestError(str(exc)) from exc
 
-    return _compute_summary_stats(all_trades, cfg.top_n, bench_bars)
+    return _compute_summary_stats(all_trades, cfg.top_n, bench_bars, marks_by_trade_id)
 
 
 def cap_concurrent_positions(trades: list[BacktestTrade], top_n: int) -> list[BacktestTrade]:
@@ -280,20 +305,25 @@ def cap_concurrent_positions(trades: list[BacktestTrade], top_n: int) -> list[Ba
 
 
 def _daily_equity_curve(
-    all_trades: list[BacktestTrade], top_n: int, bench_bars: pd.DataFrame
+    all_trades: list[BacktestTrade], top_n: int, bench_bars: pd.DataFrame, marks_by_trade_id: dict | None = None,
 ) -> tuple[list[EquityCurvePoint], list[float], float]:
     """Construye la curva de equity dia por dia (no solo en cada evento de
-    salida): cada operacion abierta aporta un retorno NO realizado que se
-    interpola linealmente entre 0% (en su entry_date) y su return_pct final
-    (en su exit_date), ponderado por 1/top_n igual que una operacion cerrada.
-    Antes la curva solo se actualizaba al cerrar una operacion, como si una
-    posicion abierta no existiera (no aportaba nada, ni ganancia ni perdida)
-    hasta su cierre -- eso ocultaba el drawdown combinado real cuando varias
-    operaciones se solapan en el tiempo. La interpolacion lineal es una
-    aproximacion al camino real de precio intradiario de cada operacion (no
-    se vuelve a pedir la serie de precios aca, que ya se descarto despues de
-    simular las entradas/salidas), pero sigue siendo mucho mas fiel que
-    tratar cada operacion como un salto instantaneo en su fecha de cierre.
+    salida): cada operacion abierta aporta un retorno NO realizado, ponderado
+    por 1/top_n igual que una operacion cerrada. Antes la curva solo se
+    actualizaba al cerrar una operacion, como si una posicion abierta no
+    existiera (no aportaba nada, ni ganancia ni perdida) hasta su cierre --
+    eso ocultaba el drawdown combinado real cuando varias operaciones se
+    solapan en el tiempo.
+
+    El retorno no realizado dia por dia viene de marks_by_trade_id (ver
+    _trade_daily_marks): el camino real de cierre de cada operacion, generado
+    por quien construyo `all_trades` (_simulate_symbol /
+    _simulate_symbol_opportunistic). Si una operacion no tiene marca para una
+    fecha dada (trades sinteticos de test, o un desajuste de calendario entre
+    el simbolo y el benchmark) se cae de vuelta a una interpolacion lineal
+    entre 0% (en su entry_date) y su return_pct final (en su exit_date), que
+    sigue siendo mas fiel que tratar la operacion como un salto instantaneo
+    en su fecha de cierre.
 
     El calendario de fechas es el del benchmark (mismos dias de trading que
     las acciones individuales) recortado al rango de la primera entrada a la
@@ -334,9 +364,13 @@ def _daily_equity_curve(
 
         unrealized_pct = 0.0
         for t in open_trades:
-            entry_pos, exit_pos = pos_by_date[t.entry_date], pos_by_date[t.exit_date]
-            frac = (day_idx - entry_pos) / (exit_pos - entry_pos) if exit_pos > entry_pos else 1.0
-            unrealized_pct += weight * t.return_pct * frac
+            marks = marks_by_trade_id.get(id(t)) if marks_by_trade_id else None
+            factor = marks.get(date) if marks else None
+            if factor is None:
+                entry_pos, exit_pos = pos_by_date[t.entry_date], pos_by_date[t.exit_date]
+                frac = (day_idx - entry_pos) / (exit_pos - entry_pos) if exit_pos > entry_pos else 1.0
+                factor = 1 + t.return_pct / 100 * frac
+            unrealized_pct += weight * (factor - 1) * 100
 
         equity = closed_factor * (1 + unrealized_pct / 100)
         daily_equity.append(equity)
@@ -348,7 +382,7 @@ def _daily_equity_curve(
 
 
 def _compute_summary_stats(
-    all_trades: list[BacktestTrade], top_n: int, bench_bars: pd.DataFrame
+    all_trades: list[BacktestTrade], top_n: int, bench_bars: pd.DataFrame, marks_by_trade_id: dict | None = None,
 ) -> BacktestSummary:
     """Calcula las metricas resumen a partir de la lista final de operaciones
     (ya filtrada por cap_concurrent_positions). Separado de run_backtest para
@@ -370,7 +404,7 @@ def _compute_summary_stats(
     profit_factor_is_infinite = gross_loss == 0 and gross_profit > 0
     expectancy = sum(returns) / len(returns)
 
-    equity_curve, daily_equity, avg_exposure_pct = _daily_equity_curve(all_trades, top_n, bench_bars)
+    equity_curve, daily_equity, avg_exposure_pct = _daily_equity_curve(all_trades, top_n, bench_bars, marks_by_trade_id)
 
     peak = 1.0
     max_drawdown = 0.0
@@ -387,8 +421,8 @@ def _compute_summary_stats(
     # (anualizado por sqrt(252), dias de trading/año), y no solo una
     # aproximacion ad-hoc por "operaciones por año" inferidas del periodo. Con
     # menos de 2 operaciones el resultado no es estadisticamente significativo
-    # sin importar cuantos puntos diarios genere la interpolacion de esa unica
-    # operacion, asi que se exige el mismo minimo de 2 operaciones que antes.
+    # sin importar cuantos puntos diarios genere esa unica operacion, asi que
+    # se exige el mismo minimo de 2 operaciones que antes.
     sharpe_ratio = None
     if len(all_trades) >= 2 and len(daily_equity) >= 3:
         daily_returns = [daily_equity[i] / daily_equity[i - 1] - 1 for i in range(1, len(daily_equity))]
@@ -423,27 +457,25 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     La curva de equity, el max_drawdown_pct y el sharpe_ratio se calculan dia
     por dia sobre una cartera con cupo para top_n posiciones concurrentes (ver
     _daily_equity_curve): una posicion abierta aporta su retorno no realizado
-    (interpolado linealmente entre 0% y su return_pct final) a la curva todos
-    los dias que esta abierta, no solo en su cierre, asi que el drawdown
-    combinado de operaciones solapadas en el tiempo queda reflejado. El
-    sharpe_ratio se anualiza con sqrt(252) sobre esos retornos diarios, igual
-    que un Sharpe convencional.
+    a la curva todos los dias que esta abierta (no solo en su cierre), usando
+    el cierre real de mercado de cada dia (ver _trade_daily_marks), asi que el
+    drawdown combinado de operaciones solapadas en el tiempo queda reflejado
+    con el camino de precio real, no una aproximacion. El sharpe_ratio se
+    anualiza con sqrt(252) sobre esos retornos diarios, igual que un Sharpe
+    convencional.
 
     Simplificaciones explicitas que siguen sin modelarse (no es un backtester
     de produccion): el universo de simbolos es el configurado HOY (sin
     supervivencia historica -- una accion que quebro o fue excluida del
     indice durante el periodo analizado no aparece, lo que tipicamente infla
-    el resultado frente a la realidad de esa epoca); el camino intradiario
-    de cada operacion se interpola de forma lineal entre entrada y salida en
-    vez de usar el precio real dia por dia (no se vuelve a pedir esa serie en
-    el calculo de resumen). Si modela comision/slippage estimados y un fill
-    de stop-loss realista (minimo intradiario, no el cierre), y entra a la
-    apertura del dia siguiente a la senal (no al cierre del mismo dia, que
-    seria mirar al futuro). Esto ultimo lo hace mas conservador que el motor
-    de auto-trading en vivo, que coloca la orden ya con el ultimo cierre
-    conocido en el mismo ciclo de scan. Sirve para validar la direccion de la
-    idea antes de arriesgar capital real, no como promesa de resultados
-    futuros.
+    el resultado frente a la realidad de esa epoca). Si modela comision/
+    slippage estimados y un fill de stop-loss realista (minimo intradiario, no
+    el cierre), y entra a la apertura del dia siguiente a la senal (no al
+    cierre del mismo dia, que seria mirar al futuro). Esto ultimo lo hace mas
+    conservador que el motor de auto-trading en vivo, que coloca la orden ya
+    con el ultimo cierre conocido en el mismo ciclo de scan. Sirve para
+    validar la direccion de la idea antes de arriesgar capital real, no como
+    promesa de resultados futuros.
     """
     history_days = int(cfg.backtest_years * 365)
 
@@ -461,6 +493,7 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
         benchmark_regime_ok = pd.Series(True, index=bench_bars.index)
 
     all_trades: list[BacktestTrade] = []
+    marks_by_trade_id: dict = {}
     delay = cfg.scan_request_delay_seconds
     for i, symbol in enumerate(cfg.universe):
         # Misma pausa anti-rate-limit que el scan en vivo (ver
@@ -477,7 +510,7 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
             continue
         aligned_bench_roc = benchmark_roc.reindex(bars.index, method="ffill")
         aligned_regime_ok = benchmark_regime_ok.reindex(bars.index, method="ffill").fillna(True)
-        all_trades.extend(_simulate_symbol(symbol, bars, cfg, aligned_bench_roc, aligned_regime_ok))
+        all_trades.extend(_simulate_symbol(symbol, bars, cfg, aligned_bench_roc, aligned_regime_ok, marks_by_trade_id))
 
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
@@ -495,4 +528,4 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
 
-    return _compute_summary_stats(all_trades, cfg.top_n, bench_bars)
+    return _compute_summary_stats(all_trades, cfg.top_n, bench_bars, marks_by_trade_id)

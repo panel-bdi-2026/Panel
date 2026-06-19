@@ -179,6 +179,78 @@ def test_costs_reduce_returns_vs_zero_cost_baseline():
         assert t_cost.return_pct < t_no_cost.return_pct
 
 
+def test_trade_daily_marks_uses_real_close_path_and_corrects_last_day():
+    from app.backtest import _trade_daily_marks
+
+    closes = [100.0, 105.0, 95.0, 90.0, 108.0, 112.0]
+    bars = _bars(closes)
+    entry_idx, exit_idx = 1, 5
+    entry_fill = 105.0
+    ret_pct = 8.0  # retorno final ya neto de comision/slippage, distinto del +6.67% bruto (112/105-1)
+
+    marks = _trade_daily_marks(bars, entry_idx, exit_idx, entry_fill, ret_pct)
+
+    assert marks[bars.index[1]] == pytest.approx(1.0)
+    assert marks[bars.index[2]] == pytest.approx(95 / 105)  # camino real, no interpolado
+    assert marks[bars.index[3]] == pytest.approx(90 / 105)
+    assert marks[bars.index[4]] == pytest.approx(108 / 105)
+    assert marks[bars.index[5]] == pytest.approx(1.08)  # corregido al retorno final neto, no al cierre crudo
+
+
+def test_simulate_symbol_populates_marks_when_dict_provided():
+    from app.backtest import _simulate_symbol
+    from app.indicators import rate_of_change
+
+    bars = FAKE_BARS["MOM"]
+    bench_bars = FAKE_BARS["SPY"]
+    cfg = ScreenerConfig(universe=["MOM"], benchmark_symbol="SPY", backtest_years=1, regime_filter_enabled=False)
+    benchmark_roc = rate_of_change(bench_bars["Close"], cfg.momentum_lookback_days)
+    regime_ok = pd.Series(True, index=bars.index)
+
+    marks_by_trade_id: dict = {}
+    trades = _simulate_symbol("MOM", bars, cfg, benchmark_roc, regime_ok, marks_by_trade_id)
+
+    assert len(trades) > 0
+    for t in trades:
+        marks = marks_by_trade_id[id(t)]
+        assert marks
+        # El ultimo dia coincide (salvo el redondeo a 2 decimales de
+        # return_pct) con el retorno final ya neto de comision/slippage, no
+        # con el cierre crudo de ese dia.
+        assert marks[t.exit_date] == pytest.approx(1 + t.return_pct / 100, abs=1e-3)
+
+
+def test_daily_equity_curve_uses_real_close_path_for_open_positions():
+    from datetime import datetime
+
+    from app.backtest import _compute_summary_stats
+
+    # A queda abierta los dias 1-11 (retorno final +10%). Con interpolacion
+    # lineal el dia 6 (a mitad de camino) mostraria +5% no realizado, pero el
+    # camino real de A tuvo una caida fuerte ese dia (marks_by_trade_id la
+    # fija en -20%): la curva debe reflejar la caida real, no el promedio
+    # lineal entre entrada y el resultado final.
+    idx = pd.date_range("2024-01-01", periods=15, freq="D")
+    bench_close = pd.Series([100.0 + i for i in range(15)], index=idx)
+    bench_bars = pd.DataFrame(
+        {"Open": bench_close, "High": bench_close + 1, "Low": bench_close - 1, "Close": bench_close, "Volume": 5_000_000},
+        index=idx,
+    )
+
+    trade = _trade("A", 1, 11, return_pct=10.0)
+    marks_by_trade_id = {id(trade): {datetime(2024, 1, 6): 0.80}}
+
+    summary = _compute_summary_stats([trade], top_n=1, bench_bars=bench_bars, marks_by_trade_id=marks_by_trade_id)
+    points = {p.date: p.equity_pct for p in summary.equity_curve}
+
+    assert points[datetime(2024, 1, 6)] == -20.0
+    # Dia sin marca explicita para esta operacion (ej. desajuste de
+    # calendario): se cae de vuelta a la interpolacion lineal de siempre.
+    assert points[datetime(2024, 1, 3)] == 2.0
+    # El resultado final no depende del camino recorrido.
+    assert points[datetime(2024, 1, 11)] == 10.0
+
+
 def test_stop_loss_triggers_on_intraday_low_not_close():
     from app.backtest import _simulate_symbol
     from app.indicators import rate_of_change
