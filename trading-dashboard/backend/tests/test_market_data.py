@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from app import market_data as market_data_module
-from app.market_data import MarketDataError, get_daily_bars
+from app.market_data import MarketDataError, get_daily_bars, is_bars_cached
 
 
 def _bars(n=5):
@@ -131,3 +131,35 @@ def test_get_daily_bars_force_bypasses_cache(monkeypatch):
     get_daily_bars("NFLX", 100)
     get_daily_bars("NFLX", 100, force=True)
     assert call_count["n"] == 2
+
+
+def test_is_bars_cached_false_before_first_fetch():
+    assert is_bars_cached("AAPL", 100) is False
+
+
+def test_is_bars_cached_true_right_after_fetch(monkeypatch):
+    bars = _bars()
+    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, [bars]))
+
+    get_daily_bars("AAPL", 100)
+    assert is_bars_cached("AAPL", 100) is True
+
+
+def test_is_bars_cached_keyed_by_symbol_and_lookback(monkeypatch):
+    bars = _bars()
+    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, [bars]))
+
+    get_daily_bars("AAPL", 100)
+    assert is_bars_cached("AAPL", 200) is False  # mismo simbolo, otra ventana
+    assert is_bars_cached("MSFT", 100) is False  # otro simbolo, misma ventana
+
+
+def test_is_bars_cached_false_after_ttl_expires(monkeypatch):
+    bars = _bars()
+    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, [bars]))
+
+    get_daily_bars("AAPL", 100)
+    timestamp, df = market_data_module._cache[("AAPL", 100)]
+    expired = timestamp - market_data_module._CACHE_TTL_SECONDS - 1
+    market_data_module._cache[("AAPL", 100)] = (expired, df)
+    assert is_bars_cached("AAPL", 100) is False

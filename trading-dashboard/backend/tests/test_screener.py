@@ -105,6 +105,37 @@ def test_unknown_symbol_is_skipped(patched_market_data):
     assert [r.symbol for r in results] == ["MOM"]
 
 
+def test_scan_skips_delay_for_already_cached_symbol(monkeypatch, patched_market_data):
+    # MOM (i=0) nunca duerme por ser el primero del loop, sin importar cache.
+    # WEAK e ILLIQUID no estan "cacheados" (segun el fake): deben dormir.
+    # BROKEN si esta "cacheado" (ej. otra estrategia ya lo escaneo en este
+    # mismo ciclo, ver is_bars_cached): no debe dormir.
+    sleeps = []
+    monkeypatch.setattr(screener_module.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(screener_module, "is_bars_cached", lambda symbol, lookback_days: symbol == "BROKEN")
+    config = ScreenerConfig(
+        universe=["MOM", "WEAK", "BROKEN", "ILLIQUID"], benchmark_symbol="SPY", scan_request_delay_seconds=0.01,
+    )
+    s = MomentumScreener(config)
+    s.scan()
+    assert sleeps == [0.01, 0.01]
+
+
+def test_scan_does_not_skip_delay_when_force_even_if_cached(monkeypatch, patched_market_data):
+    # force=True siempre pega a la red (bypassa el cache en get_daily_bars),
+    # asi que el delay debe aplicarse igual aunque is_bars_cached diga que
+    # esta cacheado.
+    sleeps = []
+    monkeypatch.setattr(screener_module.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(screener_module, "is_bars_cached", lambda symbol, lookback_days: True)
+    config = ScreenerConfig(
+        universe=["MOM", "WEAK", "BROKEN"], benchmark_symbol="SPY", scan_request_delay_seconds=0.01,
+    )
+    s = MomentumScreener(config)
+    s.scan(force=True)
+    assert sleeps == [0.01, 0.01]
+
+
 def test_stop_loss_is_below_last_price(screener):
     results = screener.scan()
     for r in results:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-from ..market_data import MarketDataError, get_daily_bars, get_fundamentals
+from ..market_data import MarketDataError, get_daily_bars, get_fundamentals, is_bars_cached
 from ..models import SignalResult
 from ..scoring import apply_cross_sectional_normalization
 from ..screener_config import ScreenerConfig
@@ -158,7 +158,10 @@ class LongTermStrategy:
         results = []
         delay = self.config.scan_request_delay_seconds
         for i, symbol in enumerate(self.config.universe):
-            if i > 0 and delay > 0:
+            # Salteado si el dato ya esta cacheado (ej. otra estrategia ya
+            # escaneo este simbolo en este ciclo): no hay fetch real que
+            # espaciar (ver is_bars_cached).
+            if i > 0 and delay > 0 and (force or not is_bars_cached(symbol, self.config.lookback_days)):
                 time.sleep(delay)
             result = self.evaluate_symbol(symbol, force=force)
             if result is not None:

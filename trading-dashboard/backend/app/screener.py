@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from .indicators import atr, pct_from_high, rate_of_change, rsi, sma
-from .market_data import MarketDataError, get_daily_bars, get_next_earnings_date
+from .market_data import MarketDataError, get_daily_bars, get_next_earnings_date, is_bars_cached
 from .models import SignalResult
 from .scoring import apply_cross_sectional_normalization
 from .screener_config import ScreenerConfig
@@ -190,8 +190,11 @@ class MomentumScreener:
         delay = self.config.scan_request_delay_seconds
         for i, symbol in enumerate(self.config.universe):
             # Pausa entre simbolos para no rafagar la API gratuita de Yahoo
-            # Finance con un universo grande (ver scan_request_delay_seconds).
-            if i > 0 and delay > 0:
+            # Finance con un universo grande (ver scan_request_delay_seconds),
+            # salvo que el dato ya este cacheado (ej. otra estrategia ya
+            # escaneo este simbolo en este mismo ciclo): ahi no hay fetch real
+            # que espaciar.
+            if i > 0 and delay > 0 and (force or not is_bars_cached(symbol, self.config.lookback_days)):
                 time.sleep(delay)
             result = self.evaluate_symbol(symbol, benchmark_roc, regime_ok=regime_ok, force=force)
             if result is not None:

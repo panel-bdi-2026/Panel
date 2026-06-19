@@ -89,6 +89,17 @@ def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.D
     return df
 
 
+def is_bars_cached(symbol: str, lookback_days: int) -> bool:
+    """True si get_daily_bars(symbol, lookback_days) devolveria el cache sin
+    pegarle a la red ahora mismo. Le permite a cada estrategia saltear la
+    pausa entre simbolos (pensada para no rafagar la API gratuita) cuando el
+    dato ya esta cacheado -- tipicamente porque otra estrategia ya escaneo
+    este mismo simbolo en este ciclo, ya que las 4 estrategias comparten
+    lookback_days y por lo tanto la misma entrada de cache."""
+    cached = _cache.get((symbol.upper(), lookback_days))
+    return cached is not None and time.time() - cached[0] < _CACHE_TTL_SECONDS
+
+
 def get_next_earnings_date(symbol: str, force: bool = False) -> "date | None":
     """Proxima fecha de earnings estimada para `symbol`, o None si no se pudo
     determinar (simbolo sin cobertura, limite de la API gratuita, etc.). El

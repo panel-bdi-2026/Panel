@@ -194,7 +194,11 @@ la API gratuita de datos).
   cada símbolo para no ráfagar la API con un universo grande — con el S&P 500
   completo, un scan en frío (sin cache) tarda varios minutos. Subí ese valor
   si ves errores de datos frecuentes; bajalo (0 está permitido) si usás un
-  universo chico.
+  universo chico. Esta pausa se salta automáticamente para un símbolo que ya
+  está cacheado (`is_bars_cached` en `app/market_data.py`): como las 4
+  estrategias comparten `lookback_days`, escanear varias en el mismo ciclo
+  (ej. `GET /api/signals/scan/all`) solo paga la pausa una vez por símbolo, no
+  una vez por estrategia.
 - **Señal**: combina momentum a 3 y 1 meses, fuerza relativa contra `SPY`,
   filtro de tendencia (precio > SMA20 > SMA50), RSI en una zona "sana" (ni
   sobrecomprado ni rompiendo a la baja) y un piso de liquidez en **dólares**
