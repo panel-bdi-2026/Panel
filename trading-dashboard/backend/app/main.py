@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import secrets
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -32,6 +33,15 @@ from .strategies import STRATEGY_CLASSES, reload_strategy_registry
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 
+# Este modulo asume UN SOLO proceso worker. screener_config, state, clients,
+# signal_cache y los asyncio.Lock de mas abajo viven en memoria de proceso: si
+# se corre con `uvicorn ... --workers N>1` (o gunicorn con varios workers),
+# cada proceso tendria su propia copia de este estado, los locks no
+# sincronizarian nada entre procesos, y dos workers podrian validar la misma
+# orden contra el mismo cash_usd desactualizado sin verse entre si. Escalar
+# horizontalmente requeriria mover este estado a un store compartido (Redis,
+# Postgres, etc.) primero. Los artefactos de deploy en deploy/ ya arrancan un
+# solo proceso; no agregar --workers sin resolver esto antes.
 rules_config = RulesConfig.load(settings.rules_path)
 rules_engine = RulesEngine(rules_config)
 audit = AuditLog(settings.audit_db_path)
@@ -110,6 +120,16 @@ _market_scan_lock = asyncio.Lock()
 # la ventana de carrera exige que ninguna otra validacion para el mismo fondo
 # pueda colarse entre "ya valide" y "ya aplique el fill".
 _funds_order_lock = asyncio.Lock()
+
+# Serializa el ciclo leer-mezclar-guardar de update_screener_config (PUT
+# /api/signals/config): esa funcion es sync (FastAPI la corre en un
+# threadpool, no en el event loop), asi que el lock tiene que ser de
+# threading, no de asyncio. Sin el, dos PUT casi simultaneos (ej. dos
+# pestañas, o el modal de settings guardando justo cuando addTickerToUniverse
+# dispara el suyo) podrian leer el mismo screener_config viejo antes de que
+# cualquiera escriba, y el segundo en escribir pisaria el cambio del primero
+# a pesar del merge (ver deep_merge_dict mas abajo).
+_screener_config_lock = threading.Lock()
 
 # Recuerda que simbolos pasaban los filtros del screener en el ultimo ciclo del
 # scan proactivo, para poder detectar TRANSICIONES (no pasaba -> pasa) en vez
@@ -771,22 +791,44 @@ class ScreenerUpdate(BaseModel):
     config: dict
 
 
+def _deep_merge_dict(base: dict, updates: dict) -> dict:
+    """Mezcla `updates` sobre `base` recursivamente para los sub-objetos
+    anidados (opportunistic/long_term/dividend), pero reemplaza listas y
+    escalares tal cual (ej. `universe`: no hay forma no ambigua de "mezclar"
+    dos listas de tickers, asi que quien llama siempre manda la lista
+    completa que quiere). Sin esto, un PUT que solo busca tocar un campo
+    (ej. agregar un ticker, o cambiar un peso de una sola estrategia)
+    reemplazaba TODA la config con `ScreenerConfig(**body.config)`, perdiendo
+    en silencio cualquier campo/sub-objeto que el caller no conociera al
+    armar su payload."""
+    merged = dict(base)
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 @app.put("/api/signals/config")
 def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_key)):
     global screener_config
-    try:
-        new_config = ScreenerConfig(**body.config)
-    except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors())
-    screener_config = new_config
-    screener_config.save(settings.screener_path)
-    reload_strategy_registry(strategy_registry, screener_config)
-    _sync_whitelist_with_universe()
-    # Tras un cambio manual de config, los filtros pudieron cambiar por
-    # completo: se descarta la base de simbolos "pasando" para que el proximo
-    # ciclo del scan proactivo no trate la config nueva como transiciones
-    # reales (vuelve a ser un primer ciclo, solo establece base).
-    _signal_state["previously_passing"] = None
+    with _screener_config_lock:
+        merged = _deep_merge_dict(screener_config.model_dump(), body.config)
+        try:
+            new_config = ScreenerConfig(**merged)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.errors())
+        screener_config = new_config
+        screener_config.save(settings.screener_path)
+        reload_strategy_registry(strategy_registry, screener_config)
+        _sync_whitelist_with_universe()
+        # Tras un cambio manual de config, los filtros pudieron cambiar por
+        # completo: se descarta la base de simbolos "pasando" para que el
+        # proximo ciclo del scan proactivo no trate la config nueva como
+        # transiciones reales (vuelve a ser un primer ciclo, solo establece
+        # base).
+        _signal_state["previously_passing"] = None
     audit.record("screener_config_updated", body.config, {})
     return screener_config.model_dump()
 

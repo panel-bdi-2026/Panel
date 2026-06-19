@@ -463,6 +463,13 @@ Para acceder desde otro dispositivo en la misma red (ej. una tablet), corré
 `uvicorn app.main:app --host 0.0.0.0 --port 8000` y usá la IP local de la
 laptop en vez de `localhost`.
 
+> ⚠️ **Correr siempre con un solo proceso worker** (no agregues `--workers N`
+> a uvicorn ni uses gunicorn con varios workers). El estado en memoria
+> (config del screener, órdenes pendientes, locks que serializan validación
+> de fondos) vive en un solo proceso; con más de un worker, dos procesos
+> podrían validar la misma orden contra el mismo saldo sin verse entre sí. Si
+> necesitás más capacidad, escalá verticalmente (más CPU/RAM en la misma VM).
+
 ### 3. Tests
 
 Los tests cubren el motor de reglas y los indicadores/screener/backtest

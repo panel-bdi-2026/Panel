@@ -940,15 +940,17 @@ async function saveRulesConfig(){
   }
 }
 
-// /api/signals/config hace un reemplazo COMPLETO de la config (no un merge):
-// por eso cada guardado parte de loadedScreenerConfig (capturado al abrir el
-// modal) y solo pisa encima los campos de la pestaña que se está guardando,
-// para no resetear a default los campos de las otras pestañas/estrategias.
+// El backend mezcla (merge) el PUT con la config vigente al momento de
+// procesarlo (no con una copia vieja): alcanza con mandar los campos de esta
+// pestaña, sin reenviar loadedScreenerConfig completo. Mandar solo lo que se
+// edita (en vez de una foto completa tomada al abrir el modal) evita pisar
+// con datos viejos cualquier cambio que haya hecho otra pestaña/cliente
+// mientras este modal estaba abierto.
 async function saveScreenerConfig(){
   const errBox = document.getElementById('cfgScreenerErr');
   errBox.classList.remove('show');
   try{
-    const payload = { ...loadedScreenerConfig, ...readConfigFields(SCREENER_FIELDS) };
+    const payload = readConfigFields(SCREENER_FIELDS);
     payload.universe = document.getElementById('cfg-universe').value
       .split(/[,\n]/).map(s => s.trim().toUpperCase()).filter(Boolean);
     loadedScreenerConfig = await api('/api/signals/config', { method:'PUT', auth:true, body:{ config: payload } });
@@ -965,7 +967,7 @@ async function saveStrategySubConfig(fields, errId, paneId){
   const errBox = document.getElementById(errId);
   errBox.classList.remove('show');
   try{
-    const payload = { ...loadedScreenerConfig, ...readConfigFields(fields) };
+    const payload = readConfigFields(fields);
     loadedScreenerConfig = await api('/api/signals/config', { method:'PUT', auth:true, body:{ config: payload } });
     toast('✅ Configuración actualizada.');
     loadConfigForms();
@@ -1440,12 +1442,16 @@ async function addTickerToUniverse(){
   const symbol = input.value.trim().toUpperCase();
   if(!symbol){ toast('Ingresa un símbolo'); return; }
   if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
-  // El PUT de /api/signals/config reemplaza el universo completo (no hace
-  // merge), asi que el flujo GET->mutar->PUT es vulnerable a una carrera
-  // contra si mismo si el usuario dispara la accion dos veces rapido
-  // (doble click o click + Enter). Deshabilitar el boton mientras la
-  // request esta en vuelo evita esa auto-carrera (la carrera contra OTRA
-  // pestaña/usuario sigue existiendo y requiere merge semantics en el backend).
+  // El backend mezcla el PUT con la config vigente (no hace falta reenviar
+  // todo, alcanza con `universe`), pero la LISTA en si se reemplaza entera:
+  // dos "agregar ticker" casi simultaneos (de este mismo boton, o de otra
+  // pestaña/usuario) podrian leer el mismo universo viejo antes de que
+  // cualquiera escriba, y el segundo en escribir pisaria el ticker que
+  // agrego el primero. Deshabilitar el boton mientras la request esta en
+  // vuelo evita la auto-carrera contra el propio usuario (doble click o
+  // click + Enter); la carrera contra otra pestaña/usuario en simultaneo
+  // sigue siendo posible, igual que con cualquier lista que se reemplaza
+  // entera en vez de mezclarse elemento por elemento.
   const btn = document.getElementById('addTickerBtn');
   btn.disabled = true;
   try{
@@ -1455,8 +1461,8 @@ async function addTickerToUniverse(){
       input.value = '';
       return;
     }
-    config.universe = [...(config.universe || []), symbol];
-    await api('/api/signals/config', { method:'PUT', auth:true, body:{ config } });
+    const universe = [...(config.universe || []), symbol];
+    await api('/api/signals/config', { method:'PUT', auth:true, body:{ config: { universe } } });
     input.value = '';
     toast(`✓ ${symbol} agregado al universo`);
     await refreshSectors([symbol]);

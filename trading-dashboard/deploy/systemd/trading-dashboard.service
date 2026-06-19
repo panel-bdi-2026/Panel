@@ -9,6 +9,8 @@ User=trading
 Group=trading
 WorkingDirectory=/opt/panel/trading-dashboard/backend
 EnvironmentFile=/opt/panel/trading-dashboard/backend/.env
+# No agregar --workers: el backend guarda config/ordenes pendientes/locks de
+# validacion en memoria de un solo proceso (ver comentario en app/main.py).
 ExecStart=/opt/panel/trading-dashboard/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=10

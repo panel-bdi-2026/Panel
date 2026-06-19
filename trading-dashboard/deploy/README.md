@@ -192,6 +192,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now trading-dashboard
 ```
 
+> ⚠️ No edites el `ExecStart` del unit para agregar `--workers N`. El backend
+> guarda config/órdenes pendientes/locks de validación en memoria de un solo
+> proceso; con más de un worker dejarían de sincronizarse entre procesos.
+
 ## Paso 6 — Acceder desde tu celular/laptop
 
 Instalá Tailscale también en tu celular/laptop (mismo login de Tailscale que

@@ -255,6 +255,42 @@ def test_update_screener_config_syncs_whitelist_with_universe():
     assert main_module.rules_engine.config.symbol_whitelist == new_universe
 
 
+def test_update_screener_config_partial_nested_update_preserves_other_fields():
+    before = main_module.screener_config.model_dump()
+    new_max_pe = (before["long_term"]["max_pe_ratio"] or 0) + 1
+    body = main_module.ScreenerUpdate(config={"long_term": {"max_pe_ratio": new_max_pe}})
+
+    main_module.update_screener_config(body, None)
+
+    after = main_module.screener_config.model_dump()
+    assert after["long_term"]["max_pe_ratio"] == new_max_pe
+    # Un PUT que solo toca un campo de un sub-objeto anidado no debe perder ni
+    # el resto de los campos de ese sub-objeto, ni las otras estrategias, ni
+    # los campos de nivel superior.
+    other_long_term_before = {k: v for k, v in before["long_term"].items() if k != "max_pe_ratio"}
+    other_long_term_after = {k: v for k, v in after["long_term"].items() if k != "max_pe_ratio"}
+    assert other_long_term_after == other_long_term_before
+    assert after["opportunistic"] == before["opportunistic"]
+    assert after["dividend"] == before["dividend"]
+    assert after["universe"] == before["universe"]
+    assert after["sma_fast"] == before["sma_fast"]
+
+
+def test_update_screener_config_partial_top_level_update_preserves_nested_subconfigs():
+    before = main_module.screener_config.model_dump()
+    new_sma_fast = before["sma_fast"] + 1
+    body = main_module.ScreenerUpdate(config={"sma_fast": new_sma_fast})
+
+    main_module.update_screener_config(body, None)
+
+    after = main_module.screener_config.model_dump()
+    assert after["sma_fast"] == new_sma_fast
+    assert after["opportunistic"] == before["opportunistic"]
+    assert after["long_term"] == before["long_term"]
+    assert after["dividend"] == before["dividend"]
+    assert after["universe"] == before["universe"]
+
+
 def test_sync_whitelist_with_universe_is_noop_when_already_synced(monkeypatch):
     main_module.rules_config.symbol_whitelist = list(main_module.screener_config.universe)
     save_calls = []
