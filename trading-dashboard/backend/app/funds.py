@@ -190,6 +190,17 @@ class Fund(BaseModel):
         self.trades.append(trade)
         return trade
 
+    def update_stop_loss(self, symbol: str, new_stop_price: float) -> None:
+        """Actualiza el stop_loss_price registrado de una posicion abierta,
+        sin tocar cash/quantity/trades. Usado por el trailing stop (ver
+        _check_fund_trailing_stop en main.py) DESPUES de confirmar que IBKR ya
+        modifico la orden stop-loss real al nuevo precio (broker.modify_stop_price):
+        este ledger nunca debe registrar un stop mas favorable que el que de
+        verdad protege la posicion en el broker."""
+        pos = self.positions.get(symbol)
+        if pos is not None and pos.quantity > 0:
+            pos.stop_loss_price = new_stop_price
+
 
 class FundValidationError(ValueError):
     """Una validacion de `allocation_check` (ver FundsStore.create()/
@@ -360,3 +371,12 @@ class FundsStore:
             trade = fund.record_fill(symbol, side, quantity, price, stop_loss_price, stop_order_id)
             self.save()
             return trade
+
+    def update_stop_loss(self, fund_id: str, symbol: str, new_stop_price: float) -> Fund | None:
+        with self._lock:
+            fund = self.funds.get(fund_id)
+            if fund is None:
+                return None
+            fund.update_stop_loss(symbol, new_stop_price)
+            self.save()
+            return fund

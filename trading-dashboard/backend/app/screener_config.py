@@ -221,6 +221,17 @@ class ScreenerConfig(BaseModel):
     stop_loss_atr_multiplier: float = 1.5
     max_holding_days: int = 20
 
+    # Trailing stop para posiciones abiertas por el motor de auto-trading (ver
+    # _check_fund_trailing_stop en main.py): si esta habilitado, el monitor de
+    # salida sube (nunca baja) el stop-loss ya colocado en IBKR a medida que
+    # el precio se mueve a favor, usando la misma distancia en ATR que el
+    # stop inicial (stop_loss_atr_multiplier) sobre el ATR de cada chequeo.
+    # Apagado por defecto: cambia el perfil de riesgo de "stop fijo" a "stop
+    # que persigue el precio", y eso conviene que sea una decision explicita
+    # del usuario, no el comportamiento nuevo por defecto de una version
+    # anterior que nunca lo tuvo.
+    trailing_stop_enabled: bool = False
+
     # Filtro de regimen de mercado: no se sugieren entradas largas si el
     # benchmark esta por debajo de su propia SMA de regimen (mercado en
     # tendencia bajista de fondo). Una estrategia long-only de momentum tiende

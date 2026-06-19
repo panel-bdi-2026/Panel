@@ -238,6 +238,8 @@ la API gratuita de datos).
   earnings estimada (gap risk que el stop-loss basado en ATR no cubre). La
   fecha se obtiene de Yahoo Finance vía `yfinance`; si no se puede determinar,
   el filtro no bloquea (dato secundario, best-effort).
+- **Trailing stop** (`trailing_stop_enabled`, apagado por defecto): ver
+  "Salida" más abajo, dentro del motor de auto-trading.
 - **Backtest** (`GET /api/signals/backtest`): corre la misma lógica de
   entrada/salida sobre la historia del universo configurado y devuelve
   métricas (win rate, profit factor, retorno acumulado vs. `SPY`, max
@@ -428,7 +430,23 @@ trading autónomo con dinero real.
 - **Salida**: un segundo loop en background (`_auto_exit_monitor_loop`, misma
   cadencia que el escaneo proactivo — las señales de salida se basan en
   cierres diarios, chequear más seguido no aporta nada) revisa, para cada
-  posición abierta por auto-trading, tres motivos de cierre (en este orden):
+  posición abierta por auto-trading:
+  - Primero, **trailing stop** (`trailing_stop_enabled`, apagado por
+    defecto — cambia el perfil de riesgo de "stop fijo" a "stop que persigue
+    el precio", así que es una decisión explícita del usuario, no el
+    comportamiento por defecto): intenta subir (nunca bajar) el stop-loss ya
+    colocado en IBKR, con la misma distancia en ATR que el stop inicial
+    (`stop_loss_atr_multiplier`) pero recalculada sobre el ATR del chequeo
+    actual: `nuevo_stop = último cierre - ATR_actual *
+    stop_loss_atr_multiplier`. Solo actúa si la orden stop-loss original
+    sigue viva en la sesión actual de este backend
+    (`broker.modify_stop_price`, misma limitación de sesión que
+    `get_trade_fill`: una reconexión pierde el rastro de la orden) y solo
+    actualiza el `stop_loss_price` del ledger del fondo **después** de
+    confirmar que IBKR aceptó el nuevo precio — el ledger nunca debe
+    registrar un stop más favorable que el que de verdad protege la posición
+    en el broker.
+  - Después, evalúa tres motivos de cierre (en este orden):
   1. **Reconciliación de stop-loss**: toda compra con stop-loss
      (auto-trading o no) ya coloca en IBKR una orden bracket — padre + hijo
      `StopOrder` encadenado (ver `broker.place_order`) — así que el stop-loss
@@ -448,12 +466,13 @@ trading autónomo con dinero real.
     al fondo y registra el fill. Si no se puede obtener un precio de
     referencia, o IBKR rechaza la orden, la posición se deja abierta para
     reintentar en el próximo ciclo (no se fuerza una venta sin precio).
-- Cada paso (entrada ejecutada/rechazada, salida por cada motivo,
-  reconciliación) queda en el audit log (`auto_trade_executed`,
-  `auto_trade_rejected`, `auto_trade_stop_loss_rejected`,
-  `auto_trade_stop_loss_reconciled`, `auto_trade_exit`,
-  `auto_trade_exit_failed`) y la salida además se avisa por WebSocket
-  (`type: "auto_trade_exit"`).
+- Cada paso (entrada ejecutada/rechazada, trailing stop actualizado, salida
+  por cada motivo, reconciliación) queda en el audit log
+  (`auto_trade_executed`, `auto_trade_rejected`,
+  `auto_trade_stop_loss_rejected`, `auto_trade_trailing_stop_updated`,
+  `auto_trade_trailing_stop_check_failed`, `auto_trade_stop_loss_reconciled`,
+  `auto_trade_exit`, `auto_trade_exit_failed`) y la salida además se avisa por
+  WebSocket (`type: "auto_trade_exit"`).
 
 ## Instalación
 

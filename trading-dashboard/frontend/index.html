@@ -714,6 +714,7 @@ const SCREENER_FIELDS = [
   { key:'atr_period', label:'Período del ATR', type:'number', min:1, step:1, integer:true },
   { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss sugerido', type:'number', min:0 },
   { key:'max_holding_days', label:'Máximo de días en una posición', type:'number', min:1, step:1, integer:true },
+  { key:'trailing_stop_enabled', label:'Trailing stop activo (sube el stop-loss en posiciones de auto-trading)', type:'checkbox' },
   { key:'regime_filter_enabled', label:'Filtro de régimen de mercado activo', type:'checkbox' },
   { key:'regime_sma_period', label:'SMA de régimen (días)', type:'number', min:1, step:1, integer:true },
   { key:'earnings_blackout_days', label:'Días de blackout antes de earnings', type:'number', min:0, step:1, integer:true },

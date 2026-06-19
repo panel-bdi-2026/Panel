@@ -27,7 +27,7 @@ from .backtest import (
 from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
 from .funds import FundsStore, FundValidationError
-from .indicators import sma
+from .indicators import atr, sma
 from .market_data import MarketDataError, get_daily_bars
 from .models import OrderRequest, OrderType, PendingOrder, Position, SignalResult, Side, validate_symbol
 from .rules import RulesConfig, RulesEngine
@@ -558,17 +558,68 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
     await _broadcast({"type": "auto_trade_exit", "fund_id": fund_id, "symbol": symbol, "reason": reason})
 
 
+async def _check_fund_trailing_stop(fund_id: str, symbol: str) -> None:
+    """Si trailing_stop_enabled, sube (nunca baja) el stop-loss ya colocado en
+    IBKR de una posicion abierta a medida que el precio se mueve a favor,
+    usando la misma distancia en ATR que el stop inicial
+    (stop_loss_atr_multiplier) recalculada sobre el ATR de cada chequeo:
+    nuevo_stop = ultimo_cierre - ATR_actual * stop_loss_atr_multiplier.
+
+    Solo actua si hay un stop_order_id de ESTA sesion para modificar en IBKR
+    (ver broker.modify_stop_price; self.ib.trades() no cubre sesiones
+    anteriores, misma limitacion que get_trade_fill) y si esa modificacion
+    tuvo exito -- el ledger del fondo nunca debe registrar un stop mas
+    favorable que el que de verdad protege la posicion en el broker."""
+    if not screener_config.trailing_stop_enabled:
+        return
+    fund = funds_store.get(fund_id)
+    if fund is None:
+        return
+    position = fund.positions.get(symbol)
+    if position is None or position.quantity <= 0 or position.stop_order_id is None:
+        return
+
+    try:
+        bars = await asyncio.to_thread(get_daily_bars, symbol, screener_config.atr_period + 5)
+    except MarketDataError:
+        return
+    atr_s = atr(bars["High"], bars["Low"], bars["Close"], screener_config.atr_period)
+    if not len(atr_s) or bool(atr_s.isna().iloc[-1]):
+        return
+
+    new_stop = float(bars["Close"].iloc[-1]) - float(atr_s.iloc[-1]) * screener_config.stop_loss_atr_multiplier
+    current_stop = position.stop_loss_price
+    if current_stop is not None and new_stop <= current_stop:
+        return
+
+    if not broker.modify_stop_price(position.stop_order_id, new_stop):
+        return
+    funds_store.update_stop_loss(fund_id, symbol, new_stop)
+    audit.record(
+        "auto_trade_trailing_stop_updated",
+        {"fund_id": fund_id, "symbol": symbol},
+        {"old_stop": current_stop, "new_stop": new_stop},
+    )
+
+
 async def _run_auto_exit_monitor_cycle() -> None:
     """Revisa, para cada fondo con auto-trading activado, sus posiciones
-    abiertas y las cierra si corresponde (ver _check_fund_exit). Solo en modo
-    paper y con la cuenta conectada y sin halt, igual que la entrada
-    automatica."""
+    abiertas: primero intenta subir el trailing stop (ver
+    _check_fund_trailing_stop) y despues evalua si corresponde cerrarlas (ver
+    _check_fund_exit). Solo en modo paper y con la cuenta conectada y sin
+    halt, igual que la entrada automatica."""
     if state["mode"] != "paper" or state["halted"] or not state["connected"]:
         return
     for fund in funds_store.list():
         if not fund.auto_trading_enabled:
             continue
         for symbol in list(fund.positions.keys()):
+            try:
+                await _check_fund_trailing_stop(fund.id, symbol)
+            except Exception as exc:
+                audit.record(
+                    "auto_trade_trailing_stop_check_failed", {"fund_id": fund.id, "symbol": symbol}, {"error": str(exc)}
+                )
             try:
                 await _check_fund_exit(fund.id, symbol)
             except Exception as exc:

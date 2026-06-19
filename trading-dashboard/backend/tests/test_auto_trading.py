@@ -396,6 +396,132 @@ def test_check_fund_exit_keeps_position_when_exit_order_fails(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _check_fund_trailing_stop
+# ---------------------------------------------------------------------------
+
+def _trending_bars() -> pd.DataFrame:
+    close = pd.Series([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
+    return pd.DataFrame({"High": close + 1, "Low": close - 1, "Close": close})
+
+
+def test_check_fund_trailing_stop_noop_when_disabled():
+    main_module.screener_config.trailing_stop_enabled = False
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=90, stop_order_id=1
+    )
+
+    asyncio.run(main_module._check_fund_trailing_stop(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].stop_loss_price == 90
+
+
+def test_check_fund_trailing_stop_noop_when_no_position():
+    main_module.screener_config.trailing_stop_enabled = True
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    asyncio.run(main_module._check_fund_trailing_stop(fund.id, "AAPL"))  # no debe lanzar
+
+
+def test_check_fund_trailing_stop_noop_when_no_stop_order_id(monkeypatch):
+    main_module.screener_config.trailing_stop_enabled = True
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=90)
+
+    def fail_if_called(symbol, days):
+        raise AssertionError("no deberia pedir datos de mercado sin stop_order_id")
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fail_if_called)
+    asyncio.run(main_module._check_fund_trailing_stop(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].stop_loss_price == 90
+
+
+def test_check_fund_trailing_stop_raises_stop_when_price_moved_favorably(monkeypatch):
+    main_module.screener_config.trailing_stop_enabled = True
+    main_module.screener_config.atr_period = 3
+    main_module.screener_config.stop_loss_atr_multiplier = 1.0
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=90, stop_order_id=1
+    )
+
+    monkeypatch.setattr(main_module, "get_daily_bars", lambda symbol, days: _trending_bars())
+    modify_calls = []
+    monkeypatch.setattr(
+        main_module.broker, "modify_stop_price", lambda order_id, price: modify_calls.append((order_id, price)) or True
+    )
+
+    asyncio.run(main_module._check_fund_trailing_stop(fund.id, "AAPL"))
+
+    assert modify_calls == [(1, 103.0)]
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].stop_loss_price == 103.0
+    entries = main_module.audit.recent(1)
+    assert entries[0]["action"] == "auto_trade_trailing_stop_updated"
+    assert entries[0]["result"] == {"old_stop": 90, "new_stop": 103.0}
+
+
+def test_check_fund_trailing_stop_does_not_lower_an_already_better_stop(monkeypatch):
+    main_module.screener_config.trailing_stop_enabled = True
+    main_module.screener_config.atr_period = 3
+    main_module.screener_config.stop_loss_atr_multiplier = 1.0
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=110, stop_order_id=1
+    )
+
+    monkeypatch.setattr(main_module, "get_daily_bars", lambda symbol, days: _trending_bars())
+
+    def fail_if_called(order_id, price):
+        raise AssertionError("no deberia bajar un stop ya mas favorable")
+
+    monkeypatch.setattr(main_module.broker, "modify_stop_price", fail_if_called)
+
+    asyncio.run(main_module._check_fund_trailing_stop(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].stop_loss_price == 110
+
+
+def test_check_fund_trailing_stop_keeps_ledger_stop_when_broker_modify_fails(monkeypatch):
+    main_module.screener_config.trailing_stop_enabled = True
+    main_module.screener_config.atr_period = 3
+    main_module.screener_config.stop_loss_atr_multiplier = 1.0
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=90, stop_order_id=1
+    )
+
+    monkeypatch.setattr(main_module, "get_daily_bars", lambda symbol, days: _trending_bars())
+    monkeypatch.setattr(main_module.broker, "modify_stop_price", lambda order_id, price: False)
+
+    asyncio.run(main_module._check_fund_trailing_stop(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].stop_loss_price == 90  # el ledger no se adelanta al broker
+
+
+def test_check_fund_trailing_stop_noop_when_market_data_unavailable(monkeypatch):
+    main_module.screener_config.trailing_stop_enabled = True
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=90, stop_order_id=1
+    )
+
+    def fail_bars(symbol, days):
+        raise main_module.MarketDataError("sin datos")
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fail_bars)
+
+    asyncio.run(main_module._check_fund_trailing_stop(fund.id, "AAPL"))  # no debe propagar
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].stop_loss_price == 90
+
+
+# ---------------------------------------------------------------------------
 # _run_auto_exit_monitor_cycle
 # ---------------------------------------------------------------------------
 
@@ -445,6 +571,48 @@ def test_run_auto_exit_monitor_cycle_only_checks_auto_trading_funds_with_positio
     asyncio.run(main_module._run_auto_exit_monitor_cycle())
 
     assert checked == [(fund_on.id, "MSFT")]
+
+
+def test_run_auto_exit_monitor_cycle_checks_trailing_stop_before_exit(monkeypatch):
+    fund = main_module.funds_store.create("Con auto", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 5, 100)
+
+    calls = []
+
+    async def fake_trailing(fund_id, symbol):
+        calls.append(("trailing", symbol))
+
+    async def fake_exit(fund_id, symbol):
+        calls.append(("exit", symbol))
+
+    monkeypatch.setattr(main_module, "_check_fund_trailing_stop", fake_trailing)
+    monkeypatch.setattr(main_module, "_check_fund_exit", fake_exit)
+
+    asyncio.run(main_module._run_auto_exit_monitor_cycle())
+
+    assert calls == [("trailing", "AAPL"), ("exit", "AAPL")]
+
+
+def test_run_auto_exit_monitor_cycle_continues_after_trailing_stop_check_fails(monkeypatch):
+    fund = main_module.funds_store.create("Con auto", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 5, 100)
+
+    async def failing_trailing(fund_id, symbol):
+        raise RuntimeError("fallo de datos de mercado")
+
+    exit_calls = []
+
+    async def fake_exit(fund_id, symbol):
+        exit_calls.append(symbol)
+
+    monkeypatch.setattr(main_module, "_check_fund_trailing_stop", failing_trailing)
+    monkeypatch.setattr(main_module, "_check_fund_exit", fake_exit)
+
+    asyncio.run(main_module._run_auto_exit_monitor_cycle())  # no debe propagar la excepcion
+
+    assert exit_calls == ["AAPL"]
+    entries = main_module.audit.recent(1)
+    assert entries[0]["action"] == "auto_trade_trailing_stop_check_failed"
 
 
 # ---------------------------------------------------------------------------

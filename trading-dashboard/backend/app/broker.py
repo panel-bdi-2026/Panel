@@ -170,6 +170,29 @@ class IBKRBroker:
         price = tickers[0].marketPrice()
         return price if price == price else None  # filtra NaN
 
+    def modify_stop_price(self, stop_order_id: int, new_stop_price: float) -> bool:
+        """Sube (o ajusta) el precio de un stop-loss ya colocado, reenviando
+        la MISMA orden (mismo orderId) con auxPrice actualizado: la API de
+        IBKR trata un placeOrder sobre el orderId de una orden viva como una
+        modificacion in-place, no como una orden nueva.
+
+        Devuelve False sin lanzar si la orden no se encuentra viva (ya se
+        ejecuto/cancelo, o es de otra sesion -- self.ib.trades() solo cubre
+        la sesion actual, misma limitacion que get_trade_fill): quien llama
+        no debe tratar eso como una falla, el proximo chequeo de salida
+        reconciliara la posicion si el stop ya se ejecuto del lado del
+        broker."""
+        from ib_async.order import OrderStatus
+
+        for trade in self.ib.trades():
+            if trade.order.orderId == stop_order_id:
+                if trade.orderStatus.status in OrderStatus.DoneStates:
+                    return False
+                trade.order.auxPrice = new_stop_price
+                self.ib.placeOrder(trade.contract, trade.order)
+                return True
+        return False
+
     def get_trade_fill(self, order_id: int) -> tuple[str, float, float | None] | None:
         """Estado y fill de una orden colocada esta sesion, por order_id.
 

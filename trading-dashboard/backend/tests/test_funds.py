@@ -201,6 +201,28 @@ def test_partial_sell_keeps_opened_at_and_stop_loss(store):
     assert pos.stop_loss_price == 90
 
 
+def test_update_stop_loss_raises_stop_on_open_position(store):
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100, stop_loss_price=90)
+    store.update_stop_loss(fund.id, "AAPL", 95)
+    fund = store.get(fund.id)
+    assert fund.positions["AAPL"].stop_loss_price == 95
+    assert fund.owned_quantity("AAPL") == 10  # no toca cash/quantity/trades
+    assert fund.cash_usd == 4000
+    assert len(fund.trades) == 1
+
+
+def test_update_stop_loss_noop_when_no_position(store):
+    fund = store.create("Test", 5000)
+    assert store.update_stop_loss(fund.id, "AAPL", 95) is not None
+    fund = store.get(fund.id)
+    assert "AAPL" not in fund.positions
+
+
+def test_update_stop_loss_unknown_fund_returns_none(store):
+    assert store.update_stop_loss("no-existe", "AAPL", 95) is None
+
+
 def test_load_skips_corrupt_fund_entry_but_keeps_valid_ones(tmp_path):
     path = tmp_path / "funds.json"
     good = FundsStore(path).create("Bueno", 1000)

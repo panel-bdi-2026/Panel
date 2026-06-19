@@ -102,3 +102,56 @@ def test_get_position_qty_returns_zero_when_no_match(broker, monkeypatch):
     monkeypatch.setattr(broker.ib, "positions", lambda: [pos1])
     assert broker.get_position_qty("MSFT") == 0.0
     assert broker.get_position_qty("AAPL") == 10
+
+
+class FakeOrder:
+    def __init__(self, order_id, aux_price):
+        self.orderId = order_id
+        self.auxPrice = aux_price
+
+
+class FakeOrderStatus:
+    def __init__(self, status):
+        self.status = status
+
+
+class FakeTrade:
+    def __init__(self, order_id, status, aux_price=90.0, contract="AAPL contract"):
+        self.order = FakeOrder(order_id, aux_price)
+        self.orderStatus = FakeOrderStatus(status)
+        self.contract = contract
+
+
+def test_modify_stop_price_resubmits_same_order_id_with_new_aux_price(broker, monkeypatch):
+    trade = FakeTrade(order_id=42, status="Submitted", aux_price=90.0)
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+
+    placed = []
+    monkeypatch.setattr(broker.ib, "placeOrder", lambda contract, order: placed.append((contract, order)))
+
+    assert broker.modify_stop_price(42, 95.0) is True
+    assert trade.order.auxPrice == 95.0
+    assert len(placed) == 1
+    assert placed[0][1].orderId == 42  # misma orden, no una nueva
+
+
+def test_modify_stop_price_returns_false_when_order_not_found(broker, monkeypatch):
+    monkeypatch.setattr(broker.ib, "trades", lambda: [])
+
+    def fail_if_called(contract, order):
+        raise AssertionError("no deberia colocar ninguna orden")
+
+    monkeypatch.setattr(broker.ib, "placeOrder", fail_if_called)
+    assert broker.modify_stop_price(42, 95.0) is False
+
+
+def test_modify_stop_price_returns_false_when_order_already_done(broker, monkeypatch):
+    trade = FakeTrade(order_id=42, status="Filled", aux_price=90.0)
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+
+    def fail_if_called(contract, order):
+        raise AssertionError("no deberia modificar una orden ya terminada")
+
+    monkeypatch.setattr(broker.ib, "placeOrder", fail_if_called)
+    assert broker.modify_stop_price(42, 95.0) is False
+    assert trade.order.auxPrice == 90.0  # no se toco
