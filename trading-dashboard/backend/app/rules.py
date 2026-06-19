@@ -178,7 +178,23 @@ class RulesEngine:
                         ),
                     ))
 
-        if account.daily_pnl_pct <= -abs(self.config.daily_loss_limit_pct):
+        if not account.pnl_data_available:
+            # Sin dato real de PnL diario (recien conectado, antes del primer
+            # callback de reqPnL, o cuenta sin NetLiquidation), daily_pnl_pct
+            # default queda en 0.0 -- eso NO significa "sin perdida hoy", solo
+            # que no hay dato. Aprobar ordenes en este estado fallaria ABIERTO
+            # justo cuando menos se puede confiar en el dato: si la cuenta ya
+            # esta por debajo del limite de perdida diaria pero el callback de
+            # IBKR todavia no llego, el chequeo de abajo nunca lo veria.
+            violations.append(RuleViolation(
+                rule="pnl_data_available",
+                message=(
+                    "Todavia no hay dato real de PnL diario de IBKR disponible "
+                    "(recien conectado o cuenta sin datos). Por seguridad, las "
+                    "ordenes quedan bloqueadas hasta que el dato este disponible."
+                ),
+            ))
+        elif account.daily_pnl_pct <= -abs(self.config.daily_loss_limit_pct):
             violations.append(RuleViolation(
                 rule="daily_loss_limit_pct",
                 message=(

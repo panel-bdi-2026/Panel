@@ -72,13 +72,17 @@ def reset_state(monkeypatch):
         manual_approval_threshold_usd=1_000_000,
     ))
     monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 0)
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account())
+
+    async def fake_get_account_summary():
+        return make_account()
+
+    monkeypatch.setattr(main_module.broker, "get_account_summary", fake_get_account_summary)
     monkeypatch.setattr(main_module, "_persist_state", lambda: None)
     yield
 
 
 def test_draft_order_from_signal_creates_pending_order_with_signal_source():
-    pending = main_module._draft_order_from_signal(make_signal(), [])
+    pending = asyncio.run(main_module._draft_order_from_signal(make_signal(), []))
     assert pending is not None
     assert pending.source == "signal_engine"
     assert pending.order.symbol == "AAPL"
@@ -92,7 +96,7 @@ def test_draft_order_from_signal_records_signal_rationale_in_audit():
     # score suelto, para poder revisar despues por que el motor sugirio esta
     # orden.
     signal = make_signal(score=7.5)
-    pending = main_module._draft_order_from_signal(signal, [])
+    pending = asyncio.run(main_module._draft_order_from_signal(signal, []))
     assert pending is not None
 
     entries = main_module.audit.recent(1)
@@ -110,7 +114,7 @@ def test_draft_order_from_signal_records_signal_rationale_in_audit():
 
 def test_draft_order_from_signal_skips_when_existing_position(monkeypatch):
     monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
-    pending = main_module._draft_order_from_signal(make_signal(), [])
+    pending = asyncio.run(main_module._draft_order_from_signal(make_signal(), []))
     assert pending is None
     assert main_module.state["pending_orders"] == {}
 
@@ -125,21 +129,24 @@ def test_draft_order_from_signal_skips_when_pending_order_already_exists_for_sym
     )
     main_module.state["pending_orders"]["existing-1"] = existing
 
-    pending = main_module._draft_order_from_signal(make_signal(), [])
+    pending = asyncio.run(main_module._draft_order_from_signal(make_signal(), []))
     assert pending is None
     assert len(main_module.state["pending_orders"]) == 1
 
 
 def test_draft_order_from_signal_skips_when_sizing_zero(monkeypatch):
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account(net_liq=0))
-    pending = main_module._draft_order_from_signal(make_signal(), [])
+    async def fake_get_account_summary():
+        return make_account(net_liq=0)
+
+    monkeypatch.setattr(main_module.broker, "get_account_summary", fake_get_account_summary)
+    pending = asyncio.run(main_module._draft_order_from_signal(make_signal(), []))
     assert pending is None
     assert main_module.state["pending_orders"] == {}
 
 
 def test_draft_order_from_signal_skips_when_rules_engine_rejects():
     main_module.rules_engine.reload(RulesConfig(symbol_whitelist=[]))  # rechaza todo
-    pending = main_module._draft_order_from_signal(make_signal(), [])
+    pending = asyncio.run(main_module._draft_order_from_signal(make_signal(), []))
     assert pending is None
     assert main_module.state["pending_orders"] == {}
 

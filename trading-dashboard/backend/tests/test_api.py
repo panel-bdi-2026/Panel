@@ -56,6 +56,14 @@ def make_account(net_liq: float = 100_000, cash: float = 100_000, daily_pnl_pct:
     )
 
 
+def _async_account_summary(account: AccountSummary):
+    """Wrapea un AccountSummary en una funcion async, para monkeypatchear
+    broker.get_account_summary (que ahora es async, ver broker.py)."""
+    async def fake() -> AccountSummary:
+        return account
+    return fake
+
+
 @pytest.fixture(autouse=True)
 def reset_state(monkeypatch, tmp_path):
     main_module.state["mode"] = "paper"
@@ -66,7 +74,7 @@ def reset_state(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module, "screener_config", ScreenerConfig())
     main_module.rules_engine.reload(RulesConfig())
     monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 0)
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account())
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account()))
     monkeypatch.setattr(main_module, "_persist_state", lambda: None)
     yield
 
@@ -147,7 +155,7 @@ async def _run_one_cycle(monkeypatch):
 def test_risk_monitor_loop_halts_when_daily_loss_limit_breached(monkeypatch):
     main_module.state["connected"] = True
     main_module.state["halted"] = False
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account(daily_pnl_pct=-3.0))
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(daily_pnl_pct=-3.0)))
     asyncio.run(_run_one_cycle(monkeypatch))
     assert main_module.state["halted"] is True
 
@@ -155,7 +163,7 @@ def test_risk_monitor_loop_halts_when_daily_loss_limit_breached(monkeypatch):
 def test_risk_monitor_loop_keeps_running_within_limit(monkeypatch):
     main_module.state["connected"] = True
     main_module.state["halted"] = False
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account(daily_pnl_pct=-1.0))
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(daily_pnl_pct=-1.0)))
     asyncio.run(_run_one_cycle(monkeypatch))
     assert main_module.state["halted"] is False
 
@@ -251,7 +259,7 @@ def test_set_mode_returns_502_and_keeps_previous_mode_when_reconnect_fails(monke
 
 
 # ---------------------------------------------------------------------------
-# Trabas de asignacion de capital entre fondos (_validate_capital_allocation)
+# Trabas de asignacion de capital entre fondos (_check_capital_allocation)
 # ---------------------------------------------------------------------------
 
 def test_create_fund_rejects_when_not_connected_to_ibkr():
@@ -276,7 +284,7 @@ def test_create_fund_rejects_non_positive_initial_capital():
 
 def test_create_fund_rejects_amount_exceeding_real_ibkr_cash(monkeypatch):
     main_module.state["connected"] = True
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account(cash=1_000))
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=1_000)))
     resp = client.post(
         "/api/funds",
         json={"name": "Fondo", "initial_capital_usd": 5_000},
@@ -288,7 +296,7 @@ def test_create_fund_rejects_amount_exceeding_real_ibkr_cash(monkeypatch):
 
 def test_create_fund_succeeds_within_available_cash(monkeypatch):
     main_module.state["connected"] = True
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account(cash=10_000))
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=10_000)))
     resp = client.post(
         "/api/funds",
         json={"name": "Fondo", "initial_capital_usd": 4_000},
@@ -300,7 +308,7 @@ def test_create_fund_succeeds_within_available_cash(monkeypatch):
 
 def test_create_second_fund_rejected_when_combined_allocation_exceeds_real_cash(monkeypatch):
     main_module.state["connected"] = True
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account(cash=10_000))
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=10_000)))
     first = client.post(
         "/api/funds",
         json={"name": "Fondo 1", "initial_capital_usd": 7_000},
@@ -319,7 +327,7 @@ def test_create_second_fund_rejected_when_combined_allocation_exceeds_real_cash(
 
 def test_capital_flow_deposit_rejected_when_exceeds_remaining_real_cash(monkeypatch):
     main_module.state["connected"] = True
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account(cash=10_000))
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=10_000)))
     created = client.post(
         "/api/funds",
         json={"name": "Fondo", "initial_capital_usd": 6_000},
@@ -337,7 +345,7 @@ def test_capital_flow_deposit_rejected_when_exceeds_remaining_real_cash(monkeypa
 
 def test_capital_flow_withdrawal_rejected_when_exceeds_fund_cash(monkeypatch):
     main_module.state["connected"] = True
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account(cash=10_000))
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=10_000)))
     created = client.post(
         "/api/funds",
         json={"name": "Fondo", "initial_capital_usd": 3_000},
@@ -357,7 +365,7 @@ def test_capital_flow_withdrawal_allowed_even_when_disconnected(monkeypatch):
     # el propio ledger del fondo), asi que a diferencia de un deposito no
     # exige estar conectado.
     main_module.state["connected"] = True
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account(cash=10_000))
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=10_000)))
     created = client.post(
         "/api/funds",
         json={"name": "Fondo", "initial_capital_usd": 3_000},

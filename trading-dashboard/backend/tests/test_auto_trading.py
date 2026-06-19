@@ -56,7 +56,7 @@ def make_signal(symbol="AAPL", last_price=100.0, stop=95.0, passes=True, score=1
 
 
 async def _fake_place_order(order):
-    return {"order_id": 1, "status": "Filled"}
+    return {"order_id": 1, "status": "Filled", "filled_qty": order.quantity, "avg_fill_price": order.limit_price}
 
 
 @pytest.fixture(autouse=True)
@@ -79,7 +79,11 @@ def reset_state(monkeypatch, tmp_path):
         manual_approval_threshold_usd=1_000_000,
     ))
     monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 0)
-    monkeypatch.setattr(main_module.broker, "get_account_summary", lambda: make_account())
+
+    async def fake_get_account_summary():
+        return make_account()
+
+    monkeypatch.setattr(main_module.broker, "get_account_summary", fake_get_account_summary)
     monkeypatch.setattr(main_module, "_persist_state", lambda: None)
     yield
 
@@ -460,7 +464,7 @@ def test_concurrent_submit_order_does_not_overspend_fund_cash(monkeypatch):
 
     async def slow_place_order(order):
         await asyncio.sleep(0.05)  # ensancha la ventana de carrera si el lock fallara
-        return {"order_id": 1, "status": "Filled"}
+        return {"order_id": 1, "status": "Filled", "filled_qty": order.quantity, "avg_fill_price": order.limit_price}
 
     monkeypatch.setattr(main_module.broker, "place_order", slow_place_order)
 
@@ -521,12 +525,12 @@ def test_run_auto_exit_monitor_cycle_continues_after_a_check_fails(monkeypatch):
 
 def test_order_size_suggestion_rejects_invalid_symbol():
     with pytest.raises(main_module.HTTPException) as exc_info:
-        main_module.order_size_suggestion(
+        asyncio.run(main_module.order_size_suggestion(
             symbol="<script>alert(1)</script>", entry_price=100.0, stop_loss_price=90.0
-        )
+        ))
     assert exc_info.value.status_code == 422
 
 
 def test_order_size_suggestion_normalizes_valid_symbol():
-    suggestion = main_module.order_size_suggestion(symbol="  aapl ", entry_price=100.0, stop_loss_price=90.0)
+    suggestion = asyncio.run(main_module.order_size_suggestion(symbol="  aapl ", entry_price=100.0, stop_loss_price=90.0))
     assert suggestion.quantity > 0

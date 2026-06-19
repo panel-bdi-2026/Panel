@@ -1170,8 +1170,10 @@ function showAuditSignalDetail(index){
 
 async function approveOrder(id){
   try{
-    await api(`/api/orders/${id}/approve`, { method:'POST', auth:true });
-    toast('✓ Orden ejecutada');
+    const result = await api(`/api/orders/${id}/approve`, { method:'POST', auth:true });
+    toast(result.status === 'submitted'
+      ? 'Orden enviada al broker, esperando confirmación de fill'
+      : '✓ Orden ejecutada');
     refreshAll();
   }catch(e){ toast('Error: ' + e.message); }
 }
@@ -1204,6 +1206,8 @@ async function submitOrder(){
     const result = await api('/api/orders', { method:'POST', body: order, auth:true });
     if(result.status === 'pending_approval'){
       toast('Orden dentro de reglas, pero requiere aprobación manual (ver lista de pendientes)');
+    } else if(result.status === 'submitted'){
+      toast('Orden enviada al broker, esperando confirmación de fill');
     } else {
       toast('✓ Orden ejecutada');
     }

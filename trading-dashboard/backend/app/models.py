@@ -86,6 +86,14 @@ class AccountSummary(BaseModel):
     daily_pnl: float
     daily_pnl_pct: float
     currency: str = "USD"
+    # False si IBKR todavia no entrego ningun dato de PnL diario real (recien
+    # conectado, antes del primer callback de reqPnL) o si NetLiquidation es 0
+    # (cuenta sin datos). En ese caso daily_pnl/daily_pnl_pct quedan en 0.0 por
+    # default, pero ese 0.0 NO significa "sin perdida hoy": significa "no hay
+    # dato todavia". Tratar ambos casos igual permitia que el kill switch
+    # (_risk_monitor_loop) y RulesEngine.evaluate() fallaran ABIERTOS -- nunca
+    # bloqueaban nada -- exactamente cuando menos se puede confiar en el dato.
+    pnl_data_available: bool = True
 
 
 class Position(BaseModel):

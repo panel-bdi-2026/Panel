@@ -19,7 +19,7 @@ from .audit import AuditLog
 from .backtest import BacktestError, run_backtest, run_opportunistic_backtest
 from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
-from .funds import FundsStore
+from .funds import FundsStore, FundValidationError
 from .indicators import sma
 from .market_data import MarketDataError, get_daily_bars
 from .models import OrderRequest, OrderType, PendingOrder, Position, SignalResult, Side, validate_symbol
@@ -156,7 +156,7 @@ async def _broadcast_loop() -> None:
         try:
             payload = {
                 "type": "update",
-                "account": broker.get_account_summary().model_dump(),
+                "account": (await broker.get_account_summary()).model_dump(),
                 "positions": [p.model_dump() for p in await broker.get_positions()],
             }
         except Exception as exc:
@@ -184,7 +184,7 @@ def _compute_sector_exposure(positions: list[Position], exclude_symbol: str) -> 
     return exposure
 
 
-def _draft_order_from_signal(result: SignalResult, positions: list[Position]) -> PendingOrder | None:
+async def _draft_order_from_signal(result: SignalResult, positions: list[Position]) -> PendingOrder | None:
     """Convierte una señal recien pasada a passes_filters=True en una orden de
     compra en borrador, sizeada por riesgo via RulesEngine.suggested_quantity().
 
@@ -205,7 +205,7 @@ def _draft_order_from_signal(result: SignalResult, positions: list[Position]) ->
     if position_qty != 0:
         return None
 
-    account_summary = broker.get_account_summary()
+    account_summary = await broker.get_account_summary()
     sizing = rules_engine.suggested_quantity(
         account_summary.net_liquidation, position_qty, result.last_price, result.suggested_stop_loss_price
     )
@@ -264,7 +264,7 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
         if not candidates:
             return
 
-        account_summary = broker.get_account_summary()
+        account_summary = await broker.get_account_summary()
         position_qty = broker.get_position_qty(symbol)
         sector_exposure_usd = _compute_sector_exposure(await broker.get_positions(), symbol)
 
@@ -315,11 +315,23 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
             audit.record("auto_trade_stop_loss_rejected", order.model_dump(), {"error": str(exc)})
             return
 
-        funds_store.record_fill(
-            fund.id, symbol, Side.BUY, quantity, result.last_price, stop_loss_price=result.suggested_stop_loss_price
-        )
+        # Solo se registra en el ledger del fondo lo que IBKR efectivamente
+        # confirmo lleno dentro de la espera de place_order() (ver
+        # broker._wait_for_fill): registrar la cantidad PEDIDA sin importar el
+        # fill real desincroniza cash_usd/posicion del fondo de lo que de
+        # verdad paso en la cuenta. Si no llego a llenar nada en esa ventana,
+        # la orden sigue viva en IBKR pero esta sesion no la sigue rastreando
+        # (limitacion aceptada, ver broker.get_trade_fill).
+        filled_qty = result_payload.get("filled_qty") or 0.0
+        if filled_qty > 0:
+            fill_price = result_payload.get("avg_fill_price") or result.last_price
+            funds_store.record_fill(
+                fund.id, symbol, Side.BUY, filled_qty, fill_price,
+                stop_loss_price=result.suggested_stop_loss_price,
+                stop_order_id=result_payload.get("stop_order_id"),
+            )
         audit.record(
-            "auto_trade_executed",
+            "auto_trade_executed" if filled_qty > 0 else "auto_trade_submitted_unfilled",
             order.model_dump(),
             {"fund_id": fund.id, "signal": result.model_dump(), **result_payload},
         )
@@ -378,7 +390,11 @@ async def _run_signal_scan_cycle() -> None:
     cap = min(screener_config.max_auto_drafts_per_cycle, free_slots)
     new_signals = new_signals[:cap]
     positions = await broker.get_positions()
-    drafted = [p for p in (_draft_order_from_signal(r, positions) for r in new_signals) if p is not None]
+    drafted = []
+    for r in new_signals:
+        p = await _draft_order_from_signal(r, positions)
+        if p is not None:
+            drafted.append(p)
 
     await _broadcast({
         "type": "signal_alert",
@@ -406,7 +422,7 @@ async def _risk_monitor_loop() -> None:
         if not state["connected"] or state["halted"]:
             continue
         try:
-            account = broker.get_account_summary()
+            account = await broker.get_account_summary()
         except Exception:
             continue
         if account.daily_pnl_pct <= -abs(rules_config.daily_loss_limit_pct):
@@ -429,10 +445,11 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
        bracket al abrir la posicion (ver broker.place_order) ya se ejecuto
        del lado de IBKR sin pasar por record_fill. Se reconcilia la
        diferencia para que el fondo no quede con una posicion fantasma. El
-       precio exacto del fill no esta disponible sin consultar el historial
-       de ejecuciones de IBKR; se aproxima con el stop_loss_price registrado
-       al abrir la posicion (misma simplificacion ya documentada en el resto
-       del ledger de fondos).
+       precio de fill real se busca via broker.get_trade_fill(stop_order_id)
+       (orden de esta misma sesion); si no esta disponible (reconexion entre
+       sesiones, u orden de antes de este cambio sin stop_order_id guardado),
+       se aproxima con el stop_loss_price registrado al abrir la posicion
+       (misma simplificacion ya documentada en el resto del ledger de fondos).
     2. max_holding_days: misma regla que ya se simula en backtest.py, ahora
        aplicada en vivo sobre la fecha real de apertura.
     3. trend_break: el precio cierra por debajo de la SMA rapida del
@@ -450,6 +467,10 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
         if broker_qty < position.quantity:
             closed_qty = position.quantity - max(broker_qty, 0.0)
             fill_price = position.stop_loss_price or position.avg_cost
+            if position.stop_order_id is not None:
+                fill = broker.get_trade_fill(position.stop_order_id)
+                if fill is not None and fill[2] is not None:
+                    fill_price = fill[2]
             funds_store.record_fill(fund_id, symbol, Side.SELL, closed_qty, fill_price)
             audit.record(
                 "auto_trade_stop_loss_reconciled",
@@ -489,9 +510,21 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
             audit.record("auto_trade_exit_failed", order.model_dump(), {"error": str(exc)})
             return
 
-        funds_store.record_fill(fund_id, symbol, Side.SELL, position.quantity, reference_price)
+        # Solo se registra en el ledger del fondo lo que el broker confirmo
+        # como realmente ejecutado (mismo criterio que _try_auto_trade_entry):
+        # asumir que se lleno la cantidad pedida sin chequear filled_qty podia
+        # dejar el ledger con la posicion en cero mientras IBKR todavia la
+        # tenia abierta (orden parcial o todavia en curso).
+        filled_qty = result_payload.get("filled_qty") or 0.0
+        fill_price = result_payload.get("avg_fill_price") or reference_price
+        if filled_qty > 0:
+            funds_store.record_fill(fund_id, symbol, Side.SELL, filled_qty, fill_price)
         reason = "max_holding_days" if timed_out else "trend_break"
-        audit.record("auto_trade_exit", order.model_dump(), {"reason": reason, **result_payload})
+        audit.record(
+            "auto_trade_exit" if filled_qty > 0 else "auto_trade_exit_unfilled",
+            order.model_dump(),
+            {"reason": reason, **result_payload},
+        )
     await _broadcast({"type": "auto_trade_exit", "fund_id": fund_id, "symbol": symbol, "reason": reason})
 
 
@@ -526,7 +559,15 @@ async def _restore_persisted_mode() -> None:
     """Si el estado persistido indica un modo distinto al que arranco el
     broker (ej. el backend se reinicio mientras estaba en modo live), reconecta
     al puerto correspondiente para que state['mode'] no mienta sobre a que
-    cuenta esta conectado realmente el broker."""
+    cuenta esta conectado realmente el broker.
+
+    Si el modo restaurado es live, el trading queda pausado (kill switch)
+    aunque state['halted'] persistido fuera False: mismo criterio que
+    set_mode() al cambiar a live explicitamente desde el dashboard. Sin esto,
+    reiniciar el backend mientras estaba en live y sin halt reanudaria el
+    motor de auto-trading operando con dinero real sin ninguna confirmacion
+    humana posterior al reinicio.
+    """
     if not state["connected"] or state["mode"] == settings.trading_mode:
         return
     if state["mode"] == "live" and not settings.live_confirm:
@@ -545,6 +586,9 @@ async def _restore_persisted_mode() -> None:
     try:
         await broker.reconnect(settings.ib_host, target_port, settings.ib_client_id)
         state["connected"] = True
+        if state["mode"] == "live":
+            state["halted"] = True
+        _persist_state()
         print(f"[INFO] Modo restaurado desde estado persistido: {state['mode']}")
     except IBKRConnectionError as exc:
         state["connected"] = False
@@ -662,10 +706,10 @@ async def set_mode(body: ModeUpdate, _: None = Depends(require_api_key)):
 
 
 @app.get("/api/account")
-def get_account(_: None = Depends(require_api_key)):
+async def get_account(_: None = Depends(require_api_key)):
     if not state["connected"]:
         raise HTTPException(status_code=503, detail="No conectado a IBKR.")
-    return broker.get_account_summary()
+    return await broker.get_account_summary()
 
 
 @app.get("/api/positions")
@@ -886,7 +930,7 @@ async def backtest_strategy(strategy_id: str | None = None, _: None = Depends(re
 
 
 @app.get("/api/orders/size-suggestion")
-def order_size_suggestion(
+async def order_size_suggestion(
     symbol: str,
     entry_price: float,
     stop_loss_price: float,
@@ -915,7 +959,7 @@ def order_size_suggestion(
             raise HTTPException(status_code=404, detail="Fondo no encontrado.")
         equity = fund.equity_estimate()
     else:
-        equity = broker.get_account_summary().net_liquidation
+        equity = (await broker.get_account_summary()).net_liquidation
     return rules_engine.suggested_quantity(equity, position_qty, entry_price, stop_loss_price)
 
 
@@ -961,7 +1005,7 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
     if not state["connected"]:
         raise HTTPException(status_code=503, detail="No conectado a IBKR.")
 
-    account_summary = broker.get_account_summary()
+    account_summary = await broker.get_account_summary()
     position_qty = broker.get_position_qty(order.symbol)
     reference_price = order.limit_price
     if reference_price is None:
@@ -1012,37 +1056,78 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
         except StopLossRejectedError as exc:
             audit.record("stop_loss_rejected", order.model_dump(), {"error": str(exc)})
             raise HTTPException(status_code=502, detail=str(exc))
-        audit.record("order_executed", order.model_dump(), result)
-        if order.fund_id:
-            # reference_price ya se uso para validar/sizear la orden: se reusa como
-            # aproximacion del fill (place_order() no espera ni devuelve el fill
-            # real de IBKR hoy). Documentado como simplificacion, igual que en backtest.py.
-            funds_store.record_fill(order.fund_id, order.symbol, order.side, order.quantity, reference_price)
-        return {"status": "executed", "result": result}
+
+        # Solo se registra en el ledger del fondo lo que el broker confirmo
+        # como realmente ejecutado (mismo criterio que _try_auto_trade_entry
+        # en vez de asumir que se lleno toda la cantidad pedida). avg_fill_price
+        # (precio real del fill) se prioriza sobre reference_price (que era
+        # solo una aproximacion para validar/sizear la orden).
+        filled_qty = result.get("filled_qty") or 0.0
+        if order.fund_id and filled_qty > 0:
+            fill_price = result.get("avg_fill_price") or reference_price
+            funds_store.record_fill(
+                order.fund_id, order.symbol, order.side, filled_qty, fill_price,
+                stop_loss_price=order.stop_loss_price,
+                stop_order_id=result.get("stop_order_id"),
+            )
+        status_label = "executed" if filled_qty > 0 else "submitted"
+        audit.record(
+            "order_executed" if filled_qty > 0 else "order_submitted_unfilled",
+            order.model_dump(),
+            result,
+        )
+        return {"status": status_label, "result": result}
 
 
 @app.post("/api/orders/{order_id}/approve")
 async def approve_order(order_id: str, _: None = Depends(require_api_key)):
-    pending = state["pending_orders"].pop(order_id, None)
-    if not pending:
-        raise HTTPException(status_code=404, detail="Orden pendiente no encontrada.")
-    _persist_state()
     async with _funds_order_lock:
+        pending = state["pending_orders"].get(order_id)
+        if not pending:
+            raise HTTPException(status_code=404, detail="Orden pendiente no encontrada.")
+
+        reference_price = None
+        if pending.order.fund_id:
+            reference_price = pending.order.limit_price
+            if reference_price is None:
+                reference_price = await broker.get_reference_price(pending.order.symbol)
+            if not reference_price:
+                raise HTTPException(
+                    status_code=422,
+                    detail="No se pudo obtener un precio de referencia para revalidar la orden.",
+                )
+            # Re-valida contra el estado ACTUAL del fondo (cash/posicion pudo
+            # haber cambiado desde que la orden quedo pendiente, por otra
+            # orden ejecutada mientras tanto): si ya no es valida, se levanta
+            # antes de tocar pending_orders, asi la orden queda en la cola
+            # para que el usuario decida con el ledger ya actualizado a la
+            # vista, en vez de perderse silenciosamente.
+            _validate_fund_order(pending.order, reference_price)
+
+        del state["pending_orders"][order_id]
+        _persist_state()
+
         try:
             result = await broker.place_order(pending.order)
         except StopLossRejectedError as exc:
             audit.record("stop_loss_rejected", pending.order.model_dump(), {"error": str(exc)})
             raise HTTPException(status_code=502, detail=str(exc))
-        audit.record("order_executed_after_approval", pending.order.model_dump(), result)
-        if pending.order.fund_id:
-            fill_price = pending.order.limit_price
-            if fill_price is None:
-                fill_price = await broker.get_reference_price(pending.order.symbol)
-            if fill_price:
-                funds_store.record_fill(
-                    pending.order.fund_id, pending.order.symbol, pending.order.side, pending.order.quantity, fill_price
-                )
-        return {"status": "executed", "result": result}
+
+        filled_qty = result.get("filled_qty") or 0.0
+        if pending.order.fund_id and filled_qty > 0:
+            fill_price = result.get("avg_fill_price") or reference_price
+            funds_store.record_fill(
+                pending.order.fund_id, pending.order.symbol, pending.order.side, filled_qty, fill_price,
+                stop_loss_price=pending.order.stop_loss_price,
+                stop_order_id=result.get("stop_order_id"),
+            )
+        status_label = "executed" if filled_qty > 0 else "submitted"
+        audit.record(
+            "order_executed_after_approval" if filled_qty > 0 else "order_submitted_unfilled_after_approval",
+            pending.order.model_dump(),
+            result,
+        )
+        return {"status": status_label, "result": result}
 
 
 @app.post("/api/orders/{order_id}/reject")
@@ -1069,24 +1154,27 @@ def _fund_view(fund) -> dict:
     }
 
 
-def _validate_capital_allocation(
-    amount: float, current_fund_cash: float = 0.0, exclude_fund_id: str | None = None
+def _check_capital_allocation(
+    real_cash: float, amount: float, current_fund_cash: float, already_allocated: float
 ) -> None:
     """Valida que asignarle `amount` adicional a un fondo no haga que la suma
     de cash_usd de todos los fondos supere el cash real de la cuenta de
     IBKR. Sin esto, la separacion entre fondos seria una ilusion: un fondo
     podria "creer" que tiene plata que en realidad ya esta asignada a otro
-    fondo o no existe en la cuenta real."""
-    real_cash = broker.get_account_summary().cash
-    already_allocated = funds_store.total_allocated_cash(exclude_fund_id=exclude_fund_id)
+    fondo o no existe en la cuenta real.
+
+    No consulta nada por si sola (ni broker ni FundsStore): se pasa como
+    `allocation_check` a FundsStore.create()/apply_capital_flow() para que se
+    ejecute DENTRO de su lock, sobre `already_allocated` recalculado en ese
+    instante exacto -- lo que cierra la carrera entre dos requests
+    concurrentes que, leyendo la suma ya asignada por fuera del lock, podian
+    pasar la validacion ambas y terminar asignando entre las dos mas cash del
+    que la cuenta real tiene."""
     if already_allocated + current_fund_cash + amount > real_cash:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"La cuenta de IBKR tiene ${real_cash:,.2f} de cash real, de los cuales "
-                f"${already_allocated + current_fund_cash:,.2f} ya estan asignados a fondos. "
-                f"No se puede asignar ${amount:,.2f} mas sin superar el cash real disponible."
-            ),
+        raise FundValidationError(
+            f"La cuenta de IBKR tiene ${real_cash:,.2f} de cash real, de los cuales "
+            f"${already_allocated + current_fund_cash:,.2f} ya estan asignados a fondos. "
+            f"No se puede asignar ${amount:,.2f} mas sin superar el cash real disponible."
         )
 
 
@@ -1096,7 +1184,7 @@ def list_funds(_: None = Depends(require_api_key)):
 
 
 @app.post("/api/funds")
-def create_fund(body: FundCreate, _: None = Depends(require_api_key)):
+async def create_fund(body: FundCreate, _: None = Depends(require_api_key)):
     """Crea un fondo: una porcion de capital con su propia contabilidad
     (cash_usd, posiciones, PnL realizado), separada de la cuenta consolidada
     de IBKR y de cualquier otro fondo. Ver funds.py para el detalle del
@@ -1106,8 +1194,17 @@ def create_fund(body: FundCreate, _: None = Depends(require_api_key)):
         raise HTTPException(status_code=422, detail="initial_capital_usd debe ser mayor a 0.")
     if not state["connected"]:
         raise HTTPException(status_code=503, detail="No conectado a IBKR.")
-    _validate_capital_allocation(body.initial_capital_usd)
-    fund = funds_store.create(body.name.strip(), body.initial_capital_usd, body.auto_trading_enabled)
+    real_cash = (await broker.get_account_summary()).cash
+
+    def allocation_check(already_allocated: float) -> None:
+        _check_capital_allocation(real_cash, body.initial_capital_usd, current_fund_cash=0.0, already_allocated=already_allocated)
+
+    try:
+        fund = funds_store.create(
+            body.name.strip(), body.initial_capital_usd, body.auto_trading_enabled, allocation_check=allocation_check
+        )
+    except FundValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     audit.record("fund_created", body.model_dump(), {"id": fund.id})
     return _fund_view(fund)
 
@@ -1276,32 +1373,46 @@ class CapitalFlowCreate(BaseModel):
 
 
 @app.post("/api/funds/{fund_id}/capital-flows")
-def create_capital_flow(fund_id: str, body: CapitalFlowCreate, _: None = Depends(require_api_key)):
+async def create_capital_flow(fund_id: str, body: CapitalFlowCreate, _: None = Depends(require_api_key)):
     """Aporta (amount > 0) o retira (amount < 0) capital virtual de un fondo
     ya existente -- mismas validaciones que la creacion (ver
-    _validate_capital_allocation), mas el chequeo de que un retiro no deje
+    _check_capital_allocation), mas el chequeo de que un retiro no deje
     cash_usd negativo (no se puede retirar plata que esta en posiciones
-    abiertas; hay que vender primero)."""
-    fund = funds_store.get(fund_id)
-    if fund is None:
+    abiertas; hay que vender primero). Ambos chequeos corren como
+    allocation_check DENTRO del lock de FundsStore, sobre el cash_usd del
+    fondo leido en ese instante: sin esto, dos retiros (o un retiro y una
+    compra) concurrentes sobre el mismo fondo podian leer el mismo cash_usd
+    desactualizado y, combinados, dejarlo negativo."""
+    if funds_store.get(fund_id) is None:
         raise HTTPException(status_code=404, detail="Fondo no encontrado.")
     if body.amount == 0:
         raise HTTPException(status_code=422, detail="El monto no puede ser cero.")
-    if body.amount < 0:
-        if -body.amount > fund.cash_usd:
-            raise HTTPException(
-                status_code=422,
-                detail=(
+
+    real_cash = None
+    if body.amount > 0:
+        if not state["connected"]:
+            raise HTTPException(status_code=503, detail="No conectado a IBKR.")
+        real_cash = (await broker.get_account_summary()).cash
+
+    def allocation_check(fund, already_allocated: float) -> None:
+        if body.amount < 0:
+            if -body.amount > fund.cash_usd:
+                raise FundValidationError(
                     f"El fondo '{fund.name}' solo tiene ${fund.cash_usd:,.2f} de cash "
                     "disponibles para retirar (no se puede retirar plata que esta en "
                     "posiciones abiertas; vende primero)."
-                ),
+                )
+        else:
+            _check_capital_allocation(
+                real_cash, body.amount, current_fund_cash=fund.cash_usd, already_allocated=already_allocated
             )
-    else:
-        if not state["connected"]:
-            raise HTTPException(status_code=503, detail="No conectado a IBKR.")
-        _validate_capital_allocation(body.amount, current_fund_cash=fund.cash_usd, exclude_fund_id=fund_id)
-    funds_store.apply_capital_flow(fund_id, body.amount, body.note)
+
+    try:
+        flow = funds_store.apply_capital_flow(fund_id, body.amount, body.note, allocation_check=allocation_check)
+    except FundValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if flow is None:
+        raise HTTPException(status_code=404, detail="Fondo no encontrado.")
     audit.record("fund_capital_flow", {"fund_id": fund_id, **body.model_dump()}, {})
     return _fund_view(funds_store.get(fund_id))
 

@@ -7,7 +7,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -28,6 +28,12 @@ class FundPosition(BaseModel):
     # ya ejecuto del lado del broker sin pasar por record_fill.
     opened_at: Optional[datetime] = None
     stop_loss_price: Optional[float] = None
+    # order_id de la orden stop-loss bracket colocada al ABRIR esta posicion
+    # (ver broker.place_order). Permite consultar broker.get_trade_fill() para
+    # reconciliar el precio de fill REAL cuando IBKR ejecuta el stop del lado
+    # del broker sin pasar por record_fill, en vez de aproximarlo solo con
+    # stop_loss_price (ver _check_fund_exit en main.py).
+    stop_order_id: Optional[int] = None
 
 
 class FundTrade(BaseModel):
@@ -136,6 +142,7 @@ class Fund(BaseModel):
         quantity: float,
         price: float,
         stop_loss_price: Optional[float] = None,
+        stop_order_id: Optional[int] = None,
     ) -> FundTrade:
         """Aplica una compra/venta ya ejecutada en el broker a la contabilidad
         del fondo: mueve cash_usd, actualiza la posicion (costo promedio en
@@ -153,6 +160,7 @@ class Fund(BaseModel):
             if pos.quantity == 0:
                 pos.opened_at = datetime.now(timezone.utc)
                 pos.stop_loss_price = stop_loss_price
+                pos.stop_order_id = stop_order_id
             new_qty = pos.quantity + quantity
             pos.avg_cost = (
                 (pos.avg_cost * pos.quantity + price * quantity) / new_qty if new_qty else 0.0
@@ -167,6 +175,7 @@ class Fund(BaseModel):
                 pos.avg_cost = 0.0
                 pos.opened_at = None
                 pos.stop_loss_price = None
+                pos.stop_order_id = None
             self.cash_usd += price * quantity
 
         trade = FundTrade(
@@ -180,6 +189,14 @@ class Fund(BaseModel):
         )
         self.trades.append(trade)
         return trade
+
+
+class FundValidationError(ValueError):
+    """Una validacion de `allocation_check` (ver FundsStore.create()/
+    apply_capital_flow()) fallo. Se levanta DENTRO de self._lock para que la
+    decision se tome sobre el estado mas actualizado posible, en vez de sobre
+    una lectura externa que otra llamada concurrente ya pudo haber invalidado."""
+    pass
 
 
 class FundsStore:
@@ -250,7 +267,24 @@ class FundsStore:
             encoding="utf-8",
         )
 
-    def create(self, name: str, initial_capital_usd: float, auto_trading_enabled: bool = False) -> Fund:
+    def create(
+        self,
+        name: str,
+        initial_capital_usd: float,
+        auto_trading_enabled: bool = False,
+        allocation_check: Optional[Callable[[float], None]] = None,
+    ) -> Fund:
+        """Crea un fondo. `allocation_check`, si se pasa, recibe la suma de
+        cash_usd ya asignado a OTROS fondos (calculada DENTRO de self._lock,
+        justo antes de crear) y puede levantar FundValidationError para
+        abortar la creacion sin tocar self.funds.
+
+        Validar dentro del lock (en vez de afuera, antes de llamar a create())
+        es lo que cierra la carrera: dos creaciones concurrentes que leyeran la
+        misma suma "ya asignada" desactualizada podian pasar la validacion
+        ambas y terminar asignando entre las dos mas cash a fondos que el cash
+        real disponible en la cuenta de IBKR.
+        """
         fund = Fund(
             id=str(uuid.uuid4()),
             name=name,
@@ -258,8 +292,10 @@ class FundsStore:
             auto_trading_enabled=auto_trading_enabled,
             created_at=datetime.now(timezone.utc),
         )
-        fund.apply_capital_flow(initial_capital_usd, note="Capital inicial")
         with self._lock:
+            if allocation_check is not None:
+                allocation_check(self.total_allocated_cash())
+            fund.apply_capital_flow(initial_capital_usd, note="Capital inicial")
             self.funds[fund.id] = fund
             self.save()
         return fund
@@ -285,11 +321,24 @@ class FundsStore:
             self.save()
             return fund
 
-    def apply_capital_flow(self, fund_id: str, amount: float, note: Optional[str] = None) -> CapitalFlow | None:
+    def apply_capital_flow(
+        self,
+        fund_id: str,
+        amount: float,
+        note: Optional[str] = None,
+        allocation_check: Optional[Callable[[Fund, float], None]] = None,
+    ) -> CapitalFlow | None:
+        """Aporta/retira capital. `allocation_check`, si se pasa, recibe el
+        Fund (ya bajo el lock, con su cash_usd actual) y la suma de cash_usd
+        ya asignado a OTROS fondos, y puede levantar FundValidationError --
+        misma razon que en create(): validar dentro del lock evita la carrera
+        con otra llamada concurrente sobre el mismo o otro fondo."""
         with self._lock:
             fund = self.funds.get(fund_id)
             if fund is None:
                 return None
+            if allocation_check is not None:
+                allocation_check(fund, self.total_allocated_cash(exclude_fund_id=fund_id))
             flow = fund.apply_capital_flow(amount, note)
             self.save()
             return flow
@@ -302,11 +351,12 @@ class FundsStore:
         quantity: float,
         price: float,
         stop_loss_price: Optional[float] = None,
+        stop_order_id: Optional[int] = None,
     ) -> FundTrade | None:
         with self._lock:
             fund = self.funds.get(fund_id)
             if fund is None:
                 return None
-            trade = fund.record_fill(symbol, side, quantity, price, stop_loss_price)
+            trade = fund.record_fill(symbol, side, quantity, price, stop_loss_price, stop_order_id)
             self.save()
             return trade

@@ -81,9 +81,14 @@ class IBKRBroker:
     def is_connected(self) -> bool:
         return self.ib.isConnected()
 
-    def get_account_summary(self) -> AccountSummary:
-        # Lectura de cache mantenido en background por ib_async; no requiere await.
-        tags = self.ib.accountSummary()
+    async def get_account_summary(self) -> AccountSummary:
+        # accountSummaryAsync espera a que el snapshot inicial este cargado en
+        # vez de leer el cache sincrono: self.ib.accountSummary() (sync) llama
+        # internamente a self._run(...) -> loop.run_until_complete() sobre el
+        # MISMO loop de uvicorn que ya esta corriendo, lo cual revienta con
+        # "This event loop is already running" en cada llamada desde un
+        # endpoint async. accountSummaryAsync corre en el loop existente.
+        tags = await self.ib.accountSummaryAsync()
         values = {t.tag: t.value for t in tags}
         net_liq = float(values.get("NetLiquidation", 0) or 0)
         cash = float(values.get("TotalCashValue", 0) or 0)
@@ -95,9 +100,19 @@ class IBKRBroker:
         # posicion, asi que usarlos subestima/sobreestima la perdida diaria real.
         daily_pnl = 0.0
         pnl_list = self.ib.pnl()
-        if pnl_list:
+        # Sin pnl_list (recien conectado, antes del primer callback de reqPnL)
+        # o con NetLiquidation 0 (cuenta sin datos), dailyPnL real es
+        # indeterminado: no hay forma de distinguir "perdida real de 0" de
+        # "todavia no llego el dato". pnl_data_available=False le indica a
+        # quien consuma esto (kill switch, RulesEngine) que no confie en
+        # daily_pnl/daily_pnl_pct.
+        pnl_data_available = bool(pnl_list) and net_liq != 0
+        if pnl_data_available:
             raw = pnl_list[0].dailyPnL
-            daily_pnl = float(raw) if raw is not None and raw == raw else 0.0  # filtra NaN
+            if raw is None or raw != raw:  # NaN: callback de reqPnL todavia no llego
+                pnl_data_available = False
+            else:
+                daily_pnl = float(raw)
         daily_pnl_pct = (daily_pnl / net_liq * 100) if net_liq else 0.0
         return AccountSummary(
             net_liquidation=net_liq,
@@ -105,6 +120,7 @@ class IBKRBroker:
             buying_power=buying_power,
             daily_pnl=daily_pnl,
             daily_pnl_pct=daily_pnl_pct,
+            pnl_data_available=pnl_data_available,
         )
 
     async def get_positions(self) -> list[Position]:
@@ -154,6 +170,51 @@ class IBKRBroker:
         price = tickers[0].marketPrice()
         return price if price == price else None  # filtra NaN
 
+    def get_trade_fill(self, order_id: int) -> tuple[str, float, float | None] | None:
+        """Estado y fill de una orden colocada esta sesion, por order_id.
+
+        self.ib.trades() solo cubre la sesion actual del proceso (se pierde en
+        un reconnect): limitacion aceptada, el seguimiento de fills es
+        best-effort dentro de la misma sesion en la que se coloco la orden.
+        Devuelve (status, filled_qty, avg_fill_price) o None si no se
+        encuentra la orden.
+        """
+        for trade in self.ib.trades():
+            if trade.order.orderId == order_id:
+                avg_price = trade.orderStatus.avgFillPrice
+                return (
+                    trade.orderStatus.status,
+                    trade.orderStatus.filled,
+                    avg_price if avg_price else None,
+                )
+        return None
+
+    async def _wait_for_fill(
+        self, order_id: int, timeout: float = 5.0, interval: float = 0.25
+    ) -> tuple[str, float, float | None] | None:
+        """Polea get_trade_fill(order_id) hasta que llegue a un estado
+        terminal (OrderStatus.DoneStates) o venza `timeout`.
+
+        Reemplaza los sleeps a ciegas que habia antes: con un sleep fijo, una
+        orden que tardaba mas en llenar (o se llenaba mas rapido) quedaba
+        registrada con el status/filled leido en un instante arbitrario, no
+        el del fill real. Si vence el timeout sin llegar a un estado
+        terminal, devuelve el ultimo estado visto (puede ser parcial o
+        todavia en curso) en vez de bloquear indefinidamente.
+        """
+        from ib_async.order import OrderStatus
+
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        result = None
+        while True:
+            result = self.get_trade_fill(order_id)
+            if result is not None and result[0] in OrderStatus.DoneStates:
+                return result
+            if loop.time() >= deadline:
+                return result
+            await asyncio.sleep(interval)
+
     async def place_order(self, order: OrderRequest) -> dict:
         contract = Stock(order.symbol, "SMART", "USD")
         await self.ib.qualifyContractsAsync(contract)
@@ -176,7 +237,10 @@ class IBKRBroker:
             stop.parentId = parent.orderId
             stop.transmit = True
             stop_trade = self.ib.placeOrder(contract, stop)
-            await asyncio.sleep(0.5)
+
+            # Espera el fill real del padre (hasta DoneStates) en vez de un
+            # sleep a ciegas: ver _wait_for_fill.
+            fill = await self._wait_for_fill(parent.orderId)
 
             # IBKR puede rechazar/cancelar el stop (precio invalido, regla del
             # mercado, etc). Si eso pasa, NO devolvemos "ok": la posicion padre
@@ -190,13 +254,31 @@ class IBKRBroker:
                     f"La orden principal (id {parent.orderId}) puede haber quedado activa SIN "
                     f"proteccion. Revisa la posicion manualmente en TWS antes de seguir operando."
                 )
+
+            status, filled_qty, avg_fill_price = fill if fill is not None else (
+                parent_trade.orderStatus.status,
+                parent_trade.orderStatus.filled,
+                parent_trade.orderStatus.avgFillPrice or None,
+            )
             return {
                 "order_id": parent.orderId,
                 "stop_order_id": stop.orderId,
-                "status": parent_trade.orderStatus.status,
+                "status": status,
                 "stop_status": stop_status,
+                "filled_qty": filled_qty,
+                "avg_fill_price": avg_fill_price,
             }
 
         trade = self.ib.placeOrder(contract, parent)
-        await asyncio.sleep(0.5)
-        return {"order_id": parent.orderId, "status": trade.orderStatus.status}
+        fill = await self._wait_for_fill(parent.orderId)
+        status, filled_qty, avg_fill_price = fill if fill is not None else (
+            trade.orderStatus.status,
+            trade.orderStatus.filled,
+            trade.orderStatus.avgFillPrice or None,
+        )
+        return {
+            "order_id": parent.orderId,
+            "status": status,
+            "filled_qty": filled_qty,
+            "avg_fill_price": avg_fill_price,
+        }
