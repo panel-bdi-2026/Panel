@@ -539,3 +539,55 @@ def test_roi_history_falls_back_to_last_trade_price_when_symbol_data_unavailable
     assert body["dates"] == ["2024-01-02", "2024-01-03"]
     assert body["fund_cumulative_return_pct"] == [0.0, 0.0]
     assert body["benchmark_cumulative_return_pct"] == [0.0, 1.0]
+
+
+# ---------------------------------------------------------------------------
+# POST /api/sectors/refresh
+# ---------------------------------------------------------------------------
+
+def test_refresh_sectors_rejects_missing_api_key():
+    resp = client.post("/api/sectors/refresh", json={"symbols": ["AAPL"]})
+    assert resp.status_code == 401
+
+
+def test_refresh_sectors_skips_already_classified_symbols(monkeypatch):
+    # AAPL ya esta en el mapeo estatico (app/sectors.py): no debe golpear
+    # refresh_sector ni aparecer en la respuesta, solo NEWCO (sin clasificar).
+    calls = []
+
+    def fake_refresh(symbol):
+        calls.append(symbol)
+        return "Information Technology"
+
+    monkeypatch.setattr(main_module, "refresh_sector", fake_refresh)
+    resp = client.post(
+        "/api/sectors/refresh",
+        json={"symbols": ["AAPL", "newco"]},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert resp.status_code == 200
+    assert calls == ["NEWCO"]
+    body = resp.json()
+    assert body["resolved"] == {"NEWCO": "Information Technology"}
+    assert body["unresolved"] == []
+
+
+def test_refresh_sectors_reports_unresolved_symbols(monkeypatch):
+    monkeypatch.setattr(main_module, "refresh_sector", lambda symbol: None)
+    resp = client.post(
+        "/api/sectors/refresh",
+        json={"symbols": ["NOCOVERAGE"]},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["resolved"] == {"NOCOVERAGE": None}
+    assert body["unresolved"] == ["NOCOVERAGE"]
+
+
+def test_refresh_sectors_defaults_to_screener_universe_when_no_symbols_given(monkeypatch):
+    main_module.screener_config.universe = ["NEWCO"]
+    monkeypatch.setattr(main_module, "refresh_sector", lambda symbol: "Energy")
+    resp = client.post("/api/sectors/refresh", json={}, headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+    assert resp.json()["resolved"] == {"NEWCO": "Energy"}

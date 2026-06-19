@@ -26,7 +26,7 @@ from .models import OrderRequest, OrderType, PendingOrder, Position, SignalResul
 from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
 from .screener_config import ScreenerConfig
-from .sectors import get_sector
+from .sectors import get_sector, refresh_sector
 from .state_store import load_state, save_state
 from .strategies import STRATEGY_CLASSES, reload_strategy_registry
 
@@ -777,6 +777,34 @@ async def scan_signals(force: bool = False, strategy_id: str | None = None, _: N
         raise HTTPException(status_code=502, detail=f"Error al escanear el mercado: {exc}")
     signal_cache[resolved_id] = {"as_of": now, "results": [r.model_dump() for r in results]}
     return {"as_of": now, "cached": False, "results": signal_cache[resolved_id]["results"]}
+
+
+class SectorRefreshRequest(BaseModel):
+    symbols: Optional[list[str]] = None
+
+
+@app.post("/api/sectors/refresh")
+async def refresh_sectors(body: SectorRefreshRequest, _: None = Depends(require_api_key)):
+    """Resuelve en vivo (yfinance) el sector de los simbolos sin clasificar
+    (ver app/sectors.py: get_sector()/refresh_sector()). Pensado para usarse
+    despues de agregar un ticker nuevo al universo desde el dashboard, ya que
+    el mapeo estatico TICKER_SECTOR no lo va a tener todavia.
+
+    Sin `symbols` en el body, refresca el universo configurado completo (solo
+    los simbolos sin sector conocido; los ya clasificados no se re-consultan).
+
+    Requiere API key y comparte _market_scan_lock con scan_signals/backtest:
+    golpea la misma API de datos de terceros por simbolo."""
+    symbols = body.symbols if body.symbols is not None else screener_config.universe
+    targets = sorted({s.upper() for s in symbols if get_sector(s) is None})
+    resolved: dict[str, Optional[str]] = {}
+    async with _market_scan_lock:
+        for symbol in targets:
+            resolved[symbol] = await asyncio.to_thread(refresh_sector, symbol)
+    return {
+        "resolved": resolved,
+        "unresolved": [s for s, sector in resolved.items() if sector is None],
+    }
 
 
 _BACKTEST_RUNNERS = {

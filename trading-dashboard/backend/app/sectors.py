@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+import yfinance as yf
+
 # Mapeo estatico ticker -> sector GICS (uno de los 11 sectores estandar).
 # Estatico (no se consulta por red) a proposito: RulesEngine.evaluate() es
 # sincrono y sin llamadas de red por diseno (ver rules.py), y el limite de
@@ -623,5 +625,60 @@ _VALID_SECTORS = frozenset({
 
 
 def get_sector(symbol: str) -> Optional[str]:
-    """Sector GICS de `symbol`, o None si no esta clasificado todavia."""
-    return TICKER_SECTOR.get(symbol.upper())
+    """Sector GICS de `symbol`, o None si no esta clasificado todavia.
+
+    No golpea la red: ademas del mapeo estatico (curado a mano), consulta
+    `_runtime_sector_cache`, poblado unicamente por `refresh_sector()`/el
+    endpoint "refrescar sectores" del dashboard. Esto preserva la garantia de
+    RulesEngine.evaluate() (sincrono, sin red) sin perder la clasificacion de
+    un ticker nuevo una vez que alguien la pidio explicitamente."""
+    key = symbol.upper()
+    sector = TICKER_SECTOR.get(key)
+    if sector is not None:
+        return sector
+    return _runtime_sector_cache.get(key)
+
+
+# Yahoo Finance (yfinance .info["sector"]) usa su propia taxonomia (Morningstar),
+# distinta en nombres de los 11 sectores GICS estandar que usa el resto del
+# codigo (_VALID_SECTORS). Se traduce aca para que un ticker resuelto en vivo
+# sea indistinguible, para RulesEngine y el frontend, de uno del mapeo estatico.
+_YFINANCE_SECTOR_MAP: dict[str, str] = {
+    "Technology": "Information Technology",
+    "Healthcare": "Health Care",
+    "Financial Services": "Financials",
+    "Consumer Cyclical": "Consumer Discretionary",
+    "Consumer Defensive": "Consumer Staples",
+    "Industrials": "Industrials",
+    "Energy": "Energy",
+    "Utilities": "Utilities",
+    "Real Estate": "Real Estate",
+    "Basic Materials": "Materials",
+    "Communication Services": "Communication Services",
+}
+
+# Cache de tickers resueltos en vivo (ver refresh_sector). Separado de
+# TICKER_SECTOR (el mapeo curado a mano) para no mezclar datos verificados con
+# datos de mejor esfuerzo provenientes de una API de terceros sin garantias.
+_runtime_sector_cache: dict[str, Optional[str]] = {}
+
+
+def refresh_sector(symbol: str) -> Optional[str]:
+    """Resuelve el sector de `symbol` contra Yahoo Finance y lo cachea en
+    `_runtime_sector_cache` para que `get_sector()` lo siga devolviendo sin
+    red. Pensado para tickers nuevos que el usuario agrega al universo desde
+    el dashboard y que todavia no estan en el mapeo estatico TICKER_SECTOR.
+
+    Llamada explicita y fuera del camino caliente de RulesEngine (ver
+    docstring de get_sector): quien la invoca (el endpoint
+    POST /api/sectors/refresh) es responsable de no llamarla desde codigo
+    sincrono que deba permanecer libre de red."""
+    key = symbol.upper()
+    try:
+        info = yf.Ticker(symbol).get_info() or {}
+    except Exception:
+        info = {}
+    raw_sector = info.get("sector")
+    sector = _YFINANCE_SECTOR_MAP.get(raw_sector) if raw_sector else None
+    _runtime_sector_cache[key] = sector
+    return sector
