@@ -7,7 +7,7 @@ import pandas as pd
 
 from .indicators import atr, pct_from_high, rate_of_change, rsi, sma
 from .market_data import MarketDataError, get_daily_bars
-from .models import BacktestSummary, BacktestTrade, EquityCurvePoint
+from .models import BacktestSummary, BacktestTrade, EquityCurvePoint, WalkForwardFold, WalkForwardResult
 from .screener_config import ScreenerConfig
 
 
@@ -246,12 +246,13 @@ def _simulate_symbol_opportunistic(
     return trades
 
 
-def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
-    """Backtest de la estrategia Oportunista, en paralelo a run_backtest
-    (Momentum). Misma estructura y mismas simplificaciones documentadas ahi
-    (curva de equity diaria con cupo top_n, sin supervivencia historica del
-    universo); aca solo cambia la logica de entrada/salida por simbolo (ver
-    _simulate_symbol_opportunistic)."""
+def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], dict, pd.DataFrame]:
+    """Simula la estrategia Oportunista sobre todo el universo configurado y
+    devuelve las operaciones resultantes (ya capadas a top_n posiciones
+    concurrentes), el dict de marcas diarias por operacion (ver
+    _trade_daily_marks) y la historia del benchmark. Separado de
+    run_opportunistic_backtest para que run_opportunistic_backtest_walk_forward
+    pueda reusar la misma simulacion sin volver a pedir datos de mercado."""
     history_days = int(cfg.backtest_years * 365)
 
     all_trades: list[BacktestTrade] = []
@@ -282,7 +283,25 @@ def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     except MarketDataError as exc:
         raise BacktestError(str(exc)) from exc
 
+    return all_trades, marks_by_trade_id, bench_bars
+
+
+def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
+    """Backtest de la estrategia Oportunista, en paralelo a run_backtest
+    (Momentum). Misma estructura y mismas simplificaciones documentadas ahi
+    (curva de equity diaria real con cupo top_n, sin supervivencia historica
+    del universo); aca solo cambia la logica de entrada/salida por simbolo
+    (ver _simulate_symbol_opportunistic)."""
+    all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg)
     return _compute_summary_stats(all_trades, cfg.top_n, bench_bars, marks_by_trade_id)
+
+
+def run_opportunistic_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 3) -> WalkForwardResult:
+    """Validacion out-of-sample de la estrategia Oportunista. Ver docstring de
+    run_backtest_walk_forward (Momentum) para el alcance y las limitaciones:
+    misma logica, solo cambia la simulacion subyacente."""
+    all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg)
+    return _build_walk_forward_result(all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds)
 
 
 def cap_concurrent_positions(trades: list[BacktestTrade], top_n: int) -> list[BacktestTrade]:
@@ -451,32 +470,66 @@ def _compute_summary_stats(
     )
 
 
-def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
-    """Backtest simplificado de la estrategia momentum sobre el universo configurado.
+def _build_walk_forward_result(
+    all_trades: list[BacktestTrade],
+    top_n: int,
+    bench_bars: pd.DataFrame,
+    marks_by_trade_id: dict,
+    n_folds: int,
+) -> WalkForwardResult:
+    """Particiona [primera_entrada, ultima_salida] del benchmark en n_folds
+    ventanas consecutivas de igual duracion calendario (no de igual cantidad
+    de operaciones) y corre _compute_summary_stats por separado en cada una,
+    asignando cada operacion a un fold por su entry_date (nunca se parte una
+    operacion entre dos folds). Reusa all_trades/marks_by_trade_id/bench_bars
+    ya generados por _collect_momentum_trades / _collect_opportunistic_trades:
+    no vuelve a simular ni a pedir datos de mercado.
 
-    La curva de equity, el max_drawdown_pct y el sharpe_ratio se calculan dia
-    por dia sobre una cartera con cupo para top_n posiciones concurrentes (ver
-    _daily_equity_curve): una posicion abierta aporta su retorno no realizado
-    a la curva todos los dias que esta abierta (no solo en su cierre), usando
-    el cierre real de mercado de cada dia (ver _trade_daily_marks), asi que el
-    drawdown combinado de operaciones solapadas en el tiempo queda reflejado
-    con el camino de precio real, no una aproximacion. El sharpe_ratio se
-    anualiza con sqrt(252) sobre esos retornos diarios, igual que un Sharpe
-    convencional.
+    Un fold sin operaciones (o cuyo tramo de benchmark no tiene barras, en los
+    bordes) no puede pasar por _compute_summary_stats (asume al menos una
+    operacion); para esos casos devuelve un WalkForwardFold con total_trades=0
+    y el resto de las metricas en None en vez de fallar."""
+    full_start, full_end = bench_bars.index[0], bench_bars.index[-1]
+    total_seconds = (full_end - full_start).total_seconds()
+    bounds = [full_start + pd.Timedelta(seconds=total_seconds * i / n_folds) for i in range(n_folds + 1)]
 
-    Simplificaciones explicitas que siguen sin modelarse (no es un backtester
-    de produccion): el universo de simbolos es el configurado HOY (sin
-    supervivencia historica -- una accion que quebro o fue excluida del
-    indice durante el periodo analizado no aparece, lo que tipicamente infla
-    el resultado frente a la realidad de esa epoca). Si modela comision/
-    slippage estimados y un fill de stop-loss realista (minimo intradiario, no
-    el cierre), y entra a la apertura del dia siguiente a la senal (no al
-    cierre del mismo dia, que seria mirar al futuro). Esto ultimo lo hace mas
-    conservador que el motor de auto-trading en vivo, que coloca la orden ya
-    con el ultimo cierre conocido en el mismo ciclo de scan. Sirve para
-    validar la direccion de la idea antes de arriesgar capital real, no como
-    promesa de resultados futuros.
-    """
+    folds: list[WalkForwardFold] = []
+    for i in range(n_folds):
+        fold_start, fold_end = bounds[i], bounds[i + 1]
+        is_last = i == n_folds - 1
+        fold_trades = [
+            t
+            for t in all_trades
+            if fold_start <= t.entry_date and (t.entry_date <= fold_end if is_last else t.entry_date < fold_end)
+        ]
+        fold_bench_bars = bench_bars.loc[fold_start:fold_end]
+        if not fold_trades or fold_bench_bars.empty:
+            folds.append(WalkForwardFold(start_date=fold_start, end_date=fold_end, total_trades=len(fold_trades)))
+            continue
+        summary = _compute_summary_stats(fold_trades, top_n, fold_bench_bars, marks_by_trade_id)
+        folds.append(
+            WalkForwardFold(
+                start_date=fold_start,
+                end_date=fold_end,
+                total_trades=summary.total_trades,
+                win_rate_pct=summary.win_rate_pct,
+                avg_return_pct=summary.avg_return_pct,
+                strategy_cumulative_return_pct=summary.strategy_cumulative_return_pct,
+                benchmark_cumulative_return_pct=summary.benchmark_cumulative_return_pct,
+                max_drawdown_pct=summary.max_drawdown_pct,
+                sharpe_ratio=summary.sharpe_ratio,
+            )
+        )
+    return WalkForwardResult(n_folds=n_folds, folds=folds)
+
+
+def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], dict, pd.DataFrame]:
+    """Simula la estrategia Momentum sobre todo el universo configurado y
+    devuelve las operaciones resultantes (ya capadas a top_n posiciones
+    concurrentes), el dict de marcas diarias por operacion (ver
+    _trade_daily_marks) y la historia del benchmark. Separado de run_backtest
+    para que run_backtest_walk_forward pueda reusar la misma simulacion sin
+    volver a pedir datos de mercado."""
     history_days = int(cfg.backtest_years * 365)
 
     try:
@@ -528,4 +581,57 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
 
+    return all_trades, marks_by_trade_id, bench_bars
+
+
+def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
+    """Backtest simplificado de la estrategia momentum sobre el universo configurado.
+
+    La curva de equity, el max_drawdown_pct y el sharpe_ratio se calculan dia
+    por dia sobre una cartera con cupo para top_n posiciones concurrentes (ver
+    _daily_equity_curve): una posicion abierta aporta su retorno no realizado
+    a la curva todos los dias que esta abierta (no solo en su cierre), usando
+    el cierre real de mercado de cada dia (ver _trade_daily_marks), asi que el
+    drawdown combinado de operaciones solapadas en el tiempo queda reflejado
+    con el camino de precio real, no una aproximacion. El sharpe_ratio se
+    anualiza con sqrt(252) sobre esos retornos diarios, igual que un Sharpe
+    convencional.
+
+    Simplificaciones explicitas que siguen sin modelarse (no es un backtester
+    de produccion): el universo de simbolos es el configurado HOY (sin
+    supervivencia historica -- una accion que quebro o fue excluida del
+    indice durante el periodo analizado no aparece, lo que tipicamente infla
+    el resultado frente a la realidad de esa epoca). Si modela comision/
+    slippage estimados y un fill de stop-loss realista (minimo intradiario, no
+    el cierre), y entra a la apertura del dia siguiente a la senal (no al
+    cierre del mismo dia, que seria mirar al futuro). Esto ultimo lo hace mas
+    conservador que el motor de auto-trading en vivo, que coloca la orden ya
+    con el ultimo cierre conocido en el mismo ciclo de scan. Sirve para
+    validar la direccion de la idea antes de arriesgar capital real, no como
+    promesa de resultados futuros.
+    """
+    all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg)
     return _compute_summary_stats(all_trades, cfg.top_n, bench_bars, marks_by_trade_id)
+
+
+def run_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 3) -> WalkForwardResult:
+    """Validacion out-of-sample de los thresholds configurados (RSI, SMAs,
+    ATR, filtros de regimen/52 semanas, etc.): particiona el periodo operado
+    en n_folds ventanas consecutivas de igual duracion calendario y calcula
+    las metricas resumen de cada una por separado (ver
+    _build_walk_forward_result), sin volver a pedir ni simular nada (reusa
+    las mismas operaciones que generaria run_backtest sobre todo el periodo).
+
+    Util para detectar si el resultado del backtest completo esta
+    concentrado en un tramo de tiempo favorable puntual (ej. un solo mercado
+    alcista) en vez de sostenerse a traves de distintos regimenes -- algo que
+    el resumen de todo el periodo de una sola vez no puede mostrar.
+
+    Importante: esto NO es walk-forward optimization en el sentido clasico.
+    No hay refitting de parametros por ventana -- los thresholds configurados
+    son siempre los mismos en todos los folds, porque esta herramienta no
+    hace optimizacion de parametros. "Out of sample" aca significa: ¿el mismo
+    set de reglas fijo (el que ya esta configurado) se sostiene en distintos
+    tramos de tiempo, o gano todo en un solo tramo favorable?"""
+    all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg)
+    return _build_walk_forward_result(all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds)

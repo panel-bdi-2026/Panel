@@ -259,9 +259,25 @@ la API gratuita de datos).
   modela el efecto del cash sin invertir cuando hay menos de `top_n`
   posiciones abiertas. Sirve para validar la dirección de la idea, no como
   promesa de resultados futuros.
+- **Validación out-of-sample** (`GET /api/signals/backtest/walk-forward`):
+  corre el mismo backtest **una sola vez** (no vuelve a pedir datos de
+  mercado) y parte el período resultante en `n_folds` tramos consecutivos de
+  igual duración calendario (3 por defecto, configurable entre 2 y 12),
+  devolviendo las métricas resumen de cada tramo por separado. Sirve para
+  detectar si el resultado del backtest completo está concentrado en un
+  tramo de tiempo favorable puntual (ej. un solo mercado alcista) en vez de
+  sostenerse a través de distintos períodos — algo que el resumen de todo el
+  período de una sola vez no puede mostrar. **No es walk-forward
+  optimization** en el sentido clásico: no hay re-ajuste de parámetros por
+  ventana, porque esta herramienta no hace optimización de parámetros. Los
+  thresholds configurados (RSI, SMAs, ATR, filtros de régimen/52 semanas,
+  etc.) son siempre los mismos en todos los tramos — la pregunta que responde
+  es si ese mismo set de reglas fijo se sostiene en distintos tramos de
+  tiempo, no si existe una mejor combinación de parámetros.
 - **Endpoints**: `GET /api/signals/scan` (lista rankeada, cacheada),
-  `GET /api/signals/backtest`, `GET/PUT /api/signals/config` (el `PUT`
-  requiere `X-API-Key`, igual que `/api/rules`).
+  `GET /api/signals/backtest`, `GET /api/signals/backtest/walk-forward`,
+  `GET/PUT /api/signals/config` (el `PUT` requiere `X-API-Key`, igual que
+  `/api/rules`).
 - Edita `universe`, las ventanas de momentum/RSI/SMA, el multiplicador de ATR
   para el stop, etc. en `screener.yaml` (o vía `PUT /api/signals/config`).
 

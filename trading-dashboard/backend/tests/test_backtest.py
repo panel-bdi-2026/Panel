@@ -686,3 +686,77 @@ def test_opportunistic_backtest_raises_when_no_trades_generated(monkeypatch):
 
     with pytest.raises(BacktestError):
         backtest_module.run_opportunistic_backtest(config)
+
+
+def _bench_bars_2024(n_days=11):
+    idx = pd.date_range("2024-01-01", periods=n_days, freq="D")
+    close = pd.Series([100.0 + i for i in range(n_days)], index=idx)
+    return pd.DataFrame(
+        {"Open": close, "High": close + 1, "Low": close - 1, "Close": close, "Volume": 5_000_000},
+        index=idx,
+    )
+
+
+def test_build_walk_forward_result_boundary_trade_goes_to_next_fold_not_previous():
+    from app.backtest import _build_walk_forward_result
+    # 11 dias (01-01..01-11): con n_folds=2 el limite cae exacto en 01-06 (mitad
+    # de los 10 dias entre el primer y el ultimo). Una operacion que entra
+    # justo ahi debe quedar en el segundo fold (limite inferior inclusivo), no
+    # en el primero (limite superior exclusivo, salvo en el ultimo fold).
+    bench_bars = _bench_bars_2024()
+    trades = [
+        _trade("A", 6, 7, return_pct=1.0),
+        _trade("B", 2, 3, return_pct=2.0),
+        _trade("C", 9, 10, return_pct=-1.0),
+    ]
+    result = _build_walk_forward_result(trades, top_n=10, bench_bars=bench_bars, marks_by_trade_id={}, n_folds=2)
+    assert result.n_folds == 2
+    assert result.folds[0].total_trades == 1  # solo B
+    assert result.folds[1].total_trades == 2  # A (en el limite) y C
+
+
+def test_build_walk_forward_result_handles_fold_with_no_trades():
+    from app.backtest import _build_walk_forward_result
+    bench_bars = _bench_bars_2024()
+    trades = [_trade("A", 1, 2, return_pct=5.0)]  # solo cae en el primer fold
+    result = _build_walk_forward_result(trades, top_n=10, bench_bars=bench_bars, marks_by_trade_id={}, n_folds=2)
+    assert result.folds[0].total_trades == 1
+    assert result.folds[0].win_rate_pct is not None
+    assert result.folds[1].total_trades == 0
+    assert result.folds[1].win_rate_pct is None
+    assert result.folds[1].sharpe_ratio is None
+
+
+def test_run_backtest_walk_forward_partitions_all_trades_without_loss(patched_market_data):
+    config = ScreenerConfig(universe=["MOM", "FLAT"], benchmark_symbol="SPY", backtest_years=1)
+    full_summary = run_backtest(config)
+    result = backtest_module.run_backtest_walk_forward(config, n_folds=3)
+    assert result.n_folds == 3
+    assert len(result.folds) == 3
+    # cada operacion del backtest completo cae en exactamente un fold.
+    assert sum(f.total_trades for f in result.folds) == full_summary.total_trades
+    for i in range(len(result.folds) - 1):
+        assert result.folds[i].end_date == result.folds[i + 1].start_date
+
+
+def test_opportunistic_backtest_walk_forward_partitions_all_trades_without_loss(monkeypatch):
+    bars = _opportunistic_oscillating_bars()
+    bench_bars = _bars([100.0] * len(bars))
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol == "SPY":
+            return bench_bars
+        if symbol == "OPP":
+            return bars
+        raise MarketDataError("no data")
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+    config = _opportunistic_cfg()
+    config = config.model_copy(update={"benchmark_symbol": "SPY", "backtest_years": 1})
+
+    full_summary = backtest_module.run_opportunistic_backtest(config)
+    result = backtest_module.run_opportunistic_backtest_walk_forward(config, n_folds=3)
+
+    assert result.n_folds == 3
+    assert len(result.folds) == 3
+    assert sum(f.total_trades for f in result.folds) == full_summary.total_trades

@@ -17,7 +17,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .audit import AuditLog
-from .backtest import BacktestError, run_backtest, run_opportunistic_backtest
+from .backtest import (
+    BacktestError,
+    run_backtest,
+    run_backtest_walk_forward,
+    run_opportunistic_backtest,
+    run_opportunistic_backtest_walk_forward,
+)
 from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
 from .funds import FundsStore, FundValidationError
@@ -948,21 +954,16 @@ _BACKTEST_RUNNERS = {
     "opportunistic": run_opportunistic_backtest,
 }
 
+_WALK_FORWARD_RUNNERS = {
+    "momentum": run_backtest_walk_forward,
+    "opportunistic": run_opportunistic_backtest_walk_forward,
+}
 
-@app.get("/api/signals/backtest")
-async def backtest_strategy(strategy_id: str | None = None, _: None = Depends(require_api_key)):
-    """Backtest simplificado sobre el universo configurado, de la estrategia
-    indicada (default la persistida en screener_config). Ver docstring de
-    run_backtest()/run_opportunistic_backtest() para las simplificaciones
-    asumidas (sin comisiones/slippage, curva de equity aproximada).
 
-    Largo plazo y Dividendos NO son backtesteables (supports_backtest=False):
-    sin historia point-in-time de fundamentales en yfinance gratuito no hay
-    forma de simular sus filtros en el pasado sin inventar datos.
-
-    Requiere API key: es la operacion mas pesada del backend (descarga anos de
-    historia de todo el universo), dejarla abierta seria un vector de DoS.
-    async + asyncio.to_thread + lock por el mismo motivo que scan_signals."""
+def _resolve_backtestable_strategy(strategy_id: str | None):
+    """Resuelve y valida un strategy_id para los dos endpoints de backtest
+    (resumen y walk-forward): mismas reglas en ambos (default a la estrategia
+    persistida, 422 si no existe o no es backtesteable)."""
     resolved_id = strategy_id or screener_config.strategy_id
     strategy = strategy_registry.get(resolved_id)
     if strategy is None:
@@ -976,10 +977,57 @@ async def backtest_strategy(strategy_id: str | None = None, _: None = Depends(re
                 "datos gratuita. Solo esta disponible para escaneo en vivo."
             ),
         )
+    return resolved_id
+
+
+@app.get("/api/signals/backtest")
+async def backtest_strategy(strategy_id: str | None = None, _: None = Depends(require_api_key)):
+    """Backtest simplificado sobre el universo configurado, de la estrategia
+    indicada (default la persistida en screener_config). Ver docstring de
+    run_backtest()/run_opportunistic_backtest() para las simplificaciones
+    asumidas (curva de equity diaria real con cupo top_n, comision/slippage
+    estimados, sin supervivencia historica del universo).
+
+    Largo plazo y Dividendos NO son backtesteables (supports_backtest=False):
+    sin historia point-in-time de fundamentales en yfinance gratuito no hay
+    forma de simular sus filtros en el pasado sin inventar datos.
+
+    Requiere API key: es la operacion mas pesada del backend (descarga anos de
+    historia de todo el universo), dejarla abierta seria un vector de DoS.
+    async + asyncio.to_thread + lock por el mismo motivo que scan_signals."""
+    resolved_id = _resolve_backtestable_strategy(strategy_id)
     runner = _BACKTEST_RUNNERS[resolved_id]
     try:
         async with _market_scan_lock:
             return await asyncio.to_thread(runner, screener_config)
+    except BacktestError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except MarketDataError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/api/signals/backtest/walk-forward")
+async def backtest_strategy_walk_forward(
+    strategy_id: str | None = None,
+    n_folds: int = Query(default=3, ge=2, le=12),
+    _: None = Depends(require_api_key),
+):
+    """Validacion out-of-sample del backtest: corre la misma simulacion que
+    /api/signals/backtest pero particiona el periodo en n_folds tramos de
+    igual duracion calendario y devuelve las metricas resumen de cada tramo
+    por separado. Ver docstring de run_backtest_walk_forward() /
+    run_opportunistic_backtest_walk_forward() para el alcance -- en
+    particular, esto NO es walk-forward optimization (no hay refitting de
+    parametros por ventana, los thresholds configurados son siempre los
+    mismos en todos los folds).
+
+    Mismas reglas de strategy_id y mismo costo/lock que /api/signals/backtest
+    (la simulacion subyacente es la misma, solo se la corta en tramos)."""
+    resolved_id = _resolve_backtestable_strategy(strategy_id)
+    runner = _WALK_FORWARD_RUNNERS[resolved_id]
+    try:
+        async with _market_scan_lock:
+            return await asyncio.to_thread(runner, screener_config, n_folds)
     except BacktestError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except MarketDataError as exc:

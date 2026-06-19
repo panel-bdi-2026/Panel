@@ -200,6 +200,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
             <select id="strategySelect" class="fs" style="width:auto;padding:6px 8px;font-size:12px" onchange="onStrategyChange()"></select>
             <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="scanSignals(true)">↻ Escanear</button>
             <button class="btn btn-ghost" id="backtestBtn" style="background:var(--bg);color:var(--muted)" onclick="runBacktest()">📊 Backtest</button>
+            <button class="btn btn-ghost" id="walkForwardBtn" style="background:var(--bg);color:var(--muted)" onclick="runWalkForward()">🧪 Validación out-of-sample</button>
           </div>
         </div>
         <div class="card-body">
@@ -223,6 +224,9 @@ td{padding:8px;border-bottom:1px solid var(--border)}
           <div id="backtestBox" class="muted-sm" style="margin-top:10px;display:none;background:var(--bg);padding:10px;border-radius:var(--r2)">
             <div id="backtestStats"></div>
             <div class="chart-wrap" id="backtestChartWrap" style="display:none"><canvas id="backtestChart"></canvas></div>
+          </div>
+          <div id="walkForwardBox" class="muted-sm" style="margin-top:10px;display:none;background:var(--bg);padding:10px;border-radius:var(--r2)">
+            <div id="walkForwardStats"></div>
           </div>
         </div>
       </div>
@@ -1425,13 +1429,16 @@ async function loadStrategies(){
 function applyStrategyUi(){
   const strat = STRATEGIES.find(s => s.id === currentStrategyId);
   document.getElementById('radarTitle').textContent = 'Radar de oportunidades' + (strat ? ` (${strat.name})` : '');
-  document.getElementById('backtestBtn').style.display = (strat && strat.supports_backtest) ? '' : 'none';
+  const showBacktest = (strat && strat.supports_backtest) ? '' : 'none';
+  document.getElementById('backtestBtn').style.display = showBacktest;
+  document.getElementById('walkForwardBtn').style.display = showBacktest;
 }
 
 function onStrategyChange(){
   currentStrategyId = document.getElementById('strategySelect').value;
   applyStrategyUi();
   document.getElementById('backtestBox').style.display = 'none';
+  document.getElementById('walkForwardBox').style.display = 'none';
   document.getElementById('signalSearch').value = '';
   signalSearchQuery = '';
   scanSignals(false);
@@ -1612,6 +1619,35 @@ async function runBacktest(){
     }
   }catch(e){
     stats.textContent = 'Error al correr el backtest: ' + e.message;
+  }
+}
+
+async function runWalkForward(){
+  const box = document.getElementById('walkForwardBox');
+  const stats = document.getElementById('walkForwardStats');
+  box.style.display = 'block';
+  stats.textContent = 'Corriendo validación out-of-sample (corre el mismo backtest una vez y lo divide en tramos; puede tardar)…';
+  try{
+    const r = await api(`/api/signals/backtest/walk-forward?strategy_id=${encodeURIComponent(currentStrategyId)}`, { auth:true });
+    const rows = r.folds.map((f, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${new Date(f.start_date).toLocaleDateString()} → ${new Date(f.end_date).toLocaleDateString()}</td>
+        <td>${f.total_trades}</td>
+        <td>${f.win_rate_pct ?? '—'}${f.win_rate_pct != null ? '%' : ''}</td>
+        <td>${f.strategy_cumulative_return_pct ?? '—'}${f.strategy_cumulative_return_pct != null ? '%' : ''}</td>
+        <td>${f.benchmark_cumulative_return_pct ?? '—'}${f.benchmark_cumulative_return_pct != null ? '%' : ''}</td>
+        <td>${f.max_drawdown_pct ?? '—'}${f.max_drawdown_pct != null ? '%' : ''}</td>
+        <td>${f.sharpe_ratio ?? '—'}</td>
+      </tr>`).join('');
+    stats.innerHTML = `
+      <p class="muted-sm" style="margin-bottom:8px"><b>Validación out-of-sample (${r.n_folds} tramos)</b>: corre el backtest UNA sola vez con los thresholds ya configurados y lo parte en tramos consecutivos de igual duración calendario, para ver si el resultado se sostiene en distintos períodos o se concentra en uno solo. No es walk-forward optimization: no se reajusta ningún parámetro por tramo.</p>
+      <table>
+        <thead><tr><th>Tramo</th><th>Período</th><th>Operaciones</th><th>Win rate</th><th>Retorno estrategia</th><th>Retorno benchmark</th><th>Max drawdown</th><th>Sharpe</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }catch(e){
+    stats.textContent = 'Error al correr la validación out-of-sample: ' + e.message;
   }
 }
 

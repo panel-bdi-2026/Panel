@@ -187,3 +187,22 @@ class BacktestSummary(BaseModel):
     avg_exposure_pct: float = 0.0
     trades: list[BacktestTrade] = []
     equity_curve: list[EquityCurvePoint] = []
+
+
+class WalkForwardFold(BaseModel):
+    start_date: datetime
+    end_date: datetime
+    total_trades: int
+    # None cuando el fold no tuvo ninguna operacion: con 0 trades estas
+    # metricas no estan definidas (ver _build_walk_forward_result).
+    win_rate_pct: Optional[float] = None
+    avg_return_pct: Optional[float] = None
+    strategy_cumulative_return_pct: Optional[float] = None
+    benchmark_cumulative_return_pct: Optional[float] = None
+    max_drawdown_pct: Optional[float] = None
+    sharpe_ratio: Optional[float] = None
+
+
+class WalkForwardResult(BaseModel):
+    n_folds: int
+    folds: list[WalkForwardFold]
