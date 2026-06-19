@@ -6,49 +6,59 @@
 <title>Trading Dashboard · IBKR</title>
 <style>
 :root{
-  --primary:#012169;--primary-mid:#0073CF;--bg:#f0f4f8;--card:#fff;--border:#c8d8ec;
-  --text:#1a2636;--muted:#64748b;--sh:0 1px 3px rgba(0,0,0,.09),0 1px 2px rgba(0,0,0,.06);
-  --sh2:0 4px 12px rgba(0,0,0,.10),0 2px 4px rgba(0,0,0,.06);--r:10px;--r2:6px;
-  --green:#16a34a;--green-bg:#f0fdf4;--red:#dc2626;--red-bg:#fef2f2;--amber:#d97706;--amber-bg:#fffbeb;
+  color-scheme:dark;
+  --primary:#22d3ee;--primary-mid:#67e8f9;--on-primary:#03141c;
+  --bg:#080b11;--card:#10141d;--card2:#161c28;--border:#222a3a;
+  --text:#dfe6f3;--muted:#7b87a0;--sh:0 1px 3px rgba(0,0,0,.5),0 1px 2px rgba(0,0,0,.4);
+  --sh2:0 10px 30px rgba(0,0,0,.6),0 2px 8px rgba(0,0,0,.5);--r:10px;--r2:6px;
+  --green:#2dd06a;--green-bg:rgba(45,208,106,.12);--red:#f4495e;--red-bg:rgba(244,73,94,.12);
+  --amber:#f0a92e;--amber-bg:rgba(240,169,46,.12);
+  --mono:ui-monospace,'SF Mono','Cascadia Mono','Roboto Mono',Consolas,monospace;
 }
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text)}
-.hdr{background:linear-gradient(135deg,#012169 0%,#013fa0 60%,#0073CF 100%);color:#fff;
+body{font-family:-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;background:var(--bg);color:var(--text)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:6px}
+::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+code{background:var(--card2);color:var(--primary-mid);padding:1px 5px;border-radius:4px;font-family:var(--mono);font-size:.92em}
+.hdr{background:linear-gradient(180deg,#0c1019 0%,#080b11 100%);color:var(--text);border-bottom:1px solid var(--border);
   padding:14px 28px;display:flex;align-items:center;justify-content:space-between;
-  box-shadow:0 2px 8px rgba(0,0,0,.25);flex-wrap:wrap;gap:10px}
-.hdr-l h1{font-size:18px;font-weight:700}
-.hdr-l p{font-size:12px;opacity:.7;margin-top:2px}
+  box-shadow:0 4px 18px rgba(0,0,0,.5);flex-wrap:wrap;gap:10px}
+.hdr-l h1{font-size:17px;font-weight:700;font-family:var(--mono);letter-spacing:.01em;color:var(--primary)}
+.hdr-l p{font-size:12px;opacity:.75;margin-top:2px;color:var(--muted);font-family:var(--mono)}
 .hdr-r{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.badge{font-size:11px;font-weight:800;padding:5px 11px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}
-.badge.paper{background:#dbeafe;color:#1d4ed8}
-.badge.live{background:#fee2e2;color:#b91c1c;animation:pulse 1.4s infinite}
+.badge{font-size:11px;font-weight:800;padding:5px 11px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em;font-family:var(--mono)}
+.badge.paper{background:rgba(34,211,238,.14);color:var(--primary-mid)}
+.badge.live{background:rgba(244,73,94,.16);color:#fb7185;animation:pulse 1.4s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
-.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:5px}
-.dot.on{background:#22c55e}.dot.off{background:#ef4444}
-.conn{font-size:12px;display:flex;align-items:center;background:rgba(255,255,255,.12);
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:5px;box-shadow:0 0 6px currentColor}
+.dot.on{background:var(--green);color:var(--green)}.dot.off{background:var(--red);color:var(--red)}
+.conn{font-size:12px;display:flex;align-items:center;background:rgba(255,255,255,.06);border:1px solid var(--border);
   padding:5px 11px;border-radius:20px}
 .btn{padding:7px 15px;border-radius:var(--r2);border:none;cursor:pointer;font-size:12px;
   font-weight:700;font-family:inherit}
-.btn-halt{background:#F97316;color:#fff}.btn-halt.on{background:#dc2626}
-.btn-mode{background:#0073CF;color:#fff}.btn-mode.danger{background:#dc2626}
-.btn-ghost{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.3)}
+.btn-halt{background:#e07b1f;color:#fff}.btn-halt.on{background:var(--red)}
+.btn-mode{background:var(--primary);color:var(--on-primary)}.btn-mode.danger{background:var(--red);color:#fff}
+.btn-ghost{background:rgba(255,255,255,.06);color:var(--text);border:1px solid rgba(255,255,255,.14)}
 .main{padding:22px 28px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
 .banner{padding:11px 16px;border-radius:var(--r2);font-size:13px;font-weight:600;display:none}
 .banner.show{display:block}
-.banner.live{background:var(--red-bg);color:var(--red);border:1.5px solid #fecaca}
-.banner.halted{background:var(--amber-bg);color:var(--amber);border:1.5px solid #fde68a}
+.banner.live{background:var(--red-bg);color:var(--red);border:1.5px solid rgba(244,73,94,.35)}
+.banner.halted{background:var(--amber-bg);color:var(--amber);border:1.5px solid rgba(240,169,46,.35)}
 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
-.kpi{background:var(--card);border-radius:var(--r);padding:14px 16px;box-shadow:var(--sh);border-left:4px solid var(--primary-mid)}
+.kpi{background:var(--card);border-radius:var(--r);padding:14px 16px;box-shadow:var(--sh);border:1px solid var(--border);border-left:3px solid var(--primary)}
 .kpi-lbl{font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
-.kpi-val{font-size:26px;font-weight:800;margin-top:5px}
+.kpi-val{font-size:26px;font-weight:800;margin-top:5px;font-family:var(--mono)}
 .kpi-val.pos{color:var(--green)}.kpi-val.neg{color:var(--red)}
 .grid2{display:grid;grid-template-columns:1.3fr 1fr;gap:18px;align-items:start}
 .grid2 > *{min-width:0}
-.card{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);overflow:hidden}
+.card{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);border:1px solid var(--border);overflow:hidden}
 .card-hdr{padding:12px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--primary);
-  display:flex;justify-content:space-between;align-items:center}
+  text-transform:uppercase;letter-spacing:.03em;
+  display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
 .card-body{padding:14px 16px;overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:12.5px}
+table{width:100%;border-collapse:collapse;font-size:12.5px;font-family:var(--mono)}
 th{text-align:left;color:var(--muted);font-weight:700;font-size:11px;text-transform:uppercase;
   letter-spacing:.03em;padding:6px 8px;border-bottom:2px solid var(--border)}
 td{padding:8px;border-bottom:1px solid var(--border)}
@@ -56,38 +66,40 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .fg{margin-bottom:11px}
 .fl{display:block;font-size:11px;font-weight:700;color:var(--text);margin-bottom:4px}
 .fi,.fs{width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:var(--r2);
-  font-size:13px;font-family:inherit;background:var(--bg);outline:none}
-.fi:focus,.fs:focus{border-color:var(--primary-mid);background:#fff}
+  font-size:13px;font-family:inherit;background:var(--card2);color:var(--text);outline:none}
+.fi:focus,.fs:focus{border-color:var(--primary-mid);background:var(--card2)}
 .frow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.toolbar .fi,.toolbar .fs{width:auto;min-width:140px}
 .side-sel{display:flex;border:1.5px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:11px}
-.side-opt{flex:1;padding:8px;border:none;background:var(--bg);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;color:var(--muted)}
+.side-opt{flex:1;padding:8px;border:none;background:var(--card2);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;color:var(--muted)}
 .side-opt.on-buy{background:var(--green-bg);color:var(--green)}
 .side-opt.on-sell{background:var(--red-bg);color:var(--red)}
-.btn-submit{width:100%;padding:10px;background:var(--primary);color:#fff;border:none;border-radius:var(--r2);
+.btn-submit{width:100%;padding:10px;background:var(--primary);color:var(--on-primary);border:none;border-radius:var(--r2);
   font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
 .btn-submit:hover{background:var(--primary-mid)}
 .violations{margin-top:10px;font-size:12px;background:var(--red-bg);color:var(--red);
-  border:1px solid #fecaca;border-radius:var(--r2);padding:8px 10px;display:none}
+  border:1px solid rgba(244,73,94,.35);border-radius:var(--r2);padding:8px 10px;display:none}
 .violations.show{display:block}
 .violations ul{margin-left:16px;margin-top:4px}
 .pending-item{padding:9px;border:1.5px solid var(--amber);background:var(--amber-bg);border-radius:var(--r2);
   margin-bottom:8px;font-size:12px}
 .pending-actions{display:flex;gap:6px;margin-top:7px}
-.btn-approve{background:var(--green);color:#fff;border:none;border-radius:4px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer}
+.btn-approve{background:var(--green);color:#031b0d;border:none;border-radius:4px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer}
 .btn-reject{background:var(--red);color:#fff;border:none;border-radius:4px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer}
-.toast{position:fixed;bottom:22px;right:22px;background:#1e293b;color:#fff;padding:11px 18px;
+.toast{position:fixed;bottom:22px;right:22px;background:var(--card2);color:var(--text);border:1px solid var(--border);padding:11px 18px;
   border-radius:var(--r2);font-size:13px;box-shadow:var(--sh2);transform:translateY(80px);opacity:0;
   transition:all .3s;z-index:3000;pointer-events:none;max-width:380px}
 .toast.show{transform:translateY(0);opacity:1}
 .muted-sm{font-size:11px;color:var(--muted)}
-.fund-name-link{cursor:pointer;text-decoration:underline;text-decoration-style:dotted}
+.fund-name-link{cursor:pointer;text-decoration:underline;text-decoration-style:dotted;color:var(--primary-mid)}
 .chart-wrap{position:relative;height:200px;margin-top:10px}
 .chart-wrap.sm{height:150px}
 .info-btn{background:none;border:none;color:var(--primary-mid);cursor:pointer;font-size:13px;padding:0 4px}
-.modal-overlay{position:fixed;inset:0;background:rgba(15,23,42,.55);display:none;
+.modal-overlay{position:fixed;inset:0;background:rgba(2,4,8,.7);display:none;
   align-items:center;justify-content:center;z-index:4000;padding:20px}
 .modal-overlay.show{display:flex}
-.modal-box{background:var(--card);border-radius:var(--r);box-shadow:var(--sh2);
+.modal-box{background:var(--card);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh2);
   width:100%;max-width:680px;max-height:88vh;overflow:auto}
 .modal-hdr{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;
   justify-content:space-between;align-items:center;font-weight:700;color:var(--primary);
@@ -97,8 +109,8 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .modal-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .cfg-tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
 .cfg-tab{padding:7px 15px;border-radius:var(--r2);border:1.5px solid var(--border);
-  background:var(--bg);color:var(--muted);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit}
-.cfg-tab.on{background:var(--primary);color:#fff;border-color:var(--primary)}
+  background:var(--card2);color:var(--muted);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit}
+.cfg-tab.on{background:var(--primary);color:var(--on-primary);border-color:var(--primary)}
 @media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.modal-grid{grid-template-columns:1fr}}
 @media(max-width:560px){
   .hdr{padding:12px 16px}
@@ -177,21 +189,28 @@ td{padding:8px;border-bottom:1px solid var(--border)}
       </div>
 
       <div class="card">
-        <div class="card-hdr">Radar de oportunidades (momentum)
-          <div style="display:flex;gap:6px">
+        <div class="card-hdr"><span id="radarTitle">Radar de oportunidades</span>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <select id="strategySelect" class="fs" style="width:auto;padding:6px 8px;font-size:12px" onchange="onStrategyChange()"></select>
             <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="scanSignals(true)">↻ Escanear</button>
-            <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="runBacktest()">📊 Backtest</button>
+            <button class="btn btn-ghost" id="backtestBtn" style="background:var(--bg);color:var(--muted)" onclick="runBacktest()">📊 Backtest</button>
           </div>
         </div>
         <div class="card-body">
           <p class="muted-sm" style="margin-bottom:10px">
             No es una recomendación de inversión: rankea candidatos del universo en
-            <code>screener.yaml</code> por momentum/técnico. Toda orden que envíes desde
-            aquí pasa igual por el motor de reglas (<code>rules.yaml</code>).
+            <code>screener.yaml</code> según la estrategia elegida. Toda orden que envíes
+            desde aquí pasa igual por el motor de reglas (<code>rules.yaml</code>).
           </p>
+          <div class="toolbar">
+            <input id="signalSearch" class="fi" type="text" placeholder="🔎 Buscar símbolo o sector…" oninput="filterSignals()">
+            <input id="newTickerInput" class="fi" type="text" placeholder="Nuevo ticker (ej: SHOP)" onkeydown="if(event.key==='Enter'){ event.preventDefault(); addTickerToUniverse(); }">
+            <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="addTickerToUniverse()">+ Agregar al universo</button>
+            <button class="btn btn-ghost" id="refreshSectorsBtn" style="background:var(--bg);color:var(--muted)" onclick="refreshSectors()">🌐 Refrescar sectores</button>
+          </div>
           <table>
-            <thead><tr><th>Símbolo</th><th>Score</th><th>Precio</th><th>3M%</th><th>1M%</th><th>RSI</th><th>Stop sugerido</th><th></th></tr></thead>
-            <tbody id="signalsBody"><tr><td colspan="8" class="empty">Sin escanear aún</td></tr></tbody>
+            <thead><tr><th>Símbolo</th><th>Sector</th><th>Score</th><th>Precio</th><th>3M%</th><th>1M%</th><th>RSI</th><th>Stop sugerido</th><th></th></tr></thead>
+            <tbody id="signalsBody"><tr><td colspan="9" class="empty">Sin escanear aún</td></tr></tbody>
           </table>
           <div id="signalsMeta" class="muted-sm" style="margin-top:8px"></div>
           <div class="chart-wrap sm" id="signalsChartWrap" style="display:none"><canvas id="signalsChart"></canvas></div>
@@ -284,6 +303,19 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 
 <script src="vendor/chart.umd.js"></script>
 <script>
+// Paleta compartida por todos los Chart.js de este dashboard, alineada con
+// las variables CSS de :root (Chart.js no puede leer var(--x) directo: solo
+// acepta colores resueltos).
+const THEME = {
+  primary: '#22d3ee', primaryMid: '#67e8f9', green: '#2dd06a', red: '#f4495e',
+  amber: '#f0a92e', muted: '#7b87a0', border: '#222a3a', slate: '#64748b', violet: '#a78bfa',
+};
+if(window.Chart){
+  Chart.defaults.color = THEME.muted;
+  Chart.defaults.borderColor = THEME.border;
+  Chart.defaults.font.family = "ui-monospace,'SF Mono','Cascadia Mono','Roboto Mono',Consolas,monospace";
+}
+
 const apiKeyStorageKey = 'ibkr_dash_api_key';
 let currentSide = 'BUY';
 let ws = null;
@@ -319,7 +351,7 @@ function saveApiKey(){
   refreshAll();
   refreshPositions();
   refreshFunds();
-  scanSignals(false);
+  loadStrategies();
 }
 
 function toast(msg, ms=3500){
@@ -539,7 +571,7 @@ function renderRoiChart(funds){
     type: 'bar',
     data: {
       labels: funds.map(f => f.name),
-      datasets: [{ label: 'ROI %', data, backgroundColor: data.map(v => v >= 0 ? '#16a34a' : '#dc2626') }],
+      datasets: [{ label: 'ROI %', data, backgroundColor: data.map(v => v >= 0 ? THEME.green : THEME.red) }],
     },
     options: {
       maintainAspectRatio: false,
@@ -561,8 +593,8 @@ function renderRoiHistoryChart(data){
     data: {
       labels: data.dates,
       datasets: [
-        { label: 'Tu cartera', data: data.fund_cumulative_return_pct, borderColor: '#0073CF', backgroundColor: 'rgba(0,115,207,.15)', fill: false, tension: .15, pointRadius: 0 },
-        { label: 'S&P 500 (SPY)', data: data.benchmark_cumulative_return_pct, borderColor: '#6b7280', backgroundColor: 'rgba(107,114,128,.1)', fill: false, tension: .15, pointRadius: 0 },
+        { label: 'Tu cartera', data: data.fund_cumulative_return_pct, borderColor: THEME.primary, backgroundColor: 'rgba(34,211,238,.15)', fill: false, tension: .15, pointRadius: 0 },
+        { label: 'S&P 500 (SPY)', data: data.benchmark_cumulative_return_pct, borderColor: THEME.slate, backgroundColor: 'rgba(100,116,139,.12)', fill: false, tension: .15, pointRadius: 0 },
       ],
     },
     options: {
@@ -604,6 +636,8 @@ const RULES_FIELDS = [
     hint:'Lista vacía bloquea TODAS las órdenes por seguridad (ninguna whitelist = ningún símbolo autorizado).' },
   { key:'max_order_value_usd', label:'Valor máximo por orden (USD)', type:'number', min:0.01, max:10000000 },
   { key:'max_position_pct_of_equity', label:'Máximo % del equity por posición', type:'number', min:0.01, max:100 },
+  { key:'max_sector_concentration_pct', label:'Máxima concentración por sector GICS (%)', type:'number', min:0.01, max:100,
+    hint:'Suma de posiciones existentes + la orden en evaluación en el mismo sector, como % del equity. Solo aplica si el sector del símbolo es conocido (botón "🌐 Refrescar sectores" en el Radar).' },
   { key:'risk_per_trade_pct', label:'Riesgo por operación (% del equity, para sugerir tamaño)', type:'number', min:0.01, max:100 },
   { key:'daily_loss_limit_pct', label:'Límite de pérdida diaria (%)', type:'number', min:0.01, max:100 },
   { key:'max_trades_per_day', label:'Máximo de operaciones por día', type:'number', min:1, max:1000, step:1, integer:true },
@@ -620,6 +654,8 @@ const RULES_FIELDS = [
 // Campos de screener.yaml. 'universe' se maneja aparte (puede tener cientos
 // de símbolos) en vez de mezclarse en esta grilla de 2 columnas.
 const SCREENER_FIELDS = [
+  { key:'strategy_id', label:'Estrategia activa (auto-trading / escaneo proactivo)', type:'select', optionsSource:'strategies',
+    hint:'Estrategia usada por el ciclo de escaneo proactivo en background y el auto-trading. El selector del Radar puede explorar cualquier estrategia ad-hoc sin cambiar esto.' },
   { key:'benchmark_symbol', label:'Símbolo de referencia (benchmark)', type:'text' },
   { key:'lookback_days', label:'Días de histórico a descargar', type:'number', min:1, step:1, integer:true },
   { key:'scan_request_delay_seconds', label:'Pausa entre símbolos al escanear (seg.)', type:'number', min:0 },
@@ -630,6 +666,11 @@ const SCREENER_FIELDS = [
   { key:'rsi_period', label:'Período del RSI', type:'number', min:1, step:1, integer:true },
   { key:'rsi_min', label:'RSI mínimo', type:'number' },
   { key:'rsi_max', label:'RSI máximo', type:'number' },
+  { key:'score_weight_relative_strength', label:'Peso: fuerza relativa vs. benchmark', type:'number', min:0 },
+  { key:'score_weight_momentum_3m', label:'Peso: momentum 3 meses', type:'number', min:0 },
+  { key:'score_weight_momentum_1m', label:'Peso: momentum 1 mes', type:'number', min:0 },
+  { key:'score_weight_trend', label:'Peso: tendencia (SMA)', type:'number', min:0 },
+  { key:'score_weight_rsi', label:'Peso: RSI', type:'number', min:0 },
   { key:'min_avg_dollar_volume', label:'Volumen promedio mínimo (USD)', type:'number', min:0 },
   { key:'top_n', label:'Cantidad de candidatos a rankear (top N)', type:'number', min:1, step:1, integer:true },
   { key:'atr_period', label:'Período del ATR', type:'number', min:1, step:1, integer:true },
@@ -649,17 +690,81 @@ const SCREENER_FIELDS = [
   { key:'max_auto_drafts_per_cycle', label:'Máx. borradores por ciclo de escaneo proactivo', type:'number', min:0, step:1, integer:true },
 ];
 
+// Sub-configs anidados de screener.yaml (screener.opportunistic / .long_term /
+// .dividend en ScreenerConfig). 'group' indica a renderConfigField/
+// readConfigFields que el valor vive en screener[group][key] en vez de
+// screener[key] directo.
+const OPPORTUNISTIC_FIELDS = [
+  { key:'momentum_lookback_days', label:'Ventana de momentum (días)', type:'number', min:1, step:1, integer:true, group:'opportunistic' },
+  { key:'rsi_period', label:'Período del RSI', type:'number', min:1, step:1, integer:true, group:'opportunistic' },
+  { key:'rsi_min', label:'RSI mínimo', type:'number', group:'opportunistic' },
+  { key:'rsi_max', label:'RSI máximo', type:'number', group:'opportunistic' },
+  { key:'min_volatility_pct', label:'Volatilidad mínima (ATR % del precio)', type:'number', min:0, group:'opportunistic' },
+  { key:'min_pct_below_52w_high', label:'Mínimo % por debajo del máximo de 52 semanas', type:'number', min:0, group:'opportunistic' },
+  { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'opportunistic' },
+  { key:'max_holding_days', label:'Máximo de días en una posición', type:'number', min:1, step:1, integer:true, group:'opportunistic' },
+  { key:'score_weight_momentum', label:'Peso: momentum', type:'number', min:0, group:'opportunistic' },
+  { key:'score_weight_volatility', label:'Peso: volatilidad', type:'number', min:0, group:'opportunistic' },
+  { key:'score_weight_rsi_recovery', label:'Peso: recuperación de RSI', type:'number', min:0, group:'opportunistic' },
+  { key:'score_weight_room_to_grow', label:'Peso: espacio de crecimiento', type:'number', min:0, group:'opportunistic' },
+];
+
+const LONG_TERM_FIELDS = [
+  { key:'max_pe_ratio', label:'P/E máximo', type:'number', min:0, group:'long_term' },
+  { key:'min_revenue_growth_pct', label:'Crecimiento de ingresos mínimo (%)', type:'number', group:'long_term' },
+  { key:'min_earnings_growth_pct', label:'Crecimiento de ganancias mínimo (%)', type:'number', group:'long_term' },
+  { key:'min_return_on_equity_pct', label:'ROE mínimo (%)', type:'number', group:'long_term' },
+  { key:'max_debt_to_equity', label:'Deuda/Equity máxima', type:'number', min:0, group:'long_term' },
+  { key:'min_profit_margin_pct', label:'Margen de ganancia mínimo (%)', type:'number', group:'long_term' },
+  { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'long_term' },
+  { key:'score_weight_value', label:'Peso: valoración (P/E)', type:'number', min:0, group:'long_term' },
+  { key:'score_weight_growth', label:'Peso: crecimiento', type:'number', min:0, group:'long_term' },
+  { key:'score_weight_quality', label:'Peso: calidad (ROE/deuda)', type:'number', min:0, group:'long_term' },
+  { key:'score_weight_margin', label:'Peso: margen', type:'number', min:0, group:'long_term' },
+];
+
+const DIVIDEND_FIELDS = [
+  { key:'min_dividend_yield_pct', label:'Dividend yield mínimo (%)', type:'number', min:0, group:'dividend' },
+  { key:'min_payout_ratio_pct', label:'Payout ratio mínimo (%)', type:'number', min:0, group:'dividend' },
+  { key:'max_payout_ratio_pct', label:'Payout ratio máximo (%)', type:'number', min:0, group:'dividend' },
+  { key:'min_return_on_equity_pct', label:'ROE mínimo (%)', type:'number', group:'dividend' },
+  { key:'min_profit_margin_pct', label:'Margen de ganancia mínimo (%)', type:'number', group:'dividend' },
+  { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'dividend' },
+  { key:'score_weight_yield', label:'Peso: yield', type:'number', min:0, group:'dividend' },
+  { key:'score_weight_payout_quality', label:'Peso: calidad del payout', type:'number', min:0, group:'dividend' },
+  { key:'score_weight_quality', label:'Peso: calidad (ROE/margen)', type:'number', min:0, group:'dividend' },
+];
+
+function configFieldId(f){
+  return f.group ? `cfg-${f.group}-${f.key}` : 'cfg-' + f.key;
+}
+
+function configFieldValue(f, values){
+  return f.group ? (values[f.group] || {})[f.key] : values[f.key];
+}
+
 function renderConfigField(f, values){
-  const id = 'cfg-' + f.key;
+  const id = configFieldId(f);
+  const val = configFieldValue(f, values);
+  const hintHtml = f.hint ? `<p class="muted-sm" style="margin-top:3px">${esc(f.hint)}</p>` : '';
   if(f.type === 'checkbox'){
     return `<div class="fg"><label class="fl" style="display:flex;align-items:center;gap:6px;cursor:pointer">
-      <input type="checkbox" id="${id}" ${values[f.key] ? 'checked' : ''}> ${esc(f.label)}
-    </label></div>`;
+      <input type="checkbox" id="${id}" ${val ? 'checked' : ''}> ${esc(f.label)}
+    </label>${hintHtml}</div>`;
   }
   if(f.type === 'list'){
     return `<div class="fg"><label class="fl">${esc(f.label)}</label>
-      <textarea id="${id}" class="fi" rows="3" style="resize:vertical;font-family:monospace;font-size:11px">${esc((values[f.key]||[]).join(', '))}</textarea>
-      ${f.hint ? `<p class="muted-sm" style="margin-top:3px">${esc(f.hint)}</p>` : ''}</div>`;
+      <textarea id="${id}" class="fi" rows="3" style="resize:vertical;font-family:monospace;font-size:11px">${esc((val||[]).join(', '))}</textarea>
+      ${hintHtml}</div>`;
+  }
+  if(f.type === 'select'){
+    const opts = f.optionsSource === 'strategies'
+      ? STRATEGIES.map(s => ({ value: s.id, label: s.name }))
+      : (f.options || []);
+    const optsHtml = opts.map(o => `<option value="${esc(o.value)}" ${o.value === val ? 'selected' : ''}>${esc(o.label)}</option>`).join('');
+    return `<div class="fg"><label class="fl">${esc(f.label)}</label>
+      <select id="${id}" class="fs">${optsHtml}</select>
+      ${hintHtml}</div>`;
   }
   const attrs = [];
   if(f.type === 'number'){
@@ -668,7 +773,8 @@ function renderConfigField(f, values){
     if(f.max !== undefined) attrs.push(`max="${f.max}"`);
   }
   return `<div class="fg"><label class="fl">${esc(f.label)}</label>
-    <input id="${id}" class="fi" type="${f.type}" value="${esc(values[f.key])}" ${attrs.join(' ')}></div>`;
+    <input id="${id}" class="fi" type="${f.type}" value="${esc(val)}" ${attrs.join(' ')}>
+    ${hintHtml}</div>`;
 }
 
 function renderConfigFields(fields, values){
@@ -677,14 +783,22 @@ function renderConfigFields(fields, values){
 
 function readConfigFields(fields){
   const out = {};
+  const groups = {};
   fields.forEach(f => {
-    const el = document.getElementById('cfg-' + f.key);
-    if(f.type === 'checkbox') out[f.key] = el.checked;
-    else if(f.type === 'list') out[f.key] = el.value.split(/[,\n]/).map(s => s.trim().toUpperCase()).filter(Boolean);
-    else if(f.type === 'number') out[f.key] = f.integer ? parseInt(el.value, 10) : parseFloat(el.value);
-    else out[f.key] = el.value.trim();
+    const el = document.getElementById(configFieldId(f));
+    let value;
+    if(f.type === 'checkbox') value = el.checked;
+    else if(f.type === 'list') value = el.value.split(/[,\n]/).map(s => s.trim().toUpperCase()).filter(Boolean);
+    else if(f.type === 'number') value = f.integer ? parseInt(el.value, 10) : parseFloat(el.value);
+    else value = el.value.trim();
+    if(f.group){
+      groups[f.group] = groups[f.group] || {};
+      groups[f.group][f.key] = value;
+    } else {
+      out[f.key] = value;
+    }
   });
-  return out;
+  return Object.assign(out, groups);
 }
 
 function formatValidationErrors(detail){
@@ -694,23 +808,35 @@ function formatValidationErrors(detail){
   return String(detail || 'Error al guardar.');
 }
 
+// Cada estrategia adicional vive en su propia pestaña/sub-config anidado
+// (screener.opportunistic/.long_term/.dividend) para no saturar una sola
+// grilla de 2 columnas con ~50 campos de 4 estrategias distintas.
+const CONFIG_TABS = [
+  { id:'rules', label:'Reglas de riesgo', pane:'cfgRulesPane', btn:'cfgTabRules' },
+  { id:'screener', label:'Momentum / Screener', pane:'cfgScreenerPane', btn:'cfgTabScreener' },
+  { id:'opportunistic', label:'Oportunista', pane:'cfgOpportunisticPane', btn:'cfgTabOpportunistic' },
+  { id:'long_term', label:'Largo plazo', pane:'cfgLongTermPane', btn:'cfgTabLongTerm' },
+  { id:'dividend', label:'Dividendos', pane:'cfgDividendPane', btn:'cfgTabDividend' },
+];
+
+let loadedScreenerConfig = null;
+
 function openConfigModal(){
-  openModal('⚙️ Configuración', `
-    <div class="cfg-tabs">
-      <button type="button" class="cfg-tab on" id="cfgTabRules" onclick="showConfigTab('rules')">Reglas de riesgo</button>
-      <button type="button" class="cfg-tab" id="cfgTabScreener" onclick="showConfigTab('screener')">Screener</button>
-    </div>
-    <div id="cfgRulesPane"><p class="muted-sm">Cargando…</p></div>
-    <div id="cfgScreenerPane" style="display:none"><p class="muted-sm">Cargando…</p></div>
-  `);
+  const tabsHtml = CONFIG_TABS.map(t =>
+    `<button type="button" class="cfg-tab${t.id === 'rules' ? ' on' : ''}" id="${t.btn}" onclick="showConfigTab('${t.id}')">${esc(t.label)}</button>`
+  ).join('');
+  const panesHtml = CONFIG_TABS.map(t =>
+    `<div id="${t.pane}" style="${t.id === 'rules' ? '' : 'display:none'}"><p class="muted-sm">Cargando…</p></div>`
+  ).join('');
+  openModal('⚙️ Configuración', `<div class="cfg-tabs">${tabsHtml}</div>${panesHtml}`);
   loadConfigForms();
 }
 
 function showConfigTab(tab){
-  document.getElementById('cfgRulesPane').style.display = tab === 'rules' ? 'block' : 'none';
-  document.getElementById('cfgScreenerPane').style.display = tab === 'screener' ? 'block' : 'none';
-  document.getElementById('cfgTabRules').classList.toggle('on', tab === 'rules');
-  document.getElementById('cfgTabScreener').classList.toggle('on', tab === 'screener');
+  CONFIG_TABS.forEach(t => {
+    document.getElementById(t.pane).style.display = t.id === tab ? 'block' : 'none';
+    document.getElementById(t.btn).classList.toggle('on', t.id === tab);
+  });
 }
 
 async function loadConfigForms(){
@@ -726,6 +852,8 @@ async function loadConfigForms(){
   }
   try{
     const screener = await api('/api/signals/config', { auth:true });
+    loadedScreenerConfig = screener;
+    try{ STRATEGIES = await api('/api/strategies', { auth:true }); }catch(e){ /* select usa lo que ya hubiera cargado */ }
     document.getElementById('cfgScreenerPane').innerHTML = `
       <div class="modal-grid">${renderConfigFields(SCREENER_FIELDS, screener)}</div>
       <div class="fg" style="margin-top:6px">
@@ -734,10 +862,32 @@ async function loadConfigForms(){
         <p class="muted-sm" style="margin-top:3px">Separados por coma o salto de línea. Un universo más chico escanea más rápido y consume menos cuota de la API gratuita de datos.</p>
       </div>
       <div class="violations" id="cfgScreenerErr"></div>
-      <button class="btn-submit" onclick="saveScreenerConfig()">Guardar screener</button>
+      <button class="btn-submit" onclick="saveScreenerConfig()">Guardar Momentum / Screener</button>
+    `;
+    document.getElementById('cfgOpportunisticPane').innerHTML = `
+      <p class="muted-sm" style="margin-bottom:10px">Corto plazo (días/semanas): acciones con señal de giro al alza, lejos todavía de su máximo de 52 semanas. Disponible para escaneo en vivo y backtest.</p>
+      <div class="modal-grid">${renderConfigFields(OPPORTUNISTIC_FIELDS, screener)}</div>
+      <div class="violations" id="cfgOpportunisticErr"></div>
+      <button class="btn-submit" onclick="saveStrategySubConfig(OPPORTUNISTIC_FIELDS, 'cfgOpportunisticErr', 'opportunistic')">Guardar Oportunista</button>
+    `;
+    document.getElementById('cfgLongTermPane').innerHTML = `
+      <p class="muted-sm" style="margin-bottom:10px">Largo plazo (meses/1 año): fundamentales de crecimiento y rentabilidad con valoración razonable. Solo escaneo en vivo (sin backtest).</p>
+      <div class="modal-grid">${renderConfigFields(LONG_TERM_FIELDS, screener)}</div>
+      <div class="violations" id="cfgLongTermErr"></div>
+      <button class="btn-submit" onclick="saveStrategySubConfig(LONG_TERM_FIELDS, 'cfgLongTermErr', 'long_term')">Guardar Largo plazo</button>
+    `;
+    document.getElementById('cfgDividendPane').innerHTML = `
+      <p class="muted-sm" style="margin-bottom:10px">Dividend yield: buen yield con payout sostenible y fundamentales sanos. Solo escaneo en vivo (sin backtest).</p>
+      <div class="modal-grid">${renderConfigFields(DIVIDEND_FIELDS, screener)}</div>
+      <div class="violations" id="cfgDividendErr"></div>
+      <button class="btn-submit" onclick="saveStrategySubConfig(DIVIDEND_FIELDS, 'cfgDividendErr', 'dividend')">Guardar Dividendos</button>
     `;
   }catch(e){
-    document.getElementById('cfgScreenerPane').innerHTML = `<p class="muted-sm">No se pudo cargar (revisá tu API key). ${esc(e.message||'')}</p>`;
+    const msg = `<p class="muted-sm">No se pudo cargar (revisá tu API key). ${esc(e.message||'')}</p>`;
+    document.getElementById('cfgScreenerPane').innerHTML = msg;
+    document.getElementById('cfgOpportunisticPane').innerHTML = msg;
+    document.getElementById('cfgLongTermPane').innerHTML = msg;
+    document.getElementById('cfgDividendPane').innerHTML = msg;
   }
 }
 
@@ -756,17 +906,36 @@ async function saveRulesConfig(){
   }
 }
 
+// /api/signals/config hace un reemplazo COMPLETO de la config (no un merge):
+// por eso cada guardado parte de loadedScreenerConfig (capturado al abrir el
+// modal) y solo pisa encima los campos de la pestaña que se está guardando,
+// para no resetear a default los campos de las otras pestañas/estrategias.
 async function saveScreenerConfig(){
   const errBox = document.getElementById('cfgScreenerErr');
   errBox.classList.remove('show');
   try{
-    const payload = readConfigFields(SCREENER_FIELDS);
+    const payload = { ...loadedScreenerConfig, ...readConfigFields(SCREENER_FIELDS) };
     payload.universe = document.getElementById('cfg-universe').value
       .split(/[,\n]/).map(s => s.trim().toUpperCase()).filter(Boolean);
-    await api('/api/signals/config', { method:'PUT', auth:true, body:{ config: payload } });
-    toast('✅ Configuración del screener actualizada.');
+    loadedScreenerConfig = await api('/api/signals/config', { method:'PUT', auth:true, body:{ config: payload } });
+    toast('✅ Configuración actualizada.');
     loadConfigForms();
     showConfigTab('screener');
+  }catch(e){
+    errBox.textContent = e.status === 422 ? formatValidationErrors(e.data && e.data.detail) : (e.message || 'Error al guardar.');
+    errBox.classList.add('show');
+  }
+}
+
+async function saveStrategySubConfig(fields, errId, paneId){
+  const errBox = document.getElementById(errId);
+  errBox.classList.remove('show');
+  try{
+    const payload = { ...loadedScreenerConfig, ...readConfigFields(fields) };
+    loadedScreenerConfig = await api('/api/signals/config', { method:'PUT', auth:true, body:{ config: payload } });
+    toast('✅ Configuración actualizada.');
+    loadConfigForms();
+    showConfigTab(paneId);
   }catch(e){
     errBox.textContent = e.status === 422 ? formatValidationErrors(e.data && e.data.detail) : (e.message || 'Error al guardar.');
     errBox.classList.add('show');
@@ -883,7 +1052,7 @@ async function openFundDetail(fundId){
     type: 'line',
     data: {
       labels: equitySeries.map(p => p.t.toLocaleDateString()),
-      datasets: [{ label: 'Equity', data: equitySeries.map(p => p.equity), borderColor: '#0073CF', backgroundColor: 'rgba(0,115,207,.15)', fill: true, tension: .15, pointRadius: 0 }],
+      datasets: [{ label: 'Equity', data: equitySeries.map(p => p.equity), borderColor: THEME.primary, backgroundColor: 'rgba(34,211,238,.15)', fill: true, tension: .15, pointRadius: 0 }],
     },
     options: { maintainAspectRatio: false, plugins: { legend: { display: false } } },
   }));
@@ -893,7 +1062,7 @@ async function openFundDetail(fundId){
     type: 'doughnut',
     data: {
       labels: alloc.labels.length ? alloc.labels : ['Sin posiciones'],
-      datasets: [{ data: alloc.values.length ? alloc.values : [1], backgroundColor: ['#0073CF', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#64748b'] }],
+      datasets: [{ data: alloc.values.length ? alloc.values : [1], backgroundColor: [THEME.primary, THEME.green, THEME.amber, THEME.red, THEME.violet, THEME.primaryMid, THEME.slate] }],
     },
     options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } } },
   }));
@@ -903,7 +1072,7 @@ async function openFundDetail(fundId){
   const pnlValues = Object.values(pnlBySymbol);
   modalCharts.push(new Chart(document.getElementById('modalPnlChart'), {
     type: 'bar',
-    data: { labels: pnlLabels, datasets: [{ label: 'PnL realizado', data: pnlValues, backgroundColor: pnlValues.map(v => v >= 0 ? '#16a34a' : '#dc2626') }] },
+    data: { labels: pnlLabels, datasets: [{ label: 'PnL realizado', data: pnlValues, backgroundColor: pnlValues.map(v => v >= 0 ? THEME.green : THEME.red) }] },
     options: { maintainAspectRatio: false, plugins: { legend: { display: false } } },
   }));
 }
@@ -1047,13 +1216,35 @@ async function submitOrder(){
 let lastSignals = {};
 let lastScanResults = [];
 let signalsDisplayCount = 20;
+let signalSearchQuery = '';
+const SIGNALS_COLSPAN = 9;
+
+function filterSignals(){
+  signalSearchQuery = document.getElementById('signalSearch').value.trim().toUpperCase();
+  signalsDisplayCount = 20;
+  renderSignalsTable();
+}
+
+function visibleSignalResults(){
+  if(!signalSearchQuery) return lastScanResults;
+  return lastScanResults.filter(r =>
+    r.symbol.toUpperCase().includes(signalSearchQuery) || (r.sector || '').toUpperCase().includes(signalSearchQuery)
+  );
+}
 
 function renderSignalsTable(){
   const body = document.getElementById('signalsBody');
-  const visible = lastScanResults.slice(0, signalsDisplayCount);
+  const filtered = visibleSignalResults();
+  if(!filtered.length){
+    const msg = lastScanResults.length ? `Sin resultados para "${esc(signalSearchQuery)}"` : 'Sin escanear aún';
+    body.innerHTML = `<tr><td colspan="${SIGNALS_COLSPAN}" class="empty">${msg}</td></tr>`;
+    return;
+  }
+  const visible = filtered.slice(0, signalsDisplayCount);
   let rowsHtml = visible.map(r => `
         <tr>
           <td><b>${esc(r.symbol)}</b>${r.passes_filters ? '' : ' <span class="muted-sm">(no pasa filtros)</span>'}</td>
+          <td>${esc(r.sector || '—')}</td>
           <td>${r.score.toFixed(1)}</td>
           <td>${fmtUsd(r.last_price)}</td>
           <td style="color:${r.momentum_3m_pct>=0?'var(--green)':'var(--red)'}">${r.momentum_3m_pct.toFixed(1)}%</td>
@@ -1065,11 +1256,11 @@ function renderSignalsTable(){
             <button class="info-btn" onclick="showSignalDetail('${esc(r.symbol)}')" title="Ver más datos de esta señal">ⓘ</button>
           </td>
         </tr>`).join('');
-  if(signalsDisplayCount < lastScanResults.length){
+  if(signalsDisplayCount < filtered.length){
     rowsHtml += `
         <tr>
-          <td colspan="8" style="text-align:center">
-            <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="signalsDisplayCount = Math.min(signalsDisplayCount + 20, lastScanResults.length); renderSignalsTable()">Ver más (mostrando ${signalsDisplayCount} de ${lastScanResults.length})</button>
+          <td colspan="${SIGNALS_COLSPAN}" style="text-align:center">
+            <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="signalsDisplayCount = Math.min(signalsDisplayCount + 20, ${filtered.length}); renderSignalsTable()">Ver más (mostrando ${signalsDisplayCount} de ${filtered.length})</button>
           </td>
         </tr>`;
   }
@@ -1080,17 +1271,19 @@ async function scanSignals(force=false){
   const body = document.getElementById('signalsBody');
   const meta = document.getElementById('signalsMeta');
   if(!getApiKey()){
-    body.innerHTML = '<tr><td colspan="8" class="empty">Define tu API Key (🔑 arriba) para escanear el mercado</td></tr>';
+    body.innerHTML = `<tr><td colspan="${SIGNALS_COLSPAN}" class="empty">Define tu API Key (🔑 arriba) para escanear el mercado</td></tr>`;
     return;
   }
-  body.innerHTML = '<tr><td colspan="8" class="empty">Escaneando…</td></tr>';
+  body.innerHTML = `<tr><td colspan="${SIGNALS_COLSPAN}" class="empty">Escaneando…</td></tr>`;
   try{
-    const data = await api(`/api/signals/scan${force ? '?force=true' : ''}`, { auth:true });
+    const qs = new URLSearchParams({ strategy_id: currentStrategyId });
+    if(force) qs.set('force', 'true');
+    const data = await api(`/api/signals/scan?${qs.toString()}`, { auth:true });
     lastSignals = {};
     lastScanResults = data.results;
     signalsDisplayCount = 20;
     if(!data.results.length){
-      body.innerHTML = '<tr><td colspan="8" class="empty">Sin candidatos que pasen los filtros configurados</td></tr>';
+      body.innerHTML = `<tr><td colspan="${SIGNALS_COLSPAN}" class="empty">Sin candidatos que pasen los filtros configurados</td></tr>`;
     } else {
       data.results.forEach(r => lastSignals[r.symbol] = r);
       renderSignalsTable();
@@ -1098,8 +1291,83 @@ async function scanSignals(force=false){
     meta.textContent = `Actualizado: ${new Date(data.as_of).toLocaleString()}${data.cached ? ' (cache)' : ''} · ${data.results.length} símbolos con datos`;
     renderSignalsChart(data.results);
   }catch(e){
-    body.innerHTML = `<tr><td colspan="8" class="empty">${e.message}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="${SIGNALS_COLSPAN}" class="empty">${e.message}</td></tr>`;
     document.getElementById('signalsChartWrap').style.display = 'none';
+  }
+}
+
+let STRATEGIES = [];
+let currentStrategyId = 'momentum';
+
+async function loadStrategies(){
+  try{
+    STRATEGIES = await api('/api/strategies', { auth:true });
+  }catch(e){
+    STRATEGIES = [{ id:'momentum', name:'Momentum', supports_backtest:true }];
+  }
+  const sel = document.getElementById('strategySelect');
+  sel.innerHTML = STRATEGIES.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+  if(!STRATEGIES.some(s => s.id === currentStrategyId) && STRATEGIES.length) currentStrategyId = STRATEGIES[0].id;
+  sel.value = currentStrategyId;
+  applyStrategyUi();
+  scanSignals(false);
+}
+
+function applyStrategyUi(){
+  const strat = STRATEGIES.find(s => s.id === currentStrategyId);
+  document.getElementById('radarTitle').textContent = 'Radar de oportunidades' + (strat ? ` (${strat.name})` : '');
+  document.getElementById('backtestBtn').style.display = (strat && strat.supports_backtest) ? '' : 'none';
+}
+
+function onStrategyChange(){
+  currentStrategyId = document.getElementById('strategySelect').value;
+  applyStrategyUi();
+  document.getElementById('backtestBox').style.display = 'none';
+  document.getElementById('signalSearch').value = '';
+  signalSearchQuery = '';
+  scanSignals(false);
+}
+
+async function addTickerToUniverse(){
+  const input = document.getElementById('newTickerInput');
+  const symbol = input.value.trim().toUpperCase();
+  if(!symbol){ toast('Ingresa un símbolo'); return; }
+  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
+  try{
+    const config = await api('/api/signals/config', { auth:true });
+    if((config.universe || []).includes(symbol)){
+      toast(`${symbol} ya está en el universo`);
+      input.value = '';
+      return;
+    }
+    config.universe = [...(config.universe || []), symbol];
+    await api('/api/signals/config', { method:'PUT', auth:true, body:{ config } });
+    input.value = '';
+    toast(`✓ ${symbol} agregado al universo`);
+    await refreshSectors([symbol]);
+    scanSignals(true);
+  }catch(e){
+    toast('Error: ' + (e.status === 422 ? formatValidationErrors(e.data && e.data.detail) : e.message));
+  }
+}
+
+async function refreshSectors(symbols=null){
+  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
+  const btn = document.getElementById('refreshSectorsBtn');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Refrescando…';
+  try{
+    const r = await api('/api/sectors/refresh', { method:'POST', auth:true, body: symbols ? { symbols } : {} });
+    const total = Object.keys(r.resolved).length;
+    const resolvedCount = total - r.unresolved.length;
+    toast(total ? `🌐 Sectores: ${resolvedCount} resuelto(s), ${r.unresolved.length} sin clasificar.` : '🌐 No había símbolos sin clasificar.');
+    if(!symbols) scanSignals(true);
+  }catch(e){
+    toast('Error: ' + e.message);
+  }finally{
+    btn.disabled = false;
+    btn.textContent = original;
   }
 }
 
@@ -1115,7 +1383,7 @@ function renderSignalsChart(results){
     type: 'bar',
     data: {
       labels: sorted.map(r => r.symbol),
-      datasets: [{ label: 'Score', data: sorted.map(r => r.score), backgroundColor: sorted.map(r => r.passes_filters ? '#0073CF' : '#94a3b8') }],
+      datasets: [{ label: 'Score', data: sorted.map(r => r.score), backgroundColor: sorted.map(r => r.passes_filters ? THEME.primary : THEME.muted) }],
     },
     options: {
       indexAxis: 'y',
@@ -1129,9 +1397,16 @@ function signalDetailHtml(r){
   const notesHtml = r.notes && r.notes.length
     ? `<ul style="margin-left:16px;margin-top:4px">${r.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`
     : '<p class="muted-sm" style="margin-top:4px">Sin notas adicionales.</p>';
+  const fundamentalRows = [
+    r.sector ? `<tr><td><b>Sector</b></td><td>${esc(r.sector)}</td></tr>` : '',
+    r.pe_ratio != null ? `<tr><td><b>P/E ratio</b></td><td>${r.pe_ratio.toFixed(1)}</td></tr>` : '',
+    r.dividend_yield_pct != null ? `<tr><td><b>Dividend yield</b></td><td>${r.dividend_yield_pct.toFixed(2)}%</td></tr>` : '',
+    r.payout_ratio_pct != null ? `<tr><td><b>Payout ratio</b></td><td>${r.payout_ratio_pct.toFixed(1)}%</td></tr>` : '',
+  ].join('');
   return `
     <table>
       <tbody>
+        ${fundamentalRows}
         <tr><td><b>Distancia al máximo de 52 semanas</b></td><td>${r.pct_from_52w_high != null ? r.pct_from_52w_high.toFixed(1) + '%' : '—'}</td></tr>
         <tr><td><b>Volumen promedio (USD/día)</b></td><td>${fmtUsd(r.avg_volume)}</td></tr>
         <tr><td><b>Tendencia OK</b></td><td>${r.trend_ok ? 'Sí' : 'No'}</td></tr>
@@ -1189,7 +1464,7 @@ async function runBacktest(){
   chartWrap.style.display = 'none';
   stats.textContent = 'Corriendo backtest (puede tardar; depende de la API gratuita de datos)…';
   try{
-    const r = await api('/api/signals/backtest', { auth:true });
+    const r = await api(`/api/signals/backtest?strategy_id=${encodeURIComponent(currentStrategyId)}`, { auth:true });
     stats.innerHTML = `
       <b>Backtest ${new Date(r.start_date).toLocaleDateString()} → ${new Date(r.end_date).toLocaleDateString()}</b><br>
       ${r.total_trades} operaciones · win rate ${r.win_rate_pct}% · profit factor ${r.profit_factor_is_infinite ? '∞' : (r.profit_factor ?? '—')} · Sharpe ${r.sharpe_ratio ?? '—'}<br>
@@ -1203,7 +1478,7 @@ async function runBacktest(){
         type: 'line',
         data: {
           labels: r.equity_curve.map(p => new Date(p.date).toLocaleDateString()),
-          datasets: [{ label: 'Retorno acumulado %', data: r.equity_curve.map(p => p.equity_pct), borderColor: '#0073CF', backgroundColor: 'rgba(0,115,207,.15)', fill: true, tension: .15, pointRadius: 0 }],
+          datasets: [{ label: 'Retorno acumulado %', data: r.equity_curve.map(p => p.equity_pct), borderColor: THEME.primary, backgroundColor: 'rgba(34,211,238,.15)', fill: true, tension: .15, pointRadius: 0 }],
         },
         options: {
           maintainAspectRatio: false,
@@ -1267,7 +1542,7 @@ refreshAll();
 refreshAccount();    // carga inicial; despues el WS la mantiene en vivo
 refreshPositions();  // carga inicial; despues el WS las mantiene en vivo
 refreshFunds();
-scanSignals(false);
+loadStrategies();
 connectWs();
 setInterval(refreshAll, 8000);
 </script>
