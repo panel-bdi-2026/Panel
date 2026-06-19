@@ -74,12 +74,21 @@ Podés abrirlo y leerlo antes de correrlo, es corto. Qué hace:
 - Instala dependencias: Python, `Xvfb` (pantalla virtual para IB Gateway),
   las librerías de X11 que el AWT de Java necesita en tiempo de ejecución
   (`libxtst6`, `libxrender1`, `libxi6` — sin ellas IBC falla con
-  `UnsatisfiedLinkError` y exit code 1100), `ufw`, `curl`, `unzip`, `git`.
+  `UnsatisfiedLinkError` y exit code 1100), `ufw`, `curl`, `unzip`, `git`,
+  `fail2ban`, `unattended-upgrades`.
 - Crea un usuario de sistema sin privilegios (`trading`) para correr todo —
   ni el backend ni IB Gateway corren como root.
-- Configura `ufw` para bloquear todo el tráfico entrante salvo SSH y, una vez
-  que Tailscale esté activo, el puerto 8000 *solo* a través de la interfaz
-  `tailscale0` (nunca a la interfaz pública).
+- Configura `ufw` para bloquear todo el tráfico entrante salvo SSH (con
+  rate-limiting contra brute-force/scanning masivo) y, una vez que Tailscale
+  esté activo, el puerto 8000 *solo* a través de la interfaz `tailscale0`
+  (nunca a la interfaz pública). También deja lista la regla para alcanzar
+  SSH por `tailscale0`, para poder cerrar el SSH público del todo en el Paso
+  2.5 sin tocar el firewall a mano.
+- Habilita `fail2ban` (banea IPs que fallan el login de SSH repetidas veces)
+  y `unattended-upgrades` (instala solo los parches de seguridad del sistema).
+- Si ya hay una llave SSH autorizada cargada, desactiva el login por
+  contraseña (`PasswordAuthentication no`). Si no encuentra ninguna, lo deja
+  como está y avisa, para no arriesgarse a dejarte afuera del servidor.
 - Instala Tailscale (el `tailscale up` inicial lo corrés vos a mano, porque
   pide autenticarte en el navegador).
 
@@ -89,6 +98,34 @@ Después de correrlo:
 sudo tailscale up
 # segui el link que imprime para autenticarte con tu cuenta de Tailscale
 ```
+
+## Paso 2.5 — Cerrar el SSH público (después de confirmar Tailscale)
+
+Hasta este punto, SSH sigue alcanzable desde toda internet (con
+rate-limiting). Es a propósito: así nunca corrés el riesgo de quedarte
+afuera del servidor a mitad del setup. Una vez que confirmaste que
+`tailscale up` funciona y que podés conectarte por SSH usando la IP/nombre
+de Tailscale del servidor (`tailscale status`), cerrá el SSH público del
+todo desde **otra** terminal/sesión (dejá la actual abierta por si algo
+falla):
+
+```bash
+sudo ufw delete limit OpenSSH
+sudo ufw reload
+sudo ufw status verbose   # confirmá que 22/tcp ya no aparece para la interfaz publica, solo para tailscale0
+```
+
+Si te quedás sin acceso por algún motivo, DigitalOcean/Oracle Cloud ofrecen
+una consola web del droplet/instancia (no pasa por la red, así que no
+depende de `ufw` ni de Tailscale) para recuperar el control.
+
+Si tu proveedor es DigitalOcean, sumá una segunda capa independiente del
+`ufw` interno: su **Cloud Firewall** (a nivel de hypervisor, fuera de la VM)
+— restringilo igual, solo SSH (idealmente por Tailscale/IP fija) y nada más
+expuesto a internet. Así, aunque algo dentro de la VM modifique las reglas
+de `ufw` (por ejemplo, instalar Docker reescribe `iptables` por debajo de
+`ufw` sin avisar), seguís teniendo un firewall externo que no se puede tocar
+desde dentro de la VM comprometida.
 
 ## Paso 3 — Instalar IB Gateway + IBC
 
@@ -113,7 +150,9 @@ términos de IBKR a mano), así que este paso es manual:
    `/opt/ibc/config.ini` y completá `IbLoginId`/`IbPassword` con tus
    credenciales reales y `TradingMode=paper` (o `live` cuando corresponda).
    **Esa copia con credenciales reales vive solo en el servidor — nunca la
-   subas a git ni la pongas dentro de este repo.**
+   subas a git ni la pongas dentro de este repo.** Restringí el acceso al
+   archivo: `sudo chmod 600 /opt/ibc/config.ini && sudo chown trading:trading
+   /opt/ibc/config.ini`.
 4. Abrí `/opt/ibc/gatewaystart.sh` con un editor y apuntá la variable de
    configuración (el archivo trae comentarios que indican cuál) a
    `/opt/ibc/config.ini`. Los nombres exactos de variables pueden variar
@@ -147,6 +186,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
 # editá .env: IB_HOST=127.0.0.1, IB_PORT=4002 (IB Gateway paper), API_KEY=algo-fuerte
+chmod 600 .env
 sudo cp /opt/panel/trading-dashboard/deploy/systemd/trading-dashboard.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now trading-dashboard
@@ -173,10 +213,19 @@ Tailscale te muestra esa IP/nombre en su app, o corriendo
 
 ## Checklist de seguridad del servidor
 
-- [ ] Solo el puerto 22 abierto a internet (idealmente restringido a tu IP).
+- [ ] SSH público cerrado del todo (Paso 2.5) — solo alcanzable por
+      `tailscale0`. Si por algún motivo lo dejaste abierto, que sea con
+      `ufw limit` (no `allow`) y restringido a tu IP.
+- [ ] `fail2ban` activo (`systemctl status fail2ban`) y `unattended-upgrades`
+      configurado (`cat /etc/apt/apt.conf.d/20auto-upgrades`).
 - [ ] El backend y IB Gateway corren como usuario sin privilegios
       (`trading`), nunca como root.
 - [ ] El puerto 8000 del backend NO está abierto en `ufw` para la interfaz
       pública, solo para `tailscale0`.
-- [ ] SSH con clave, no con contraseña.
+- [ ] SSH con clave, no con contraseña (`PasswordAuthentication no` en
+      `/etc/ssh/sshd_config`).
+- [ ] `config.ini` (IBC) y `.env` (backend) con permisos `600`, solo
+      legibles por el usuario `trading`.
+- [ ] Si el proveedor es DigitalOcean: Cloud Firewall configurado como
+      segunda capa, independiente del `ufw` interno de la VM.
 - [ ] `TRADING_MODE=paper` confirmado en `.env` hasta terminar las pruebas.
