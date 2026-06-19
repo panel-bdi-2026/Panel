@@ -1069,7 +1069,7 @@ function renderSignalsTable(){
     rowsHtml += `
         <tr>
           <td colspan="8" style="text-align:center">
-            <button class="btn btn-ghost" onclick="signalsDisplayCount = Math.min(signalsDisplayCount + 20, lastScanResults.length); renderSignalsTable()">Ver más (mostrando ${signalsDisplayCount} de ${lastScanResults.length})</button>
+            <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="signalsDisplayCount = Math.min(signalsDisplayCount + 20, lastScanResults.length); renderSignalsTable()">Ver más (mostrando ${signalsDisplayCount} de ${lastScanResults.length})</button>
           </td>
         </tr>`;
   }
