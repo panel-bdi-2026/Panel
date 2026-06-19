@@ -83,12 +83,17 @@ def reset_state(monkeypatch, tmp_path):
 # Autenticacion por API key (require_api_key)
 # ---------------------------------------------------------------------------
 
-def test_status_does_not_require_api_key():
-    # /api/status no expone nada sensible (solo mode/connected/halted): a
-    # proposito no tiene Depends(require_api_key) para que el dashboard
-    # pueda mostrar el estado de conexion antes de tener configurada la key.
+def test_status_requires_api_key():
+    # /api/status expone ib_host/ib_port (info de conexion al broker), asi
+    # que exige API key igual que el resto de los endpoints.
     resp = client.get("/api/status")
+    assert resp.status_code == 401
+
+
+def test_status_returns_data_with_valid_api_key():
+    resp = client.get("/api/status", headers={"X-API-Key": "test-key"})
     assert resp.status_code == 200
+    assert "ib_host" in resp.json()
 
 
 def test_protected_endpoint_rejects_missing_api_key():
@@ -550,6 +555,25 @@ def test_roi_history_falls_back_to_last_trade_price_when_symbol_data_unavailable
 
 
 # ---------------------------------------------------------------------------
+# GET /api/audit
+# ---------------------------------------------------------------------------
+
+def test_get_audit_rejects_limit_above_max():
+    resp = client.get("/api/audit?limit=1001", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 422
+
+
+def test_get_audit_rejects_non_positive_limit():
+    resp = client.get("/api/audit?limit=0", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 422
+
+
+def test_get_audit_accepts_limit_within_bounds():
+    resp = client.get("/api/audit?limit=5", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # POST /api/sectors/refresh
 # ---------------------------------------------------------------------------
 
@@ -599,6 +623,24 @@ def test_refresh_sectors_defaults_to_screener_universe_when_no_symbols_given(mon
     resp = client.post("/api/sectors/refresh", json={}, headers={"X-API-Key": "test-key"})
     assert resp.status_code == 200
     assert resp.json()["resolved"] == {"NEWCO": "Energy"}
+
+
+def test_refresh_sectors_rejects_malformed_symbol():
+    resp = client.post(
+        "/api/sectors/refresh",
+        json={"symbols": ["<img src=x onerror=alert(1)>"]},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert resp.status_code == 422
+
+
+def test_refresh_sectors_rejects_oversized_symbol_list():
+    resp = client.post(
+        "/api/sectors/refresh",
+        json={"symbols": [f"S{i}" for i in range(201)]},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------

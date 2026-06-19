@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .audit import AuditLog
 from .backtest import BacktestError, run_backtest, run_opportunistic_backtest
@@ -160,7 +160,11 @@ async def _broadcast_loop() -> None:
                 "positions": [p.model_dump() for p in await broker.get_positions()],
             }
         except Exception as exc:
-            payload = {"type": "error", "message": str(exc)}
+            # No se reenvia str(exc) crudo a todos los clientes conectados: el
+            # detalle (puede incluir trazas/info interna de ib_async) queda en
+            # el log del servidor, el cliente solo recibe un mensaje generico.
+            print(f"[WARN] Error en broadcast_loop al leer cuenta/posiciones: {exc}")
+            payload = {"type": "error", "message": "No se pudieron obtener los datos de cuenta/posiciones."}
         await _broadcast(payload)
 
 
@@ -633,7 +637,7 @@ if settings.allowed_origins:
 
 
 @app.get("/api/status")
-def status():
+def status(_: None = Depends(require_api_key)):
     return {
         "mode": state["mode"],
         "connected": state["connected"],
@@ -743,7 +747,7 @@ def update_rules(body: RulesUpdate, _: None = Depends(require_api_key)):
 
 
 @app.get("/api/audit")
-def get_audit(limit: int = 100, _: None = Depends(require_api_key)):
+def get_audit(limit: int = Query(default=100, ge=1, le=1000), _: None = Depends(require_api_key)):
     return audit.recent(limit)
 
 
@@ -828,7 +832,8 @@ async def scan_signals(force: bool = False, strategy_id: str | None = None, _: N
     try:
         as_of, cached, results = await _get_or_scan(resolved_id, force)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Error al escanear el mercado: {exc}")
+        print(f"[WARN] Error al escanear el mercado ({resolved_id}): {exc}")
+        raise HTTPException(status_code=502, detail="Error al escanear el mercado. Revisa los logs del servidor.")
     return {"as_of": as_of, "cached": cached, "results": results}
 
 
@@ -849,7 +854,10 @@ async def scan_signals_all_strategies(force: bool = False, _: None = Depends(req
         try:
             _, _, results = await _get_or_scan(strategy_id, force)
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Error al escanear el mercado ({strategy_id}): {exc}")
+            print(f"[WARN] Error al escanear el mercado ({strategy_id}): {exc}")
+            raise HTTPException(
+                status_code=502, detail=f"Error al escanear el mercado ({strategy_id}). Revisa los logs del servidor."
+            )
         for r in results:
             entry = merged.setdefault(r["symbol"], {"symbol": r["symbol"], "sector": r.get("sector"), "scores": {}})
             entry["scores"][strategy_id] = r["score"]
@@ -859,7 +867,14 @@ async def scan_signals_all_strategies(force: bool = False, _: None = Depends(req
 
 
 class SectorRefreshRequest(BaseModel):
-    symbols: Optional[list[str]] = None
+    symbols: Optional[list[str]] = Field(default=None, max_length=200)
+
+    @field_validator("symbols")
+    @classmethod
+    def validate_symbols(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return v
+        return [validate_symbol(s) for s in v]
 
 
 @app.post("/api/sectors/refresh")

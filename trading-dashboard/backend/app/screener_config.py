@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from .atomic_io import atomic_write_text
 from .models import validate_symbol
@@ -176,7 +176,10 @@ class ScreenerConfig(BaseModel):
     # strategy_id de /api/signals/scan sin cambiar este valor persistido.
     strategy_id: str = "momentum"
 
-    universe: list[str] = DEFAULT_UNIVERSE
+    # Tope generoso por encima del S&P 500 completo (~500 simbolos): permite
+    # personalizar el universo sin abrir la puerta a una lista descomunal que
+    # haga un scan tardar horas o agote la cuota de la API de datos.
+    universe: list[str] = Field(default=DEFAULT_UNIVERSE, max_length=1000)
     benchmark_symbol: str = "SPY"
     lookback_days: int = 400
 

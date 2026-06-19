@@ -41,6 +41,24 @@ def test_rejects_symbol_not_in_whitelist(engine):
     assert any(v.rule == "symbol_whitelist" for v in decision.violations)
 
 
+def test_symbol_whitelist_rejects_malformed_symbol():
+    # Mismo chequeo que OrderRequest.symbol y ScreenerConfig.universe: un PUT
+    # directo a /api/rules no debe poder persistir un simbolo malformado/XSS
+    # en la whitelist.
+    with pytest.raises(ValidationError):
+        RulesConfig(symbol_whitelist=["<script>alert(1)</script>"])
+
+
+def test_symbol_whitelist_is_normalized_to_uppercase():
+    config = RulesConfig(symbol_whitelist=["aapl"])
+    assert config.symbol_whitelist == ["AAPL"]
+
+
+def test_symbol_whitelist_rejects_oversized_list():
+    with pytest.raises(ValidationError):
+        RulesConfig(symbol_whitelist=[f"S{i}" for i in range(1001)])
+
+
 def test_rejects_empty_whitelist():
     engine = RulesEngine(RulesConfig(allow_extended_hours=True))
     order = buy_order()

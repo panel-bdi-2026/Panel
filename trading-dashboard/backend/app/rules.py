@@ -6,14 +6,27 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .atomic_io import atomic_write_text
-from .models import AccountSummary, OrderDecision, OrderRequest, PositionSizeSuggestion, RuleViolation, Side
+from .models import (
+    AccountSummary,
+    OrderDecision,
+    OrderRequest,
+    PositionSizeSuggestion,
+    RuleViolation,
+    Side,
+    validate_symbol,
+)
 
 
 class RulesConfig(BaseModel):
-    symbol_whitelist: list[str] = []
+    # Mismo tope que ScreenerConfig.universe (de donde normalmente se
+    # sincroniza via _sync_whitelist_with_universe en main.py): un PUT directo
+    # a /api/rules con symbol_whitelist sin esta validacion podia persistir
+    # simbolos malformados o una lista descomunal sin el mismo chequeo que
+    # OrderRequest.symbol.
+    symbol_whitelist: list[str] = Field(default=[], max_length=1000)
     # Cotas superiores en los campos que limitan riesgo: sin ellas, PUT
     # /api/rules podia recibir un valor absurdamente alto (ej.
     # daily_loss_limit_pct=999999) que en la practica neutraliza el kill
@@ -41,6 +54,11 @@ class RulesConfig(BaseModel):
     trading_hours_start: str = "09:30"
     trading_hours_end: str = "16:00"
     trading_hours_timezone: str = "America/New_York"
+
+    @field_validator("symbol_whitelist")
+    @classmethod
+    def validate_symbol_whitelist(cls, v: list[str]) -> list[str]:
+        return [validate_symbol(s) for s in v]
 
     @classmethod
     def load(cls, path: Path) -> "RulesConfig":

@@ -413,7 +413,7 @@ function onTypeChange(){
 
 async function refreshStatus(){
   try{
-    const s = await api('/api/status');
+    const s = await api('/api/status', { auth:true });
     document.getElementById('hdr-sub').textContent =
       `IBKR ${s.ib_host}:${s.ib_port} · modo ${s.mode}`;
     const modeBadge = document.getElementById('modeBadge');
@@ -431,12 +431,14 @@ async function refreshStatus(){
     modeBtn.classList.toggle('danger', s.mode !== 'live');
     return s;
   }catch(e){
-    document.getElementById('connTxt').textContent = 'Backend no responde';
+    document.getElementById('connTxt').textContent =
+      e.status === 401 ? 'Definí tu API Key (🔑 arriba)' : 'Backend no responde';
   }
 }
 
 async function toggleMode(){
-  const s = await api('/api/status');
+  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
+  const s = await api('/api/status', { auth:true });
   const target = s.mode === 'live' ? 'paper' : 'live';
   const verb = target === 'live' ? 'ACTIVAR el modo LIVE (dinero real)' : 'volver al modo PAPER (simulación)';
   if(!confirm(`¿Seguro que querés ${verb}?\n\nEl trading va a quedar pausado después del cambio hasta que lo reanudes a mano.`)) return;
@@ -450,7 +452,8 @@ async function toggleMode(){
 }
 
 async function toggleHalt(){
-  const s = await api('/api/status');
+  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
+  const s = await api('/api/status', { auth:true });
   try{
     await api(`/api/halt?value=${!s.halted}`, { method:'POST', auth:true });
     toast(!s.halted ? '⏸ Trading pausado' : '▶ Trading reanudado');
@@ -1214,7 +1217,7 @@ async function submitOrder(){
     refreshAll();
   }catch(e){
     if(e.data && e.data.detail && e.data.detail.violations){
-      const items = e.data.detail.violations.map(v => `<li><b>${v.rule}:</b> ${v.message}</li>`).join('');
+      const items = e.data.detail.violations.map(v => `<li><b>${esc(v.rule)}:</b> ${esc(v.message)}</li>`).join('');
       violationsBox.innerHTML = `Orden rechazada por el motor de reglas:<ul>${items}</ul>`;
       violationsBox.classList.add('show');
     } else {

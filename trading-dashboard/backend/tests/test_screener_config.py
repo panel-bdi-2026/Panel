@@ -19,6 +19,13 @@ def test_universe_rejects_malicious_or_malformed_symbol():
         ScreenerConfig(universe=["<script>alert(1)</script>"])
 
 
+def test_universe_rejects_oversized_list():
+    # Tope de DoS: una lista descomunal haria que un scan tarde horas o agote
+    # la cuota de la API de datos (ver Field(max_length=1000) en ScreenerConfig).
+    with pytest.raises(ValidationError):
+        ScreenerConfig(universe=[f"S{i}" for i in range(1001)])
+
+
 def test_benchmark_symbol_is_normalized_to_uppercase():
     config = ScreenerConfig(benchmark_symbol="spy")
     assert config.benchmark_symbol == "SPY"
