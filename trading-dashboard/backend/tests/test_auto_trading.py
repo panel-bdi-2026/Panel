@@ -84,6 +84,14 @@ def reset_state(monkeypatch, tmp_path):
         return make_account()
 
     monkeypatch.setattr(main_module.broker, "get_account_summary", fake_get_account_summary)
+
+    async def fake_get_reference_price(symbol):
+        return None
+
+    # Default: sin precio en vivo (cae al last_price de la señal, ver
+    # main._try_auto_trade_entry/_draft_order_from_signal). Los tests que
+    # quieren probar el precio en vivo lo overridean localmente.
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_get_reference_price)
     monkeypatch.setattr(main_module, "_persist_state", lambda: None)
     yield
 
@@ -448,6 +456,11 @@ def test_check_fund_trailing_stop_raises_stop_when_price_moved_favorably(monkeyp
     )
 
     monkeypatch.setattr(main_module, "get_daily_bars", lambda symbol, days: _trending_bars())
+
+    async def fake_reference_price(symbol):
+        return 105.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
     modify_calls = []
     monkeypatch.setattr(
         main_module.broker, "modify_stop_price", lambda order_id, price: modify_calls.append((order_id, price)) or True
@@ -474,6 +487,11 @@ def test_check_fund_trailing_stop_does_not_lower_an_already_better_stop(monkeypa
 
     monkeypatch.setattr(main_module, "get_daily_bars", lambda symbol, days: _trending_bars())
 
+    async def fake_reference_price(symbol):
+        return 105.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
+
     def fail_if_called(order_id, price):
         raise AssertionError("no deberia bajar un stop ya mas favorable")
 
@@ -495,6 +513,11 @@ def test_check_fund_trailing_stop_keeps_ledger_stop_when_broker_modify_fails(mon
     )
 
     monkeypatch.setattr(main_module, "get_daily_bars", lambda symbol, days: _trending_bars())
+
+    async def fake_reference_price(symbol):
+        return 105.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
     monkeypatch.setattr(main_module.broker, "modify_stop_price", lambda order_id, price: False)
 
     asyncio.run(main_module._check_fund_trailing_stop(fund.id, "AAPL"))
@@ -516,6 +539,28 @@ def test_check_fund_trailing_stop_noop_when_market_data_unavailable(monkeypatch)
     monkeypatch.setattr(main_module, "get_daily_bars", fail_bars)
 
     asyncio.run(main_module._check_fund_trailing_stop(fund.id, "AAPL"))  # no debe propagar
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].stop_loss_price == 90
+
+
+def test_check_fund_trailing_stop_noop_when_live_price_unavailable(monkeypatch):
+    main_module.screener_config.trailing_stop_enabled = True
+    main_module.screener_config.atr_period = 3
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=90, stop_order_id=1
+    )
+
+    monkeypatch.setattr(main_module, "get_daily_bars", lambda symbol, days: _trending_bars())
+    # get_reference_price ya devuelve None por defecto via el fixture reset_state.
+
+    def fail_if_called(order_id, price):
+        raise AssertionError("no deberia modificar el stop sin precio en vivo")
+
+    monkeypatch.setattr(main_module.broker, "modify_stop_price", fail_if_called)
+
+    asyncio.run(main_module._check_fund_trailing_stop(fund.id, "AAPL"))
 
     fund = main_module.funds_store.get(fund.id)
     assert fund.positions["AAPL"].stop_loss_price == 90
@@ -573,44 +618,94 @@ def test_run_auto_exit_monitor_cycle_only_checks_auto_trading_funds_with_positio
     assert checked == [(fund_on.id, "MSFT")]
 
 
-def test_run_auto_exit_monitor_cycle_checks_trailing_stop_before_exit(monkeypatch):
+def test_run_auto_exit_monitor_cycle_does_not_check_trailing_stop(monkeypatch):
+    """El trailing stop corre por separado en _run_trailing_stop_monitor_cycle,
+    a una cadencia mas rapida (ver ese comentario): este ciclo solo evalua
+    _check_fund_exit."""
     fund = main_module.funds_store.create("Con auto", 10_000, auto_trading_enabled=True)
     main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 5, 100)
 
-    calls = []
-
-    async def fake_trailing(fund_id, symbol):
-        calls.append(("trailing", symbol))
+    async def fail_if_called(fund_id, symbol):
+        raise AssertionError("el trailing stop no deberia correr en este ciclo")
 
     async def fake_exit(fund_id, symbol):
-        calls.append(("exit", symbol))
+        pass
 
-    monkeypatch.setattr(main_module, "_check_fund_trailing_stop", fake_trailing)
+    monkeypatch.setattr(main_module, "_check_fund_trailing_stop", fail_if_called)
     monkeypatch.setattr(main_module, "_check_fund_exit", fake_exit)
 
     asyncio.run(main_module._run_auto_exit_monitor_cycle())
 
-    assert calls == [("trailing", "AAPL"), ("exit", "AAPL")]
+
+# ---------------------------------------------------------------------------
+# _run_trailing_stop_monitor_cycle
+# ---------------------------------------------------------------------------
+
+def test_run_trailing_stop_monitor_cycle_skips_when_not_paper(monkeypatch):
+    main_module.state["mode"] = "live"
+
+    async def fail_if_called(fund_id, symbol):
+        raise AssertionError("no deberia chequear trailing stop si no esta en paper")
+
+    monkeypatch.setattr(main_module, "_check_fund_trailing_stop", fail_if_called)
+    asyncio.run(main_module._run_trailing_stop_monitor_cycle())
 
 
-def test_run_auto_exit_monitor_cycle_continues_after_trailing_stop_check_fails(monkeypatch):
+def test_run_trailing_stop_monitor_cycle_skips_when_halted(monkeypatch):
+    main_module.state["halted"] = True
+
+    async def fail_if_called(fund_id, symbol):
+        raise AssertionError("no deberia chequear trailing stop si esta halted")
+
+    monkeypatch.setattr(main_module, "_check_fund_trailing_stop", fail_if_called)
+    asyncio.run(main_module._run_trailing_stop_monitor_cycle())
+
+
+def test_run_trailing_stop_monitor_cycle_skips_when_disconnected(monkeypatch):
+    main_module.state["connected"] = False
+
+    async def fail_if_called(fund_id, symbol):
+        raise AssertionError("no deberia chequear trailing stop si no esta conectado")
+
+    monkeypatch.setattr(main_module, "_check_fund_trailing_stop", fail_if_called)
+    asyncio.run(main_module._run_trailing_stop_monitor_cycle())
+
+
+def test_run_trailing_stop_monitor_cycle_only_checks_auto_trading_funds_with_positions(monkeypatch):
+    fund_off = main_module.funds_store.create("Sin auto", 10_000, auto_trading_enabled=False)
+    main_module.funds_store.record_fill(fund_off.id, "AAPL", main_module.Side.BUY, 5, 100)
+    fund_on = main_module.funds_store.create("Con auto", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(fund_on.id, "MSFT", main_module.Side.BUY, 5, 100)
+
+    checked = []
+
+    async def fake_check(fund_id, symbol):
+        checked.append((fund_id, symbol))
+
+    monkeypatch.setattr(main_module, "_check_fund_trailing_stop", fake_check)
+
+    asyncio.run(main_module._run_trailing_stop_monitor_cycle())
+
+    assert checked == [(fund_on.id, "MSFT")]
+
+
+def test_run_trailing_stop_monitor_cycle_continues_after_a_check_fails(monkeypatch):
     fund = main_module.funds_store.create("Con auto", 10_000, auto_trading_enabled=True)
     main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 5, 100)
+    main_module.funds_store.record_fill(fund.id, "MSFT", main_module.Side.BUY, 5, 100)
 
-    async def failing_trailing(fund_id, symbol):
-        raise RuntimeError("fallo de datos de mercado")
+    checked = []
 
-    exit_calls = []
+    async def fake_check(fund_id, symbol):
+        checked.append(symbol)
+        if symbol == "AAPL":
+            raise RuntimeError("fallo de datos de mercado")
 
-    async def fake_exit(fund_id, symbol):
-        exit_calls.append(symbol)
+    monkeypatch.setattr(main_module, "_check_fund_trailing_stop", fake_check)
 
-    monkeypatch.setattr(main_module, "_check_fund_trailing_stop", failing_trailing)
-    monkeypatch.setattr(main_module, "_check_fund_exit", fake_exit)
+    asyncio.run(main_module._run_trailing_stop_monitor_cycle())  # no debe propagar la excepcion
 
-    asyncio.run(main_module._run_auto_exit_monitor_cycle())  # no debe propagar la excepcion
-
-    assert exit_calls == ["AAPL"]
+    assert set(checked) == {"AAPL", "MSFT"}
     entries = main_module.audit.recent(1)
     assert entries[0]["action"] == "auto_trade_trailing_stop_check_failed"
 

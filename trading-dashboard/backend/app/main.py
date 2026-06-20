@@ -235,9 +235,17 @@ async def _draft_order_from_signal(result: SignalResult, positions: list[Positio
     if position_qty != 0:
         return None
 
+    # result.last_price viene del cierre de la barra diaria evaluada en el
+    # ultimo scan (hasta auto_scan_interval_minutes de antiguedad): se pide un
+    # precio fresco a IBKR para el sizing/limit/chequeo de riesgo, que es
+    # donde la antiguedad del precio realmente importa. Si el broker no
+    # responde (desconectado, simbolo sin datos), se cae al precio de la
+    # señal antes que dejar el draft sin precio.
+    live_price = await broker.get_reference_price(symbol) or result.last_price
+
     account_summary = await broker.get_account_summary()
     sizing = rules_engine.suggested_quantity(
-        account_summary.net_liquidation, position_qty, result.last_price, result.suggested_stop_loss_price
+        account_summary.net_liquidation, position_qty, live_price, result.suggested_stop_loss_price
     )
     if sizing.quantity <= 0:
         return None
@@ -247,7 +255,7 @@ async def _draft_order_from_signal(result: SignalResult, positions: list[Positio
         side=Side.BUY,
         quantity=sizing.quantity,
         order_type=OrderType.LMT,
-        limit_price=result.last_price,
+        limit_price=live_price,
         stop_loss_price=result.suggested_stop_loss_price,
     )
     trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
@@ -255,7 +263,7 @@ async def _draft_order_from_signal(result: SignalResult, positions: list[Positio
         order=order,
         account=account_summary,
         current_position_qty=position_qty,
-        reference_price=result.last_price,
+        reference_price=live_price,
         trades_today=trades_today,
         halted=state["halted"],
         order_sector=get_sector(symbol),
@@ -294,6 +302,12 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
         if not candidates:
             return
 
+        # Igual que en _draft_order_from_signal: result.last_price puede tener
+        # hasta auto_scan_interval_minutes de antiguedad, asi que se refresca
+        # contra IBKR antes de sizear/ejecutar (que es lo sensible al precio
+        # del momento), no antes de evaluar la señal en si.
+        live_price = await broker.get_reference_price(symbol) or result.last_price
+
         account_summary = await broker.get_account_summary()
         position_qty = broker.get_position_qty(symbol)
         sector_exposure_usd = _compute_sector_exposure(await broker.get_positions(), symbol)
@@ -302,11 +316,11 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
         quantity = 0.0
         for candidate in candidates:
             sizing = rules_engine.suggested_quantity(
-                candidate.equity_estimate(), position_qty, result.last_price, result.suggested_stop_loss_price
+                candidate.equity_estimate(), position_qty, live_price, result.suggested_stop_loss_price
             )
             if sizing.quantity <= 0:
                 continue
-            affordable_qty = math.floor(candidate.cash_usd / result.last_price)
+            affordable_qty = math.floor(candidate.cash_usd / live_price)
             qty = min(sizing.quantity, affordable_qty)
             if qty > 0:
                 fund = candidate
@@ -320,7 +334,7 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
             side=Side.BUY,
             quantity=quantity,
             order_type=OrderType.LMT,
-            limit_price=result.last_price,
+            limit_price=live_price,
             stop_loss_price=result.suggested_stop_loss_price,
             fund_id=fund.id,
         )
@@ -329,7 +343,7 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
             order=order,
             account=account_summary,
             current_position_qty=position_qty,
-            reference_price=result.last_price,
+            reference_price=live_price,
             trades_today=trades_today,
             halted=state["halted"],
             order_sector=get_sector(symbol),
@@ -354,7 +368,7 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
         # (limitacion aceptada, ver broker.get_trade_fill).
         filled_qty = result_payload.get("filled_qty") or 0.0
         if filled_qty > 0:
-            fill_price = result_payload.get("avg_fill_price") or result.last_price
+            fill_price = result_payload.get("avg_fill_price") or live_price
             funds_store.record_fill(
                 fund.id, symbol, Side.BUY, filled_qty, fill_price,
                 stop_loss_price=result.suggested_stop_loss_price,
@@ -562,8 +576,16 @@ async def _check_fund_trailing_stop(fund_id: str, symbol: str) -> None:
     """Si trailing_stop_enabled, sube (nunca baja) el stop-loss ya colocado en
     IBKR de una posicion abierta a medida que el precio se mueve a favor,
     usando la misma distancia en ATR que el stop inicial
-    (stop_loss_atr_multiplier) recalculada sobre el ATR de cada chequeo:
-    nuevo_stop = ultimo_cierre - ATR_actual * stop_loss_atr_multiplier.
+    (stop_loss_atr_multiplier): nuevo_stop = precio_en_vivo - ATR_actual *
+    stop_loss_atr_multiplier.
+
+    El precio se pide a IBKR en vivo (broker.get_reference_price) en vez de
+    tomar el cierre de la ultima barra diaria: a diferencia del ATR (que no
+    cambia significativamente segundo a segundo y se sigue tomando de la
+    barra cacheada), el precio si necesita ser actual para que el trailing
+    reaccione dentro del mismo ciclo rapido (poll_interval_seconds, ver
+    _trailing_stop_loop) en el que se mueve el mercado, en vez de esperar al
+    proximo cierre diario.
 
     Solo actua si hay un stop_order_id de ESTA sesion para modificar en IBKR
     (ver broker.modify_stop_price; self.ib.trades() no cubre sesiones
@@ -587,7 +609,11 @@ async def _check_fund_trailing_stop(fund_id: str, symbol: str) -> None:
     if not len(atr_s) or bool(atr_s.isna().iloc[-1]):
         return
 
-    new_stop = float(bars["Close"].iloc[-1]) - float(atr_s.iloc[-1]) * screener_config.stop_loss_atr_multiplier
+    live_price = await broker.get_reference_price(symbol)
+    if live_price is None:
+        return
+
+    new_stop = live_price - float(atr_s.iloc[-1]) * screener_config.stop_loss_atr_multiplier
     current_stop = position.stop_loss_price
     if current_stop is not None and new_stop <= current_stop:
         return
@@ -604,22 +630,16 @@ async def _check_fund_trailing_stop(fund_id: str, symbol: str) -> None:
 
 async def _run_auto_exit_monitor_cycle() -> None:
     """Revisa, para cada fondo con auto-trading activado, sus posiciones
-    abiertas: primero intenta subir el trailing stop (ver
-    _check_fund_trailing_stop) y despues evalua si corresponde cerrarlas (ver
-    _check_fund_exit). Solo en modo paper y con la cuenta conectada y sin
-    halt, igual que la entrada automatica."""
+    abiertas, y evalua si corresponde cerrarlas (ver _check_fund_exit). El
+    trailing stop corre por separado en _trailing_stop_loop, a una cadencia
+    mas rapida (ver ese comentario). Solo en modo paper y con la cuenta
+    conectada y sin halt, igual que la entrada automatica."""
     if state["mode"] != "paper" or state["halted"] or not state["connected"]:
         return
     for fund in funds_store.list():
         if not fund.auto_trading_enabled:
             continue
         for symbol in list(fund.positions.keys()):
-            try:
-                await _check_fund_trailing_stop(fund.id, symbol)
-            except Exception as exc:
-                audit.record(
-                    "auto_trade_trailing_stop_check_failed", {"fund_id": fund.id, "symbol": symbol}, {"error": str(exc)}
-                )
             try:
                 await _check_fund_exit(fund.id, symbol)
             except Exception as exc:
@@ -634,6 +654,40 @@ async def _auto_exit_monitor_loop() -> None:
     while True:
         await asyncio.sleep(screener_config.auto_scan_interval_minutes * 60)
         await _run_auto_exit_monitor_cycle()
+
+
+async def _run_trailing_stop_monitor_cycle() -> None:
+    """Mismo recorrido de fondos/posiciones que _run_auto_exit_monitor_cycle,
+    pero solo para el trailing stop (ver _check_fund_trailing_stop), separado
+    para poder correr a una cadencia mas rapida (poll_interval_seconds) sin
+    repetir tambien el chequeo de salida por trend-break/max-holding-days, que
+    no se beneficia de revisarse mas seguido."""
+    if state["mode"] != "paper" or state["halted"] or not state["connected"]:
+        return
+    for fund in funds_store.list():
+        if not fund.auto_trading_enabled:
+            continue
+        for symbol in list(fund.positions.keys()):
+            try:
+                await _check_fund_trailing_stop(fund.id, symbol)
+            except Exception as exc:
+                audit.record(
+                    "auto_trade_trailing_stop_check_failed", {"fund_id": fund.id, "symbol": symbol}, {"error": str(exc)}
+                )
+
+
+async def _trailing_stop_loop() -> None:
+    """Sube el trailing stop a la misma cadencia que _broadcast_loop
+    (poll_interval_seconds) en vez de auto_scan_interval_minutes: a
+    diferencia de la señal de entrada/salida (atada a cierres diarios), el
+    trailing stop solo necesita precio actual -- ya disponible cada pocos
+    segundos via la misma conexion a IBKR -- y el ATR de la ultima barra
+    cacheada (eso si, sin necesidad de ser "en vivo"). Sin este loop
+    separado, una caida o suba fuerte del precio entre ciclos de 30 min
+    quedaria sin reflejarse en el stop hasta el proximo scan."""
+    while True:
+        await asyncio.sleep(settings.poll_interval_seconds)
+        await _run_trailing_stop_monitor_cycle()
 
 
 async def _restore_persisted_mode() -> None:
@@ -691,11 +745,13 @@ async def lifespan(app: FastAPI):
     risk_task = asyncio.create_task(_risk_monitor_loop())
     signal_task = asyncio.create_task(_signal_scan_loop())
     exit_monitor_task = asyncio.create_task(_auto_exit_monitor_loop())
+    trailing_stop_task = asyncio.create_task(_trailing_stop_loop())
     yield
     task.cancel()
     risk_task.cancel()
     signal_task.cancel()
     exit_monitor_task.cancel()
+    trailing_stop_task.cancel()
     broker.disconnect()
 
 

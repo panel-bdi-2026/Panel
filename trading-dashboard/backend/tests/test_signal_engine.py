@@ -76,7 +76,14 @@ def reset_state(monkeypatch):
     async def fake_get_account_summary():
         return make_account()
 
+    async def fake_get_reference_price(symbol):
+        return None
+
     monkeypatch.setattr(main_module.broker, "get_account_summary", fake_get_account_summary)
+    # Por defecto no hay precio en vivo de IBKR: cae al last_price de la
+    # señal (igual que el comportamiento previo a usar precio en vivo), salvo
+    # que un test override este mock puntualmente.
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_get_reference_price)
     monkeypatch.setattr(main_module, "_persist_state", lambda: None)
     yield
 
