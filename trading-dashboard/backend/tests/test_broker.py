@@ -155,3 +155,119 @@ def test_modify_stop_price_returns_false_when_order_already_done(broker, monkeyp
     monkeypatch.setattr(broker.ib, "placeOrder", fail_if_called)
     assert broker.modify_stop_price(42, 95.0) is False
     assert trade.order.auxPrice == 90.0  # no se toco
+
+
+async def _noop_qualify(*contracts, **kwargs):
+    return list(contracts)
+
+
+def test_stream_subscribe_opens_streaming_only_for_new_symbols(broker, monkeypatch):
+    broker._live_tickers["AAPL"] = FakeTicker(FakeContract(1, "AAPL"), 150.0)
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", _noop_qualify)
+
+    req_calls = []
+
+    def fake_req_mkt_data(contract, generic_ticks, snapshot, regulatory):
+        req_calls.append(contract)
+        return FakeTicker(contract, None)
+
+    monkeypatch.setattr(broker.ib, "reqMktData", fake_req_mkt_data)
+
+    asyncio.run(broker.stream_subscribe(["AAPL", "MSFT"]))
+
+    assert len(req_calls) == 1  # AAPL ya estaba suscripto, no se vuelve a pedir
+    assert req_calls[0].symbol == "MSFT"
+    assert set(broker._live_tickers.keys()) == {"AAPL", "MSFT"}
+
+
+def test_stream_subscribe_skips_network_call_when_nothing_new(broker, monkeypatch):
+    broker._live_tickers["AAPL"] = FakeTicker(FakeContract(1, "AAPL"), 150.0)
+
+    async def fail_if_called(*contracts, **kwargs):
+        raise AssertionError("no deberia llamar a IBKR si no hay simbolos nuevos")
+
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", fail_if_called)
+    asyncio.run(broker.stream_subscribe(["AAPL"]))
+
+
+def test_stream_unsubscribe_cancels_market_data_and_forgets_symbol(broker, monkeypatch):
+    contract = FakeContract(1, "AAPL")
+    broker._live_tickers["AAPL"] = FakeTicker(contract, 150.0)
+
+    cancelled = []
+    monkeypatch.setattr(broker.ib, "cancelMktData", lambda c: cancelled.append(c))
+
+    broker.stream_unsubscribe(["AAPL", "MSFT"])  # MSFT nunca estuvo suscripto
+
+    assert cancelled == [contract]
+    assert "AAPL" not in broker._live_tickers
+
+
+def test_get_live_price_reads_cached_ticker_without_network(broker, monkeypatch):
+    broker._live_tickers["AAPL"] = FakeTicker(FakeContract(1, "AAPL"), 155.5)
+
+    async def fail_if_called(*contracts, **kwargs):
+        raise AssertionError("get_live_price no deberia pedir nada a IBKR")
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", fail_if_called)
+
+    assert broker.get_live_price("AAPL") == 155.5
+    assert broker.get_live_price("MSFT") is None  # no esta en el hot-set
+
+
+def test_get_live_price_treats_nan_as_missing(broker):
+    broker._live_tickers["AAPL"] = FakeTicker(FakeContract(1, "AAPL"), float("nan"))
+    assert broker.get_live_price("AAPL") is None
+
+
+def test_get_snapshot_prices_returns_empty_dict_without_calling_ib(broker, monkeypatch):
+    async def fail_if_called(*contracts, **kwargs):
+        raise AssertionError("no deberia pedir nada a IBKR con una lista vacia")
+
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", fail_if_called)
+    assert asyncio.run(broker.get_snapshot_prices([])) == {}
+
+
+def test_get_snapshot_prices_returns_price_by_symbol(broker, monkeypatch):
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", _noop_qualify)
+
+    async def fake_req_tickers(*contracts, **kwargs):
+        return [
+            FakeTicker(FakeContract(1, "AAPL"), 155.0),
+            FakeTicker(FakeContract(2, "MSFT"), 290.0),
+        ]
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", fake_req_tickers)
+
+    out = asyncio.run(broker.get_snapshot_prices(["AAPL", "MSFT"]))
+    assert out == {"AAPL": 155.0, "MSFT": 290.0}
+
+
+def test_get_snapshot_prices_filters_nan_prices(broker, monkeypatch):
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", _noop_qualify)
+
+    async def fake_req_tickers(*contracts, **kwargs):
+        return [FakeTicker(FakeContract(1, "AAPL"), float("nan"))]
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", fake_req_tickers)
+    assert asyncio.run(broker.get_snapshot_prices(["AAPL"])) == {}
+
+
+def test_get_snapshot_prices_handles_request_failure(broker, monkeypatch):
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", _noop_qualify)
+
+    async def failing_req_tickers(*contracts, **kwargs):
+        raise RuntimeError("pacing violation")
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", failing_req_tickers)
+    assert asyncio.run(broker.get_snapshot_prices(["AAPL"])) == {}
+
+
+def test_disconnect_clears_live_tickers(broker, monkeypatch):
+    broker._live_tickers["AAPL"] = FakeTicker(FakeContract(1, "AAPL"), 150.0)
+    monkeypatch.setattr(broker.ib, "isConnected", lambda: True)
+    monkeypatch.setattr(broker.ib, "disconnect", lambda: None)
+
+    broker.disconnect()
+
+    assert broker._live_tickers == {}

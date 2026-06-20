@@ -673,6 +673,21 @@ def _clear_signal_cache():
     main_module.signal_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_live_radar_state():
+    """Mismo motivo que _clear_signal_cache: _hot_symbols/_live_prices son
+    estado global de proceso (ver _hot_set_loop/_price_rotation_loop en
+    main.py), asi que un test que los puebla puede filtrar al siguiente si no
+    se limpian entre tests."""
+    main_module._hot_symbols.clear()
+    main_module._live_prices.clear()
+    main_module._rotation_cursor = 0
+    yield
+    main_module._hot_symbols.clear()
+    main_module._live_prices.clear()
+    main_module._rotation_cursor = 0
+
+
 def test_scan_signals_rejects_missing_api_key():
     resp = client.get("/api/signals/scan")
     assert resp.status_code == 401
@@ -766,3 +781,126 @@ def test_scan_signals_all_propagates_strategy_failure_as_502(monkeypatch):
     monkeypatch.setattr(main_module.screener, "scan", failing_scan)
     resp = client.get("/api/signals/scan/all", headers={"X-API-Key": "test-key"})
     assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# GET /api/signals/scan?strategy_id=general (vista sintetica del radar en
+# vivo, ver _scan_general en main.py)
+# ---------------------------------------------------------------------------
+
+def test_scan_signals_general_picks_max_score_strategy_per_symbol(monkeypatch):
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [
+        _make_signal("AAPL", 9.0, strategy_id="momentum"),
+        _make_signal("XOM", 2.0, strategy_id="momentum"),
+    ])
+    monkeypatch.setattr(main_module.strategy_registry["opportunistic"], "scan", lambda force=False: [
+        _make_signal("AAPL", 5.0, strategy_id="opportunistic"),
+    ])
+    monkeypatch.setattr(main_module.strategy_registry["long_term"], "scan", lambda force=False: [
+        _make_signal("AAPL", 7.0, strategy_id="long_term"),
+        _make_signal("XOM", 6.0, strategy_id="long_term"),
+    ])
+    monkeypatch.setattr(main_module.strategy_registry["dividend"], "scan", lambda force=False: [
+        _make_signal("AAPL", 3.0, strategy_id="dividend"),
+    ])
+
+    resp = client.get("/api/signals/scan", params={"strategy_id": "general"}, headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+    body = resp.json()
+    by_symbol = {r["symbol"]: r for r in body["results"]}
+
+    assert by_symbol["AAPL"]["score"] == 9.0
+    assert by_symbol["AAPL"]["winning_strategy_id"] == "momentum"
+    assert by_symbol["XOM"]["score"] == 6.0
+    assert by_symbol["XOM"]["winning_strategy_id"] == "long_term"
+    # ordenado por score MAXIMO descendente, no por orden de aparicion
+    assert [r["symbol"] for r in body["results"]] == ["AAPL", "XOM"]
+
+
+def test_scan_signals_general_reuses_cache_already_warmed_by_single_strategy_scan(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        main_module.screener, "scan",
+        lambda force=False: calls.append("momentum") or [_make_signal("AAPL", 9.0, strategy_id="momentum")],
+    )
+    for sid in ("opportunistic", "long_term", "dividend"):
+        monkeypatch.setattr(main_module.strategy_registry[sid], "scan", lambda force=False, sid=sid: [])
+
+    client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})  # calienta el cache de momentum
+    client.get("/api/signals/scan", params={"strategy_id": "general"}, headers={"X-API-Key": "test-key"})
+
+    assert calls == ["momentum"]  # no se volvio a escanear momentum, ya estaba fresco
+
+
+def test_scan_signals_general_propagates_strategy_failure_as_502(monkeypatch):
+    def failing_scan(force=False):
+        raise RuntimeError("fallo de datos de mercado")
+
+    monkeypatch.setattr(main_module.screener, "scan", failing_scan)
+    resp = client.get("/api/signals/scan", params={"strategy_id": "general"}, headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# Overlay del radar en vivo sobre /api/signals/scan (is_hot / last_price,
+# ver _overlay_live_data en main.py)
+# ---------------------------------------------------------------------------
+
+def test_scan_signals_marks_is_hot_and_uses_live_price_for_hot_symbol(monkeypatch):
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [_make_signal("AAPL", 8.0)])
+    main_module._hot_symbols.add("AAPL")
+    monkeypatch.setattr(main_module.broker, "get_live_price", lambda symbol: 123.45 if symbol == "AAPL" else None)
+
+    resp = client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    result = resp.json()["results"][0]
+    assert result["is_hot"] is True
+    assert result["last_price"] == 123.45
+
+
+def test_scan_signals_is_hot_false_when_hot_symbol_has_no_live_price_yet(monkeypatch):
+    # En el hot-set pero todavia sin un primer precio cacheado (ej. justo
+    # despues de un reconnect del broker, antes del proximo ciclo de
+    # _hot_set_loop): no debe mostrarse como "en vivo" ni pisar el precio.
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [_make_signal("AAPL", 8.0)])
+    main_module._hot_symbols.add("AAPL")
+    monkeypatch.setattr(main_module.broker, "get_live_price", lambda symbol: None)
+
+    resp = client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    result = resp.json()["results"][0]
+    assert result["is_hot"] is False
+    assert result["last_price"] == 100.0  # precio cacheado original, sin pisar
+
+
+def test_scan_signals_uses_rotation_price_for_cold_symbol(monkeypatch):
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [_make_signal("AAPL", 8.0)])
+    main_module._live_prices["AAPL"] = 111.11
+
+    resp = client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    result = resp.json()["results"][0]
+    assert result["is_hot"] is False
+    assert result["last_price"] == 111.11
+
+
+def test_scan_signals_keeps_cached_price_when_no_rotation_price_yet(monkeypatch):
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [_make_signal("AAPL", 8.0)])
+
+    resp = client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    result = resp.json()["results"][0]
+    assert result["is_hot"] is False
+    assert result["last_price"] == 100.0
+
+
+def test_scan_signals_general_view_includes_live_overlay(monkeypatch):
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [
+        _make_signal("AAPL", 9.0, strategy_id="momentum"),
+    ])
+    for sid in ("opportunistic", "long_term", "dividend"):
+        monkeypatch.setattr(main_module.strategy_registry[sid], "scan", lambda force=False, sid=sid: [])
+    main_module._hot_symbols.add("AAPL")
+    monkeypatch.setattr(main_module.broker, "get_live_price", lambda symbol: 200.0)
+
+    resp = client.get("/api/signals/scan", params={"strategy_id": "general"}, headers={"X-API-Key": "test-key"})
+    result = resp.json()["results"][0]
+    assert result["winning_strategy_id"] == "momentum"
+    assert result["is_hot"] is True
+    assert result["last_price"] == 200.0

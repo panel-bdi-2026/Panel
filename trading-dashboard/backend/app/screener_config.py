@@ -232,6 +232,30 @@ class ScreenerConfig(BaseModel):
     # anterior que nunca lo tuvo.
     trailing_stop_enabled: bool = False
 
+    # Radar en vivo: mantiene un subconjunto "caliente" de simbolos con
+    # streaming persistente de IBKR (Nivel 1, gratis hasta 100 lineas
+    # simultaneas) para que el precio mostrado en el radar sea casi
+    # instantaneo en vez de depender del cache de yfinance (TTL de 15 min,
+    # ver market_data.py). El resto del universo se refresca por rotacion de
+    # snapshots con las lineas que el hot-set deja libres (ver
+    # _hot_set_loop/_price_rotation_loop en main.py). Nunca toca
+    # score/RSI/etc, que siguen viniendo del scan cacheado: solo pisa el
+    # precio mostrado y marca is_hot.
+    live_radar_enabled: bool = True
+    # Tope de simbolos en streaming permanente. Los calientes son los de
+    # mayor score MAXIMO entre las 4 estrategias (ver _scan_general en
+    # main.py), recalculados cada vez que se refresca el cache de señales.
+    # Tratar como techo, no como objetivo fijo: dejar margen bajo 100 (el
+    # piso gratuito de IBKR) para las lineas de rotacion del resto del
+    # universo y las posiciones abiertas (broker.get_positions tambien
+    # consume lineas).
+    live_hot_symbols_cap: int = 50
+    # Cuantos simbolos del resto del universo (los que no estan calientes) se
+    # piden de a uno por ciclo de rotacion (cada poll_interval_seconds). Mas
+    # alto rota el universo completo mas rapido, pero ocupa mas lineas libres
+    # a la vez (no deberia superar 100 - live_hot_symbols_cap en la practica).
+    live_rotation_batch_size: int = 25
+
     # Filtro de regimen de mercado: no se sugieren entradas largas si el
     # benchmark esta por debajo de su propia SMA de regimen (mercado en
     # tendencia bajista de fondo). Una estrategia long-only de momentum tiende

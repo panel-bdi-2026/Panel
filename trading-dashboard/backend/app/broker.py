@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ib_async import IB, LimitOrder, MarketOrder, Stock, StopOrder
+from ib_async import IB, LimitOrder, MarketOrder, Stock, StopOrder, Ticker
 
 from .models import AccountSummary, OrderRequest, OrderType, Position, Side
 
@@ -39,6 +39,13 @@ class IBKRBroker:
         self.client_id = client_id
         self.account_id: str | None = None
         self.ib = IB()
+        # Suscripciones de streaming persistente (Nivel 1) para el hot-set del
+        # radar de oportunidades (ver _hot_set_loop en main.py): a diferencia
+        # de get_reference_price/get_snapshot_prices (que ocupan una linea
+        # unos segundos y la liberan), estas quedan abiertas y se actualizan
+        # solas via callbacks de ib_async -- get_live_price solo lee el ultimo
+        # valor cacheado, sin pedirle nada nuevo a IBKR.
+        self._live_tickers: dict[str, Ticker] = {}
 
     async def connect(self) -> None:
         try:
@@ -62,6 +69,12 @@ class IBKRBroker:
     def disconnect(self) -> None:
         if self.ib.isConnected():
             self.ib.disconnect()
+        # Los Ticker quedan atados a la conexion que se esta cerrando: tras un
+        # reconnect (que crea un IB() nuevo) ya no se actualizarian solos, asi
+        # que get_live_price no debe seguir devolviendo ese valor congelado.
+        # El proximo ciclo de _hot_set_loop vuelve a suscribir lo que haga
+        # falta sobre la conexion nueva.
+        self._live_tickers.clear()
 
     async def reconnect(self, host: str, port: int, client_id: int) -> None:
         """Cierra la conexion actual y abre una nueva en otro host/puerto.
@@ -169,6 +182,64 @@ class IBKRBroker:
             return None
         price = tickers[0].marketPrice()
         return price if price == price else None  # filtra NaN
+
+    async def stream_subscribe(self, symbols: list[str]) -> None:
+        """Abre suscripciones de streaming persistente para `symbols` que
+        todavia no la tengan (ignora los que ya estan suscriptos: reqMktData
+        de nuevo sobre el mismo contrato duplicaria la linea sin necesidad).
+        No hay limite de "refrescos": una vez suscripto, Ticker.marketPrice()
+        (ver get_live_price) se mantiene actualizado solo mientras dure la
+        conexion, ocupando una sola linea de market data por simbolo."""
+        new_symbols = [s for s in symbols if s not in self._live_tickers]
+        if not new_symbols:
+            return
+        contracts = [Stock(s, "SMART", "USD") for s in new_symbols]
+        await self.ib.qualifyContractsAsync(*contracts)
+        for symbol, contract in zip(new_symbols, contracts):
+            self._live_tickers[symbol] = self.ib.reqMktData(contract, "", False, False)
+
+    def stream_unsubscribe(self, symbols: list[str]) -> None:
+        """Libera lineas de streaming de simbolos que ya no estan en el
+        hot-set. Ignora en silencio los que no estaban suscriptos."""
+        for symbol in symbols:
+            ticker = self._live_tickers.pop(symbol, None)
+            if ticker is not None:
+                self.ib.cancelMktData(ticker.contract)
+
+    def get_live_price(self, symbol: str) -> float | None:
+        """Ultimo precio cacheado de una suscripcion de streaming activa, sin
+        red: Ticker.marketPrice() ya viene actualizado por los callbacks de
+        ib_async en background. None si `symbol` no esta en el hot-set en
+        este momento (o si el callback todavia no trajo un primer precio)."""
+        ticker = self._live_tickers.get(symbol)
+        if ticker is None:
+            return None
+        price = ticker.marketPrice()
+        return price if price == price else None  # filtra NaN
+
+    async def get_snapshot_prices(self, symbols: list[str]) -> dict[str, float]:
+        """Snapshot de precio para un lote de simbolos en una sola llamada
+        (igual que get_positions: reqTickersAsync libera cada linea apenas
+        llega el snapshot, a diferencia de stream_subscribe). Pensado para
+        rotar el resto del universo -- el que no esta en el hot-set -- con las
+        lineas de market data que el hot-set deja libres (ver
+        _price_rotation_loop en main.py)."""
+        if not symbols:
+            return {}
+        contracts = [Stock(s, "SMART", "USD") for s in symbols]
+        await self.ib.qualifyContractsAsync(*contracts)
+        try:
+            tickers = await self.ib.reqTickersAsync(*contracts)
+        except Exception:
+            return {}
+        out: dict[str, float] = {}
+        for t in tickers:
+            if t.contract is None:
+                continue
+            price = t.marketPrice()
+            if price == price:  # filtra NaN
+                out[t.contract.symbol] = price
+        return out
 
     def modify_stop_price(self, stop_order_id: int, new_stop_price: float) -> bool:
         """Sube (o ajusta) el precio de un stop-loss ya colocado, reenviando

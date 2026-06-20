@@ -77,6 +77,10 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .score-badge b{color:var(--text);font-weight:700}
 .score-badge.active{border-color:var(--primary);color:var(--primary-mid);background:rgba(34,211,238,0.08)}
 .score-badge.active b{color:var(--primary)}
+.badge-live{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;
+  background:var(--green-bg);color:var(--green);border:1px solid rgba(45,208,106,.35);
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
+.via-strategy{color:var(--muted);font-size:11px;margin-left:6px}
 .side-sel{display:flex;border:1.5px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:11px}
 .side-opt{flex:1;padding:8px;border:none;background:var(--card2);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;color:var(--muted)}
 .side-opt.on-buy{background:var(--green-bg);color:var(--green)}
@@ -1300,18 +1304,27 @@ function strategyShortLabel(strategyId){
   return strat ? strat.name.slice(0, 3) : strategyId.slice(0, 3);
 }
 
+function strategyName(strategyId){
+  const strat = STRATEGIES.find(s => s.id === strategyId);
+  return strat ? strat.name : strategyId;
+}
+
 function scoresCellHtml(r){
   const scores = r.scores || {};
   const ids = STRATEGIES.length ? STRATEGIES.map(s => s.id) : [currentStrategyId];
+  // En la vista General no hay una estrategia "activa" propia: r.score es el
+  // de la estrategia ganadora (r.winning_strategy_id), asi que el badge a
+  // resaltar es ese en vez de currentStrategyId.
+  const highlightId = currentStrategyId === 'general' ? r.winning_strategy_id : currentStrategyId;
   return `<div class="scores-cell">${ids.map(id => {
-    // El score de la estrategia activa viene siempre de r.score (la fuente
+    // El score de la estrategia resaltada viene siempre de r.score (la fuente
     // primaria de /api/signals/scan); el resto viene del merge de
     // /api/signals/scan/all, que puede no haber resuelto todavia.
-    const value = id === currentStrategyId ? r.score : scores[id];
+    const value = id === highlightId ? r.score : scores[id];
     const label = esc(strategyShortLabel(id));
     const strat = STRATEGIES.find(s => s.id === id);
     const title = strat ? esc(strat.name) : label;
-    const activeCls = id === currentStrategyId ? ' active' : '';
+    const activeCls = id === highlightId ? ' active' : '';
     return `<span class="score-badge${activeCls}" title="${title}">${label} <b>${value != null ? value.toFixed(1) : '—'}</b></span>`;
   }).join('')}</div>`;
 }
@@ -1327,7 +1340,7 @@ function renderSignalsTable(){
   const visible = filtered.slice(0, signalsDisplayCount);
   let rowsHtml = visible.map(r => `
         <tr>
-          <td><b>${esc(r.symbol)}</b>${r.passes_filters ? '' : ' <span class="muted-sm">(no pasa filtros)</span>'}</td>
+          <td><b>${esc(r.symbol)}</b>${r.is_hot ? ' <span class="badge-live" title="Precio en vivo via streaming de IBKR">en vivo</span>' : ''}${currentStrategyId === 'general' && r.winning_strategy_id ? ` <span class="via-strategy">vía ${esc(strategyName(r.winning_strategy_id))}</span>` : ''}${r.passes_filters ? '' : ' <span class="muted-sm">(no pasa filtros)</span>'}</td>
           <td>${esc(r.sector || '—')}</td>
           <td>${scoresCellHtml(r)}</td>
           <td>${fmtUsd(r.last_price)}</td>
@@ -1420,17 +1433,24 @@ async function loadStrategies(){
     STRATEGIES = [{ id:'momentum', name:'Momentum', supports_backtest:true }];
   }
   const sel = document.getElementById('strategySelect');
-  sel.innerHTML = STRATEGIES.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
-  if(!STRATEGIES.some(s => s.id === currentStrategyId) && STRATEGIES.length) currentStrategyId = STRATEGIES[0].id;
+  // "General" es una vista sintetica del backend (ver GENERAL_VIEW_ID en
+  // main.py), no una estrategia real: se agrega solo a este <select>, nunca
+  // a STRATEGIES (eso rompería todo lo que itera STRATEGIES esperando
+  // estrategias reales, como scoresCellHtml o el backtest).
+  const generalOption = `<option value="general">General</option>`;
+  sel.innerHTML = generalOption + STRATEGIES.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+  if(currentStrategyId !== 'general' && !STRATEGIES.some(s => s.id === currentStrategyId) && STRATEGIES.length) currentStrategyId = STRATEGIES[0].id;
   sel.value = currentStrategyId;
   applyStrategyUi();
   scanSignals(false);
 }
 
 function applyStrategyUi(){
+  const isGeneral = currentStrategyId === 'general';
   const strat = STRATEGIES.find(s => s.id === currentStrategyId);
-  document.getElementById('radarTitle').textContent = 'Radar de oportunidades' + (strat ? ` (${strat.name})` : '');
-  const showBacktest = (strat && strat.supports_backtest) ? '' : 'none';
+  const label = isGeneral ? 'General' : (strat ? strat.name : null);
+  document.getElementById('radarTitle').textContent = 'Radar de oportunidades' + (label ? ` (${label})` : '');
+  const showBacktest = (!isGeneral && strat && strat.supports_backtest) ? '' : 'none';
   document.getElementById('backtestBtn').style.display = showBacktest;
   document.getElementById('walkForwardBtn').style.display = showBacktest;
 }

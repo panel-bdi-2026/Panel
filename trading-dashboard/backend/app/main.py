@@ -107,6 +107,11 @@ SIGNAL_CACHE_TTL_SECONDS = 900  # evita re-escanear el mercado en cada refresh
 # resultados de una estrategia bajo el nombre de otra.
 signal_cache: dict[str, dict] = {}
 
+# Vista sintetica "General" del radar (ver _scan_general): no es una
+# estrategia real de strategy_registry, asi que necesita su propio id para
+# que /api/signals/scan la distinga de un strategy_id invalido.
+GENERAL_VIEW_ID = "general"
+
 # Serializa scan y backtest (manuales y el ciclo proactivo en background):
 # ambos golpean la misma API gratuita de datos para todo el universo
 # configurado, y dejarlos correr en paralelo (ej. alguien pide un backtest
@@ -144,6 +149,18 @@ _screener_config_lock = threading.Lock()
 # generar borradores, para no inundar la cola de pendientes apenas arranca el
 # backend o se cambia la config del screener.
 _signal_state: dict = {"previously_passing": None}
+
+# Radar en vivo (ver _hot_set_loop / _price_rotation_loop mas abajo):
+# _hot_symbols son los simbolos con streaming persistente activo en IBKR en
+# este momento (recalculado cada vez que se refresca signal_cache, ver
+# _run_hot_set_cycle); _live_prices son los ultimos snapshots capturados por
+# la rotacion sobre el resto del universo. _rotation_cursor recuerda por
+# donde sigue la proxima rotacion (round-robin sobre el universo). Mismo
+# alcance/limitacion de proceso unico que signal_cache (ver el comentario de
+# arriba sobre multiples workers).
+_hot_symbols: set[str] = set()
+_live_prices: dict[str, float] = {}
+_rotation_cursor = 0
 
 
 def _persist_state() -> None:
@@ -690,6 +707,83 @@ async def _trailing_stop_loop() -> None:
         await _run_trailing_stop_monitor_cycle()
 
 
+async def _run_hot_set_cycle() -> None:
+    """Recalcula el hot-set del radar en vivo: los simbolos con mayor score
+    MAXIMO entre las 4 estrategias (ver _scan_general), hasta
+    live_hot_symbols_cap. Dinamico: diffea contra el hot-set anterior y solo
+    suscribe/desuscribe streaming de IBKR lo que cambio, no todo el set en
+    cada ciclo.
+
+    Las altas se intentan antes que las bajas: si suscribir el nuevo hot-set
+    falla (ej. error de IBKR), el hot-set anterior queda intacto en vez de
+    quedar a mitad de camino sin las lineas viejas ni las nuevas."""
+    global _hot_symbols
+    if not screener_config.live_radar_enabled or not state["connected"]:
+        return
+    try:
+        _, _, ranked = await _scan_general(force=False)
+    except Exception as exc:
+        print(f"[WARN] No se pudo recalcular el hot-set del radar en vivo: {exc}")
+        return
+    cap = max(0, screener_config.live_hot_symbols_cap)
+    new_hot = {r["symbol"] for r in ranked[:cap]}
+    to_add = new_hot - _hot_symbols
+    to_remove = _hot_symbols - new_hot
+    if to_add:
+        try:
+            await broker.stream_subscribe(list(to_add))
+        except Exception as exc:
+            print(f"[WARN] No se pudo suscribir streaming de IBKR para {sorted(to_add)}: {exc}")
+            return
+    if to_remove:
+        broker.stream_unsubscribe(list(to_remove))
+    _hot_symbols = new_hot
+
+
+async def _hot_set_loop() -> None:
+    """Misma cadencia que el TTL del cache de señales: no tiene sentido
+    recalcular el hot-set mas seguido que lo que tarda en cambiar algun score
+    (signal_cache no se refresca antes de eso de todas formas)."""
+    while True:
+        await _run_hot_set_cycle()
+        await asyncio.sleep(SIGNAL_CACHE_TTL_SECONDS)
+
+
+async def _run_price_rotation_cycle() -> None:
+    """Snapshot rotativo sobre el resto del universo (los simbolos que no
+    estan en el hot-set), usando las lineas de market data que el hot-set no
+    esta ocupando. Cada ciclo pide un lote nuevo (round-robin) para cubrir
+    todo el universo en varias pasadas en vez de intentarlo de una sola vez,
+    de forma que entre el hot-set y la rotacion nunca se exceda de golpe el
+    limite gratuito de 100 lineas simultaneas de IBKR."""
+    global _rotation_cursor
+    if not screener_config.live_radar_enabled or not state["connected"]:
+        return
+    cold_symbols = [s for s in screener_config.universe if s not in _hot_symbols]
+    if not cold_symbols:
+        return
+    free_lines = max(0, 100 - len(_hot_symbols))
+    batch_size = min(screener_config.live_rotation_batch_size, free_lines, len(cold_symbols))
+    if batch_size <= 0:
+        return
+    n = len(cold_symbols)
+    start = _rotation_cursor % n
+    batch = [cold_symbols[(start + i) % n] for i in range(batch_size)]
+    _rotation_cursor = (start + batch_size) % n
+    try:
+        prices = await broker.get_snapshot_prices(batch)
+    except Exception as exc:
+        print(f"[WARN] Error al rotar precios en vivo del radar: {exc}")
+        return
+    _live_prices.update(prices)
+
+
+async def _price_rotation_loop() -> None:
+    while True:
+        await _run_price_rotation_cycle()
+        await asyncio.sleep(settings.poll_interval_seconds)
+
+
 async def _restore_persisted_mode() -> None:
     """Si el estado persistido indica un modo distinto al que arranco el
     broker (ej. el backend se reinicio mientras estaba en modo live), reconecta
@@ -746,12 +840,16 @@ async def lifespan(app: FastAPI):
     signal_task = asyncio.create_task(_signal_scan_loop())
     exit_monitor_task = asyncio.create_task(_auto_exit_monitor_loop())
     trailing_stop_task = asyncio.create_task(_trailing_stop_loop())
+    hot_set_task = asyncio.create_task(_hot_set_loop())
+    price_rotation_task = asyncio.create_task(_price_rotation_loop())
     yield
     task.cancel()
     risk_task.cancel()
     signal_task.cancel()
     exit_monitor_task.cancel()
     trailing_stop_task.cancel()
+    hot_set_task.cancel()
+    price_rotation_task.cancel()
     broker.disconnect()
 
 
@@ -963,6 +1061,54 @@ async def _get_or_scan(strategy_id: str, force: bool) -> tuple[datetime, bool, l
     return now, False, signal_cache[strategy_id]["results"]
 
 
+async def _scan_general(force: bool) -> tuple[datetime, bool, list[dict]]:
+    """Vista "General" del radar: por cada simbolo, el resultado de la
+    estrategia que le dio el score MAS ALTO entre las 4 (comparables gracias a
+    apply_cross_sectional_normalization en scoring.py, ver _run_hot_set_cycle).
+    Es la misma logica que determina el hot-set del radar en vivo, asi que el
+    orden de esta vista coincide con cuales simbolos estan en streaming.
+
+    Reusa _get_or_scan por estrategia, asi que comparte signal_cache con
+    /api/signals/scan y /api/signals/scan/all en vez de volver a escanear."""
+    now = datetime.now(timezone.utc)
+    cached_flags = []
+    best_by_symbol: dict[str, dict] = {}
+    for strategy_id in strategy_registry:
+        _, cached, results = await _get_or_scan(strategy_id, force)
+        cached_flags.append(cached)
+        for r in results:
+            current = best_by_symbol.get(r["symbol"])
+            if current is None or r["score"] > current["score"]:
+                best_by_symbol[r["symbol"]] = {**r, "winning_strategy_id": strategy_id}
+    ranked = sorted(best_by_symbol.values(), key=lambda r: r["score"], reverse=True)
+    return now, all(cached_flags), ranked
+
+
+def _overlay_live_data(results: list[dict]) -> list[dict]:
+    """Pisa el precio mostrado (y marca is_hot) con datos del radar en vivo
+    (ver _hot_set_loop / _price_rotation_loop), sin tocar score/RSI/etc, que
+    siguen siendo los del scan cacheado. is_hot solo es true cuando ademas hay
+    un precio en vivo real disponible (no alcanza con que el simbolo este en
+    el hot-set: justo despues de un reconnect del broker, por ejemplo, todavia
+    no hay un primer precio cacheado)."""
+    out = []
+    for r in results:
+        symbol = r["symbol"]
+        overlay: dict = {}
+        if symbol in _hot_symbols:
+            live_price = broker.get_live_price(symbol)
+            overlay["is_hot"] = live_price is not None
+            if live_price is not None:
+                overlay["last_price"] = live_price
+        else:
+            overlay["is_hot"] = False
+            live_price = _live_prices.get(symbol)
+            if live_price is not None:
+                overlay["last_price"] = live_price
+        out.append({**r, **overlay})
+    return out
+
+
 @app.get("/api/signals/scan")
 async def scan_signals(force: bool = False, strategy_id: str | None = None, _: None = Depends(require_api_key)):
     """Radar de oportunidades. No es una recomendacion de inversion ni ejecuta
@@ -980,16 +1126,23 @@ async def scan_signals(force: bool = False, strategy_id: str | None = None, _: N
     sincrono ocuparia ese tiempo un thread del pool compartido por TODOS los
     demas endpoints de la API, pudiendo demorar pedidos no relacionados. El
     lock evita que un scan se cruce con un backtest o con el ciclo proactivo
-    en background, que pegan a la misma API de datos."""
+    en background, que pegan a la misma API de datos.
+
+    strategy_id="general" es una vista sintetica (ver _scan_general): no
+    corresponde a ninguna estrategia de strategy_registry, asi que se maneja
+    aparte antes de validar contra ese registro."""
     resolved_id = strategy_id or screener_config.strategy_id
-    if resolved_id not in strategy_registry:
+    if resolved_id != GENERAL_VIEW_ID and resolved_id not in strategy_registry:
         raise HTTPException(status_code=422, detail=f"strategy_id desconocido: {resolved_id}")
     try:
-        as_of, cached, results = await _get_or_scan(resolved_id, force)
+        if resolved_id == GENERAL_VIEW_ID:
+            as_of, cached, results = await _scan_general(force)
+        else:
+            as_of, cached, results = await _get_or_scan(resolved_id, force)
     except Exception as exc:
         print(f"[WARN] Error al escanear el mercado ({resolved_id}): {exc}")
         raise HTTPException(status_code=502, detail="Error al escanear el mercado. Revisa los logs del servidor.")
-    return {"as_of": as_of, "cached": cached, "results": results}
+    return {"as_of": as_of, "cached": cached, "results": _overlay_live_data(results)}
 
 
 @app.get("/api/signals/scan/all")
