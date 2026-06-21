@@ -7,7 +7,7 @@
 <style>
 :root{
   color-scheme:light;
-  --primary:#92711f;--primary-mid:#ab8a3c;--on-primary:#fffaf0;
+  --primary:#2f5fa8;--primary-mid:#5b9bd5;--on-primary:#ffffff;
   --bg:#f2eee3;--card:#fffdf8;--card2:#ece4d1;--border:#dcd0b4;
   --text:#262521;--muted:#766f5e;--sh:0 1px 3px rgba(40,32,16,.08),0 1px 2px rgba(40,32,16,.06);
   --sh2:0 10px 30px rgba(40,32,16,.16),0 2px 8px rgba(40,32,16,.10);--r:10px;--r2:6px;
@@ -30,7 +30,7 @@ code{background:var(--card2);color:var(--primary-mid);padding:1px 5px;border-rad
 .hdr-l p{font-size:12px;opacity:.8;margin-top:2px;color:var(--muted)}
 .hdr-r{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .badge{font-size:11px;font-weight:800;padding:5px 11px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}
-.badge.paper{background:rgba(146,113,31,.14);color:var(--primary)}
+.badge.paper{background:rgba(47,95,168,.14);color:var(--primary)}
 .badge.live{background:rgba(156,59,46,.16);color:var(--red);animation:pulse 1.8s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
 .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:5px}
@@ -76,7 +76,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .score-badge{display:inline-flex;gap:3px;align-items:baseline;padding:2px 5px;border-radius:5px;
   background:var(--bg);border:1px solid var(--border);font-size:11px;color:var(--muted);white-space:nowrap}
 .score-badge b{color:var(--text);font-weight:700}
-.score-badge.active{border-color:var(--primary);color:var(--primary-mid);background:rgba(146,113,31,0.10)}
+.score-badge.active{border-color:var(--primary);color:var(--primary-mid);background:rgba(47,95,168,0.10)}
 .score-badge.active b{color:var(--primary)}
 .badge-live{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;
   background:var(--green-bg);color:var(--green);border:1px solid rgba(31,110,68,.35);
@@ -344,8 +344,8 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 // las variables CSS de :root (Chart.js no puede leer var(--x) directo: solo
 // acepta colores resueltos).
 const THEME = {
-  primary: '#92711f', primaryMid: '#ab8a3c', green: '#1f6e44', red: '#9c3b2e',
-  amber: '#a3700f', muted: '#766f5e', border: '#dcd0b4', slate: '#5b6b7c', violet: '#7d5a82',
+  primary: '#2f5fa8', primaryMid: '#5b9bd5', green: '#1f6e44', red: '#9c3b2e',
+  amber: '#a3700f', muted: '#766f5e', border: '#dcd0b4', slate: '#8a7d5a', violet: '#7d5a82',
 };
 if(window.Chart){
   Chart.defaults.color = THEME.muted;
@@ -647,8 +647,8 @@ function renderRoiHistoryChart(data){
     data: {
       labels: data.dates,
       datasets: [
-        { label: 'Tu cartera', data: data.fund_cumulative_return_pct, borderColor: THEME.primary, backgroundColor: 'rgba(146,113,31,.15)', fill: false, tension: .15, pointRadius: 0 },
-        { label: 'S&P 500 (SPY)', data: data.benchmark_cumulative_return_pct, borderColor: THEME.slate, backgroundColor: 'rgba(91,107,124,.12)', fill: false, tension: .15, pointRadius: 0 },
+        { label: 'Tu cartera', data: data.fund_cumulative_return_pct, borderColor: THEME.primary, backgroundColor: 'rgba(47,95,168,.15)', fill: false, tension: .15, pointRadius: 0 },
+        { label: 'S&P 500 (SPY)', data: data.benchmark_cumulative_return_pct, borderColor: THEME.slate, backgroundColor: 'rgba(138,125,90,.12)', fill: false, tension: .15, pointRadius: 0 },
       ],
     },
     options: {
@@ -1109,7 +1109,7 @@ async function openFundDetail(fundId){
     type: 'line',
     data: {
       labels: equitySeries.map(p => p.t.toLocaleDateString()),
-      datasets: [{ label: 'Equity', data: equitySeries.map(p => p.equity), borderColor: THEME.primary, backgroundColor: 'rgba(146,113,31,.15)', fill: true, tension: .15, pointRadius: 0 }],
+      datasets: [{ label: 'Equity', data: equitySeries.map(p => p.equity), borderColor: THEME.primary, backgroundColor: 'rgba(47,95,168,.15)', fill: true, tension: .15, pointRadius: 0 }],
     },
     options: { maintainAspectRatio: false, plugins: { legend: { display: false } } },
   }));
@@ -1631,7 +1631,7 @@ async function runBacktest(){
         type: 'line',
         data: {
           labels: r.equity_curve.map(p => new Date(p.date).toLocaleDateString()),
-          datasets: [{ label: 'Retorno acumulado %', data: r.equity_curve.map(p => p.equity_pct), borderColor: THEME.primary, backgroundColor: 'rgba(146,113,31,.15)', fill: true, tension: .15, pointRadius: 0 }],
+          datasets: [{ label: 'Retorno acumulado %', data: r.equity_curve.map(p => p.equity_pct), borderColor: THEME.primary, backgroundColor: 'rgba(47,95,168,.15)', fill: true, tension: .15, pointRadius: 0 }],
         },
         options: {
           maintainAspectRatio: false,
