@@ -7,6 +7,25 @@ from ib_async import IB, LimitOrder, MarketOrder, Stock, StopOrder, Ticker
 from .models import AccountSummary, OrderRequest, OrderType, Position, Side
 
 
+def _to_ib_symbol(symbol: str) -> str:
+    """IBKR identifica las acciones con clase de accion con un espacio (ej.
+    'BRK B'), no con el guion ni el punto que usan los proveedores de datos
+    y el resto de este sistema (BRK-B en screener_config.py/sectors.py/
+    rules.yaml). Sin esto, qualifyContractsAsync no encuentra el contrato
+    para simbolos como BRK-B o BF-B: queda sin conId y todo lo que dependa
+    de el (precio, ordenes) falla en silencio para esos dos tickers."""
+    return symbol.replace("-", " ").replace(".", " ")
+
+
+def _from_ib_symbol(symbol: str) -> str:
+    """Inverso de _to_ib_symbol: el contrato que devuelve IBKR trae el
+    simbolo con espacio. Hay que volver a la forma canonica con guion para
+    que coincida con el universo del screener y el resto del sistema (sin
+    esto, una posicion en BRK-B volveria como "BRK B" y nunca calzaria con
+    los lookups por simbolo de RulesEngine, sectors.py, etc.)."""
+    return symbol.replace(" ", "-")
+
+
 class IBKRConnectionError(RuntimeError):
     pass
 
@@ -160,7 +179,7 @@ class IBKRBroker:
             market_price = price_by_conid.get(p.contract.conId)
             unrealized = (market_price - p.avgCost) * p.position if market_price is not None else None
             out.append(Position(
-                symbol=p.contract.symbol,
+                symbol=_from_ib_symbol(p.contract.symbol),
                 quantity=p.position,
                 avg_cost=p.avgCost,
                 market_price=market_price,
@@ -170,12 +189,12 @@ class IBKRBroker:
 
     def get_position_qty(self, symbol: str) -> float:
         for p in self.ib.positions():
-            if p.contract.symbol == symbol:
+            if _from_ib_symbol(p.contract.symbol) == symbol:
                 return p.position
         return 0.0
 
     async def get_reference_price(self, symbol: str) -> float | None:
-        contract = Stock(symbol, "SMART", "USD")
+        contract = Stock(_to_ib_symbol(symbol), "SMART", "USD")
         await self.ib.qualifyContractsAsync(contract)
         tickers = await self.ib.reqTickersAsync(contract)
         if not tickers:
@@ -193,7 +212,7 @@ class IBKRBroker:
         new_symbols = [s for s in symbols if s not in self._live_tickers]
         if not new_symbols:
             return
-        contracts = [Stock(s, "SMART", "USD") for s in new_symbols]
+        contracts = [Stock(_to_ib_symbol(s), "SMART", "USD") for s in new_symbols]
         await self.ib.qualifyContractsAsync(*contracts)
         for symbol, contract in zip(new_symbols, contracts):
             self._live_tickers[symbol] = self.ib.reqMktData(contract, "", False, False)
@@ -226,7 +245,7 @@ class IBKRBroker:
         _price_rotation_loop en main.py)."""
         if not symbols:
             return {}
-        contracts = [Stock(s, "SMART", "USD") for s in symbols]
+        contracts = [Stock(_to_ib_symbol(s), "SMART", "USD") for s in symbols]
         await self.ib.qualifyContractsAsync(*contracts)
         try:
             tickers = await self.ib.reqTickersAsync(*contracts)
@@ -238,7 +257,7 @@ class IBKRBroker:
                 continue
             price = t.marketPrice()
             if price == price:  # filtra NaN
-                out[t.contract.symbol] = price
+                out[_from_ib_symbol(t.contract.symbol)] = price
         return out
 
     def modify_stop_price(self, stop_order_id: int, new_stop_price: float) -> bool:
@@ -310,7 +329,7 @@ class IBKRBroker:
             await asyncio.sleep(interval)
 
     async def place_order(self, order: OrderRequest) -> dict:
-        contract = Stock(order.symbol, "SMART", "USD")
+        contract = Stock(_to_ib_symbol(order.symbol), "SMART", "USD")
         await self.ib.qualifyContractsAsync(contract)
 
         if order.order_type == OrderType.LMT:

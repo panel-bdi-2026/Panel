@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from app.broker import IBKRBroker
+from app.broker import IBKRBroker, _from_ib_symbol, _to_ib_symbol
 
 
 class FakeContract:
@@ -261,6 +261,71 @@ def test_get_snapshot_prices_handles_request_failure(broker, monkeypatch):
 
     monkeypatch.setattr(broker.ib, "reqTickersAsync", failing_req_tickers)
     assert asyncio.run(broker.get_snapshot_prices(["AAPL"])) == {}
+
+
+def test_to_ib_symbol_converts_hyphen_and_dot_class_suffix_to_space():
+    assert _to_ib_symbol("BRK-B") == "BRK B"
+    assert _to_ib_symbol("BF-B") == "BF B"
+    assert _to_ib_symbol("BRK.B") == "BRK B"
+    assert _to_ib_symbol("AAPL") == "AAPL"  # sin clase de accion: sin cambios
+
+
+def test_from_ib_symbol_converts_space_back_to_hyphen():
+    assert _from_ib_symbol("BRK B") == "BRK-B"
+    assert _from_ib_symbol("BF B") == "BF-B"
+    assert _from_ib_symbol("AAPL") == "AAPL"
+
+
+def test_get_reference_price_qualifies_class_share_symbol_with_space(broker, monkeypatch):
+    seen_contracts = []
+
+    async def fake_qualify(*contracts, **kwargs):
+        seen_contracts.extend(contracts)
+        return list(contracts)
+
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", fake_qualify)
+
+    async def fake_req_tickers(*contracts, **kwargs):
+        return [FakeTicker(contracts[0], 450.0)]
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", fake_req_tickers)
+
+    price = asyncio.run(broker.get_reference_price("BRK-B"))
+
+    assert price == 450.0
+    assert seen_contracts[0].symbol == "BRK B"  # formato que espera IBKR
+
+
+def test_get_positions_translates_class_share_symbol_back_to_hyphen(broker, monkeypatch):
+    pos = FakePosition(1, "BRK B", 10, 300.0)  # IBKR devuelve el simbolo con espacio
+    monkeypatch.setattr(broker.ib, "positions", lambda: [pos])
+
+    async def fake_req_tickers(*contracts, **kwargs):
+        return [FakeTicker(pos.contract, 310.0)]
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", fake_req_tickers)
+
+    out = asyncio.run(broker.get_positions())
+
+    assert out[0].symbol == "BRK-B"  # forma canonica usada por el resto del sistema
+
+
+def test_get_position_qty_matches_class_share_symbol_despite_space(broker, monkeypatch):
+    pos = FakePosition(1, "BRK B", 7, 300.0)
+    monkeypatch.setattr(broker.ib, "positions", lambda: [pos])
+    assert broker.get_position_qty("BRK-B") == 7
+
+
+def test_get_snapshot_prices_keys_result_by_canonical_hyphen_symbol(broker, monkeypatch):
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", _noop_qualify)
+
+    async def fake_req_tickers(*contracts, **kwargs):
+        return [FakeTicker(FakeContract(1, "BRK B"), 450.0)]
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", fake_req_tickers)
+
+    out = asyncio.run(broker.get_snapshot_prices(["BRK-B"]))
+    assert out == {"BRK-B": 450.0}
 
 
 def test_disconnect_clears_live_tickers(broker, monkeypatch):
