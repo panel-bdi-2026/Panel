@@ -121,6 +121,14 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .cfg-tab{padding:7px 15px;border-radius:var(--r2);border:1.5px solid var(--border);
   background:var(--card2);color:var(--muted);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit}
 .cfg-tab.on{background:var(--primary);color:var(--on-primary);border-color:var(--primary)}
+.login-overlay{position:fixed;inset:0;background:var(--bg);display:none;
+  align-items:center;justify-content:center;z-index:5000;padding:20px}
+.login-overlay.show{display:flex}
+.login-box{background:var(--card);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh2);
+  width:100%;max-width:360px;padding:26px 24px}
+.login-box h1{font-size:16px;font-weight:700;font-family:var(--mono);color:var(--primary);margin-bottom:4px}
+.login-box p{font-size:12px;color:var(--muted);margin-bottom:18px}
+.login-error{font-size:12px;color:var(--red);min-height:16px;margin-top:8px}
 @media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.modal-grid{grid-template-columns:1fr}}
 @media(max-width:560px){
   .hdr{padding:12px 16px}
@@ -144,7 +152,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
     <button class="btn btn-mode" id="modeBtn" onclick="toggleMode()">🔴 Activar modo LIVE</button>
     <button class="btn btn-halt" id="haltBtn" onclick="toggleHalt()">⏸ Pausar trading</button>
     <button class="btn btn-ghost" onclick="openConfigModal()">⚙️ Configuración</button>
-    <button class="btn btn-ghost" onclick="openApiKeyPrompt()">🔑 API Key</button>
+    <button class="btn btn-ghost" onclick="logout()">🚪 Salir</button>
   </div>
 </header>
 
@@ -315,6 +323,20 @@ td{padding:8px;border-bottom:1px solid var(--border)}
   </div>
 </div>
 
+<div class="login-overlay" id="loginOverlay">
+  <div class="login-box">
+    <h1>Trading Dashboard · IBKR</h1>
+    <p>Ingresá la contraseña para acceder.</p>
+    <div class="fg">
+      <label class="fl">Contraseña</label>
+      <input id="login-password" class="fi" type="password" autocomplete="current-password"
+        onkeydown="if(event.key==='Enter') doLogin()">
+    </div>
+    <button class="btn-submit" id="loginSubmitBtn" onclick="doLogin()">Entrar</button>
+    <p class="login-error" id="loginError"></p>
+  </div>
+</div>
+
 <script src="vendor/chart.umd.js"></script>
 <script>
 // Paleta compartida por todos los Chart.js de este dashboard, alineada con
@@ -330,44 +352,44 @@ if(window.Chart){
   Chart.defaults.font.family = "ui-monospace,'SF Mono','Cascadia Mono','Roboto Mono',Consolas,monospace";
 }
 
-const apiKeyStorageKey = 'ibkr_dash_api_key';
 let currentSide = 'BUY';
 let ws = null;
 let wsReconnectTimer = null;
 
-function getApiKey(){ return localStorage.getItem(apiKeyStorageKey) || ''; }
-function setApiKey(v){ localStorage.setItem(apiKeyStorageKey, v); }
-
-function openApiKeyPrompt(){
-  openModal('API Key', `
-    <p class="muted-sm" style="margin-bottom:10px">
-      Se manda en el header <code>X-API-Key</code> (definida como <code>API_KEY</code> en el
-      <code>.env</code> del backend) para autenticar las llamadas al API y al WebSocket.
-    </p>
-    <div class="fg">
-      <label class="fl">API Key</label>
-      <input id="apikey-input" class="fi" type="password" autocomplete="off"
-        value="${esc(getApiKey())}" onkeydown="if(event.key==='Enter') saveApiKey()">
-    </div>
-    <button class="btn-submit" onclick="saveApiKey()">Guardar</button>
-  `);
-  document.getElementById('apikey-input').focus();
+function showLoginOverlay(message){
+  document.getElementById('loginOverlay').classList.add('show');
+  document.getElementById('loginError').textContent = message || '';
+  document.getElementById('login-password').focus();
 }
 
-function saveApiKey(){
-  setApiKey(document.getElementById('apikey-input').value.trim());
-  closeModal();
-  // El WS tambien requiere la API key (como query param, ya que el navegador
-  // no puede mandar headers en el handshake): reconectar para que tome la
-  // key recien guardada sin esperar al reintento automatico de 4s. connectWs()
-  // ya se encarga de cerrar la conexion vieja sin disparar un reintento
-  // duplicado (ver su propio comentario).
-  connectWs();
-  // Recien ahora se puede escanear/leer la cuenta: refresca todo con la key.
-  refreshAll();
-  refreshPositions();
-  refreshFunds();
-  loadStrategies();
+function hideLoginOverlay(){
+  document.getElementById('loginOverlay').classList.remove('show');
+  document.getElementById('login-password').value = '';
+}
+
+async function doLogin(){
+  const password = document.getElementById('login-password').value;
+  if(!password) return;
+  try{
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ password }),
+    });
+    if(!res.ok){
+      document.getElementById('loginError').textContent = 'Contraseña incorrecta.';
+      return;
+    }
+    hideLoginOverlay();
+    boot();
+  }catch(e){
+    document.getElementById('loginError').textContent = 'No se pudo conectar con el backend.';
+  }
+}
+
+async function logout(){
+  try{ await fetch('/api/logout', { method: 'POST' }); }catch(e){}
+  location.reload();
 }
 
 function toast(msg, ms=3500){
@@ -378,27 +400,18 @@ function toast(msg, ms=3500){
   window._toastTimer = setTimeout(()=>t.classList.remove('show'), ms);
 }
 
-// Antes, un 401 (API key invalida o rechazada por el backend) solo se
-// trataba explicitamente en refreshStatus(); en cualquier otro lugar
-// quedaba como un "Error: Unauthorized" generico, o silenciado del todo en
-// los refresh periodicos que ignoran errores (refreshAccount, etc.), sin
-// avisarle nunca al usuario que el problema es la key. Centralizado aca para
-// que CUALQUIER llamada con auth:true lo muestre de forma consistente, una
-// sola vez (throttle) y solo si ya hay una key puesta (sin key todavia no es
-// un error, es el estado inicial normal, y ya se indica en el header).
-let lastUnauthorizedToastAt = 0;
+// Una sesion puede caer en cualquier momento (expiro el TTL, o se reinicio
+// el backend y perdio el estado en memoria, ver _sessions en main.py): un 401
+// en CUALQUIER llamada autenticada vuelve a mostrar la pantalla de login en
+// vez de un toast generico de "Unauthorized", para que el usuario pueda
+// re-loguearse ahi mismo.
 function handleUnauthorized(){
-  if(!getApiKey()) return;
-  const now = Date.now();
-  if(now - lastUnauthorizedToastAt < 30000) return;
-  lastUnauthorizedToastAt = now;
-  toast('🔑 Tu API Key fue rechazada (401). Volvé a definirla arriba.');
+  showLoginOverlay('Tu sesión expiró o es inválida. Volvé a ingresar la contraseña.');
 }
 
-async function api(path, { method='GET', body=null, auth=false } = {}){
+async function api(path, { method='GET', body=null } = {}){
   const headers = {'Content-Type':'application/json'};
-  if(auth) headers['X-API-Key'] = getApiKey();
-  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : null });
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : null, credentials: 'same-origin' });
   let data = null;
   try{ data = await res.json(); }catch(e){}
   if(!res.ok){
@@ -465,12 +478,11 @@ async function refreshStatus(){
     return s;
   }catch(e){
     document.getElementById('connTxt').textContent =
-      e.status === 401 ? 'Definí tu API Key (🔑 arriba)' : 'Backend no responde';
+      e.status === 401 ? 'Sesión inválida' : 'Backend no responde';
   }
 }
 
 async function toggleMode(){
-  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
   const s = await api('/api/status', { auth:true });
   const target = s.mode === 'live' ? 'paper' : 'live';
   const verb = target === 'live' ? 'ACTIVAR el modo LIVE (dinero real)' : 'volver al modo PAPER (simulación)';
@@ -485,7 +497,6 @@ async function toggleMode(){
 }
 
 async function toggleHalt(){
-  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
   const s = await api('/api/status', { auth:true });
   try{
     await api(`/api/halt?value=${!s.halted}`, { method:'POST', auth:true });
@@ -1126,7 +1137,6 @@ async function createFund(){
   const name = document.getElementById('fund-name').value.trim();
   const capital = parseFloat(document.getElementById('fund-capital').value);
   if(!name || !capital || capital <= 0){ toast('Completa nombre y capital inicial'); return; }
-  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
   try{
     await api('/api/funds', { method:'POST', auth:true, body:{ name, initial_capital_usd: capital } });
     document.getElementById('fund-name').value = '';
@@ -1140,7 +1150,6 @@ async function adjustFundCapital(fundId, sign){
   const input = document.getElementById(`flow-amount-${fundId}`);
   const raw = parseFloat(input.value);
   if(!raw || raw <= 0){ toast('Ingresa un monto mayor a 0'); return; }
-  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
   if(sign < 0 && !confirm(`¿Confirmás retirar ${fmtUsd(raw)} de este fondo?`)) return;
   const amount = raw * sign;
   try{
@@ -1256,7 +1265,6 @@ async function submitOrder(){
     fund_id: document.getElementById('f-fund').value || null,
   };
   if(!order.symbol || !order.quantity){ toast('Completa símbolo y cantidad'); return; }
-  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
   if(!confirmLiveAction(`¿Confirmás enviar ${order.side} ${order.quantity} ${order.symbol}?`)) return;
 
   try{
@@ -1379,10 +1387,6 @@ async function scanSignals(force=false){
   const requestId = ++scanRequestId;
   const body = document.getElementById('signalsBody');
   const meta = document.getElementById('signalsMeta');
-  if(!getApiKey()){
-    body.innerHTML = `<tr><td colspan="${SIGNALS_COLSPAN}" class="empty">Define tu API Key (🔑 arriba) para escanear el mercado</td></tr>`;
-    return;
-  }
   body.innerHTML = `<tr><td colspan="${SIGNALS_COLSPAN}" class="empty">Escaneando…</td></tr>`;
   try{
     const qs = new URLSearchParams({ strategy_id: currentStrategyId });
@@ -1469,7 +1473,6 @@ async function addTickerToUniverse(){
   const input = document.getElementById('newTickerInput');
   const symbol = input.value.trim().toUpperCase();
   if(!symbol){ toast('Ingresa un símbolo'); return; }
-  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
   // El backend mezcla el PUT con la config vigente (no hace falta reenviar
   // todo, alcanza con `universe`), pero la LISTA en si se reemplaza entera:
   // dos "agregar ticker" casi simultaneos (de este mismo boton, o de otra
@@ -1503,7 +1506,6 @@ async function addTickerToUniverse(){
 }
 
 async function refreshSectors(symbols=null){
-  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
   const btn = document.getElementById('refreshSectorsBtn');
   const original = btn.textContent;
   btn.disabled = true;
@@ -1580,7 +1582,6 @@ async function suggestQuantity(){
   const entryPrice = parseFloat(document.getElementById('f-limit').value);
   const stopPrice = parseFloat(document.getElementById('f-stop').value);
   if(!symbol || !entryPrice || !stopPrice){ toast('Completa símbolo, precio límite y stop-loss primero'); return; }
-  if(!getApiKey()){ toast('Define tu API Key primero (🔑 arriba)'); return; }
   const fundId = document.getElementById('f-fund').value;
   try{
     let url = `/api/orders/size-suggestion?symbol=${encodeURIComponent(symbol)}&entry_price=${entryPrice}&stop_loss_price=${stopPrice}`;
@@ -1673,8 +1674,8 @@ async function runWalkForward(){
 }
 
 function connectWs(){
-  // Sin este guard, un reconnect manual (ej. al guardar una API key nueva)
-  // dejaba la conexion vieja abierta y huerfana: su 'onclose' programaba OTRO
+  // Sin este guard, un reconnect manual (ej. al volver a loguearse) dejaba la
+  // conexion vieja abierta y huerfana: su 'onclose' programaba OTRO
   // setTimeout(connectWs, 4000) ademas del reconnect inmediato, y como esa
   // conexion vieja seguia con su 'onmessage' activo (solo se reasigna la
   // variable global `ws`, no se cierra el socket), terminaban dos sockets
@@ -1690,7 +1691,9 @@ function connectWs(){
   }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   try{
-    ws = new WebSocket(`${proto}://${location.host}/ws?api_key=${encodeURIComponent(getApiKey())}`);
+    // La cookie de sesion viaja sola en el handshake (same-origin), no hace
+    // falta mandarla como query param como antes con la API key.
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.onmessage = (ev) => {
       try{
         const msg = JSON.parse(ev.data);
@@ -1717,7 +1720,14 @@ function connectWs(){
         }
       }catch(e){}
     };
-    ws.onclose = () => { wsReconnectTimer = setTimeout(connectWs, 4000); };
+    ws.onclose = (ev) => {
+      // 1008 = sesion invalida/expirada (ver ws_endpoint en main.py): mostrar
+      // la pantalla de login en vez de reintentar cada 4s contra un backend
+      // que va a seguir rechazando la conexion hasta que el usuario se
+      // re-loguee.
+      if(ev.code === 1008){ handleUnauthorized(); return; }
+      wsReconnectTimer = setTimeout(connectWs, 4000);
+    };
   }catch(e){}
 }
 
@@ -1732,13 +1742,17 @@ async function refreshAll(){
   await refreshFunds();
 }
 
-onTypeChange();
-refreshAll();
-refreshAccount();    // carga inicial; despues el WS la mantiene en vivo
-refreshPositions();  // carga inicial; despues el WS las mantiene en vivo
-refreshFunds();
-loadStrategies();
-connectWs();
+function boot(){
+  onTypeChange();
+  refreshAll();
+  refreshAccount();    // carga inicial; despues el WS la mantiene en vivo
+  refreshPositions();  // carga inicial; despues el WS las mantiene en vivo
+  refreshFunds();
+  loadStrategies();
+  connectWs();
+}
+
+boot();
 setInterval(refreshAll, 8000);
 </script>
 </body>

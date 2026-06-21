@@ -186,6 +186,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
 # editá .env: IB_HOST=127.0.0.1, IB_PORT=4002 (IB Gateway paper), API_KEY=algo-fuerte
+# (API_KEY es la contraseña que despues pide la pantalla de login del dashboard)
 chmod 600 .env
 sudo cp /opt/panel/trading-dashboard/deploy/systemd/trading-dashboard.service /etc/systemd/system/
 sudo systemctl daemon-reload

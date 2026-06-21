@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -171,13 +171,49 @@ def _persist_state() -> None:
     })
 
 
-def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
+SESSION_COOKIE_NAME = "session"
+SESSION_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 dias
+
+# Sesiones de login (ver /api/login, /api/logout). Viven en memoria de
+# proceso (misma limitacion de un-solo-worker que el resto del estado de
+# arriba): un restart del backend desloguea a todo el mundo. La cookie de
+# sesion es httponly (JS no puede leerla) pero NO Secure, porque el deploy
+# documentado (ver deploy/README.md) sirve el dashboard por HTTP plano sobre
+# una red privada de Tailscale, no HTTPS.
+_sessions: dict[str, datetime] = {}
+
+
+def _create_session() -> str:
+    token = secrets.token_urlsafe(32)
+    _sessions[token] = datetime.now(timezone.utc)
+    return token
+
+
+def _session_valid(token: str) -> bool:
+    created = _sessions.get(token)
+    if created is None:
+        return False
+    if (datetime.now(timezone.utc) - created).total_seconds() > SESSION_TTL_SECONDS:
+        del _sessions[token]
+        return False
+    return True
+
+
+def require_api_key(
+    x_api_key: Optional[str] = Header(default=None),
+    session: Optional[str] = Cookie(default=None),
+) -> None:
     # compare_digest en vez de != para no filtrar la API key por timing (una
     # comparacion de strings comun corta apenas encuentra el primer caracter
     # distinto, lo que en teoria permite adivinarla caracter por caracter
-    # midiendo tiempos de respuesta).
-    if not x_api_key or not secrets.compare_digest(x_api_key, settings.api_key):
-        raise HTTPException(status_code=401, detail="API key invalida.")
+    # midiendo tiempos de respuesta). Acepta el header X-API-Key de siempre
+    # (para scripts/automatizacion) o una cookie de sesion valida (la que usa
+    # el dashboard despues de /api/login).
+    if x_api_key and secrets.compare_digest(x_api_key, settings.api_key):
+        return
+    if session and _session_valid(session):
+        return
+    raise HTTPException(status_code=401, detail="No autenticado.")
 
 
 async def _broadcast(payload: dict) -> None:
@@ -865,6 +901,34 @@ if settings.allowed_origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+@app.post("/api/login")
+def login(body: LoginRequest, response: Response):
+    if not secrets.compare_digest(body.password, settings.api_key):
+        raise HTTPException(status_code=401, detail="Contrasena invalida.")
+    token = _create_session()
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=SESSION_TTL_SECONDS,
+        path="/",
+    )
+    return {"ok": True}
+
+
+@app.post("/api/logout")
+def logout(response: Response, session: Optional[str] = Cookie(default=None)):
+    if session:
+        _sessions.pop(session, None)
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return {"ok": True}
 
 
 @app.get("/api/status")
@@ -1803,8 +1867,14 @@ def set_fund_auto_trading(fund_id: str, body: FundAutoTradingUpdate, _: None = D
 async def ws_endpoint(websocket: WebSocket, api_key: str = ""):
     # Un navegador no puede mandar headers personalizados en el handshake de
     # un WebSocket, asi que la API key viaja como query param (?api_key=...)
-    # en vez del header X-API-Key que usa el resto de los endpoints.
-    if not api_key or not secrets.compare_digest(api_key, settings.api_key):
+    # en vez del header X-API-Key que usa el resto de los endpoints. La cookie
+    # de sesion (ver /api/login), en cambio, el navegador la manda sola en el
+    # handshake porque es same-origin.
+    session = websocket.cookies.get(SESSION_COOKIE_NAME)
+    authed = (api_key and secrets.compare_digest(api_key, settings.api_key)) or (
+        session and _session_valid(session)
+    )
+    if not authed:
         await websocket.close(code=1008)
         return
     await websocket.accept()

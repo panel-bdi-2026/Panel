@@ -76,7 +76,9 @@ def reset_state(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 0)
     monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account()))
     monkeypatch.setattr(main_module, "_persist_state", lambda: None)
+    main_module._sessions.clear()
     yield
+    main_module._sessions.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +120,68 @@ def test_halt_endpoint_rejects_request_without_api_key():
 
 
 # ---------------------------------------------------------------------------
+# /api/login y /api/logout (sesion por cookie, alternativa a la API key cruda)
+# ---------------------------------------------------------------------------
+
+def test_login_rejects_wrong_password():
+    resp = client.post("/api/login", json={"password": "clave-incorrecta"})
+    assert resp.status_code == 401
+    assert "session" not in resp.cookies
+
+
+def test_login_sets_httponly_session_cookie_on_correct_password():
+    resp = client.post("/api/login", json={"password": "test-key"})
+    assert resp.status_code == 200
+    assert "session" in resp.cookies
+    set_cookie_header = resp.headers["set-cookie"]
+    assert "HttpOnly" in set_cookie_header  # JS del frontend no debe poder leerla
+
+
+def test_session_cookie_grants_access_to_protected_endpoint_without_api_key_header():
+    login_resp = client.post("/api/login", json={"password": "test-key"})
+    token = login_resp.cookies["session"]
+
+    resp = client.get("/api/status", cookies={"session": token})
+    assert resp.status_code == 200
+
+
+def test_protected_endpoint_rejects_unknown_session_cookie():
+    resp = client.get("/api/status", cookies={"session": "token-que-no-existe"})
+    assert resp.status_code == 401
+
+
+def test_logout_invalidates_the_session():
+    login_resp = client.post("/api/login", json={"password": "test-key"})
+    token = login_resp.cookies["session"]
+    assert client.get("/api/status", cookies={"session": token}).status_code == 200
+
+    logout_resp = client.post("/api/logout", cookies={"session": token})
+    assert logout_resp.status_code == 200
+
+    resp = client.get("/api/status", cookies={"session": token})
+    assert resp.status_code == 401  # la sesion ya no existe del lado del servidor
+
+
+def test_logout_without_a_session_cookie_is_a_harmless_noop():
+    resp = client.post("/api/logout")
+    assert resp.status_code == 200
+
+
+def test_expired_session_is_rejected_and_purged(monkeypatch):
+    login_resp = client.post("/api/login", json={"password": "test-key"})
+    token = login_resp.cookies["session"]
+
+    from datetime import datetime, timedelta, timezone
+    main_module._sessions[token] = datetime.now(timezone.utc) - timedelta(
+        seconds=main_module.SESSION_TTL_SECONDS + 1
+    )
+
+    resp = client.get("/api/status", cookies={"session": token})
+    assert resp.status_code == 401
+    assert token not in main_module._sessions  # se purgo, no solo se rechazo
+
+
+# ---------------------------------------------------------------------------
 # Autenticacion del WebSocket (la API key viaja como query param, no header)
 # ---------------------------------------------------------------------------
 
@@ -140,6 +204,16 @@ def test_websocket_accepts_correct_api_key():
     with client.websocket_connect("/ws?api_key=test-key"):
         assert len(main_module.clients) == 1
     assert main_module.clients == []  # se limpia al desconectar
+
+
+def test_websocket_accepts_session_cookie_without_api_key_query_param():
+    login_resp = client.post("/api/login", json={"password": "test-key"})
+    token = login_resp.cookies["session"]
+
+    assert main_module.clients == []
+    with client.websocket_connect("/ws", cookies={"session": token}):
+        assert len(main_module.clients) == 1
+    assert main_module.clients == []
 
 
 # ---------------------------------------------------------------------------

@@ -86,11 +86,16 @@ solo con este backend (REST + WebSocket), nunca directo con IBKR.
    pendiente, ejecutada) queda en `audit.db` con timestamp y el resultado
    completo de la evaluación de reglas.
 9. **Endpoints que mueven dinero, cambian reglas o leen datos de la cuenta
-   requieren `X-API-Key`** (enviar/aprobar/rechazar órdenes, cambiar
+   requieren autenticación** (enviar/aprobar/rechazar órdenes, cambiar
    `rules.yaml`, pausar/reanudar, y también leer cuenta/posiciones/auditoría —
-   nada de eso es público en la red local). El WebSocket de actualizaciones en
-   vivo pide la misma key como `?api_key=` en la URL, ya que el navegador no
-   puede mandar headers personalizados en el handshake.
+   nada de eso es público en la red local). El dashboard la resuelve con una
+   pantalla de login: la contraseña (`API_KEY` en el `.env`) se valida en
+   `POST /api/login`, que abre una sesión y la deja en una cookie `httpOnly`
+   (no la puede leer JavaScript, ni queda en `localStorage`). El header
+   `X-API-Key` de siempre sigue funcionando igual para scripts/automatización.
+   El WebSocket de actualizaciones en vivo acepta la misma cookie de sesión
+   (el navegador la manda sola en el handshake) o, como antes, la key como
+   `?api_key=` en la URL.
 10. **El estado (`halted`, `mode`, órdenes pendientes) persiste en
     `state.json`** y sobrevive a un reinicio del backend — un reinicio no
     vuelve a dejar el trading activo silenciosamente si lo habías pausado.
@@ -108,9 +113,11 @@ solo con este backend (REST + WebSocket), nunca directo con IBKR.
     contra `^[A-Z0-9.\-]{1,12}$` antes de guardarse o mostrarse, y el frontend
     escapa todo texto dinámico antes de renderizarlo. Sin esto, un "símbolo"
     con HTML/JavaScript podía quedar persistido y ejecutarse en el navegador
-    de quien abriera el dashboard (XSS almacenado capaz de robar la API key).
+    de quien abriera el dashboard (XSS almacenado capaz de operar la cuenta
+    con la sesión activa de quien lo abre, aunque ya no de robar la cookie de
+    sesión en sí: es `httpOnly`).
 13. **Superficie de red mínima.** Escanear el mercado y correr el backtest
-    también requieren `X-API-Key` (no mueven dinero, pero consumen la cuota de
+    también requieren autenticación (no mueven dinero, pero consumen la cuota de
     la API de datos y serían un vector de DoS si quedaran abiertos). CORS está
     cerrado por defecto (el dashboard se sirve del mismo origen que la API);
     se abre solo si definís `ALLOWED_ORIGINS` en el `.env`.
@@ -500,7 +507,8 @@ muestra:
 Dejá esa ventana abierta mientras usás el dashboard; cerrarla lo apaga. El
 `.env` de prueba que se crea automáticamente queda en modo `paper` y sin
 `API_KEY` real — para conectar IBKR de verdad o pasar a `live`, editalo como
-se explica en el resto de este README.
+se explica en el resto de este README. `API_KEY` es además la contraseña que
+te va a pedir la pantalla de login del dashboard.
 
 #### Manual (cualquier sistema)
 
@@ -509,7 +517,7 @@ cd trading-dashboard/backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# edita .env: define API_KEY, confirma IB_HOST/IB_PORT
+# edita .env: define API_KEY (va a ser tu contraseña de login), confirma IB_HOST/IB_PORT
 uvicorn app.main:app --reload --port 8000
 ```
 
