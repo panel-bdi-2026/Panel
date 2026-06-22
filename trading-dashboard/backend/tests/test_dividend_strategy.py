@@ -126,7 +126,9 @@ def test_dividend_yield_pct_normalizes_fraction_and_percent_formats():
 
 def test_evaluate_symbol_exposes_score_components(strategy):
     result = strategy.evaluate_symbol("GOODDIV")
-    assert set(result.score_components.keys()) == {"yield", "payout_quality", "quality"}
+    assert set(result.score_components.keys()) == {
+        "yield", "payout_quality", "quality", "safety", "ownership_alignment",
+    }
 
 
 def test_results_sorted_descending_by_score(strategy):

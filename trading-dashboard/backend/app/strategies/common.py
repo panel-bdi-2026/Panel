@@ -107,6 +107,64 @@ def _as_pct(fraction: "float | None") -> "float | None":
     return fraction * 100 if fraction is not None else None
 
 
+def band_score(value: float, center: float, half_range: float) -> float:
+    """100 en `value == center`, decae linealmente a 0 a `half_range` de
+    distancia de `center` (clampeado a [0, 100]). Para componentes donde
+    "mas no es siempre mejor" (ej. volatilidad, distancia al maximo de 52
+    semanas, dividend yield, payout ratio): a diferencia de un componente
+    monotonico (mas alto = mejor, sin techo), aca el ranking cross-sectional
+    (ver apply_cross_sectional_normalization) premia estar cerca del punto
+    ideal, no estar en el extremo. El llamador decide como resolver un valor
+    faltante (None) ANTES de llamar a esta funcion: no hay una unica
+    semantica correcta de "falta el dato" para todos los componentes (ej.
+    payout ratio ausente conviene asumirlo en el centro del rango sostenible,
+    pero dividend yield ausente conviene tratarlo como 0, el peor caso)."""
+    half_range = max(1e-9, half_range)
+    return 100.0 * (1.0 - min(1.0, abs(value - center) / half_range))
+
+
+def safety_score(
+    current_ratio: "float | None",
+    quick_ratio: "float | None",
+    free_cash_flow: "float | None",
+    beta: "float | None",
+) -> float:
+    """Solidez financiera/riesgo 0-100: liquidez de corto plazo (current/
+    quick ratio), generacion de caja (FCF positivo, solo como bonus binario:
+    un FCF mayor en valor absoluto no es "mejor" de forma comparable entre
+    empresas de escala muy distinta) y volatilidad (beta, cuanto mas bajo
+    mas "seguro"). Cada componente ausente se excluye del promedio en vez de
+    penalizar (no hay dato para opinar, no es lo mismo que un dato malo); si
+    no hay ningun dato disponible, devuelve 50.0 (neutral)."""
+    parts: list[float] = []
+    if current_ratio is not None:
+        parts.append(min(100.0, max(0.0, current_ratio / 2.0 * 100.0)))
+    if quick_ratio is not None:
+        parts.append(min(100.0, max(0.0, quick_ratio / 1.5 * 100.0)))
+    if free_cash_flow is not None:
+        parts.append(100.0 if free_cash_flow > 0 else 0.0)
+    if beta is not None:
+        parts.append(min(100.0, max(0.0, 100.0 - beta * 50.0)))
+    return sum(parts) / len(parts) if parts else 50.0
+
+
+def ownership_alignment_score(insider_pct: "float | None", institutional_pct: "float | None") -> float:
+    """Alineacion de incentivos 0-100: mas ownership de insiders (skin in
+    the game de fundadores/management) y mas ownership institucional
+    (validacion de inversores profesionales) puntua mejor. Cada componente
+    ausente se excluye del promedio; si no hay ningun dato, devuelve 50.0
+    (neutral)."""
+    parts: list[float] = []
+    if insider_pct is not None:
+        # 10% de ownership de insiders ya se considera alto para una empresa
+        # publica tipica: a partir de ahi no suma mas (clampeado a 100).
+        parts.append(min(100.0, max(0.0, insider_pct * 10.0)))
+    if institutional_pct is not None:
+        # ~83% de ownership institucional ya se considera alto.
+        parts.append(min(100.0, max(0.0, institutional_pct * 1.2)))
+    return sum(parts) / len(parts) if parts else 50.0
+
+
 def extra_fundamentals_context(fundamentals: dict, max_beta: float, max_short_interest_pct: float) -> tuple[dict, list[str]]:
     """Fundamentales adicionales "casi gratis" (vienen en la misma respuesta
     de info de yfinance que Largo plazo y Dividendos ya pedian, sin requests

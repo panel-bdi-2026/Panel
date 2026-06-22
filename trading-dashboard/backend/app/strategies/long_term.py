@@ -14,6 +14,8 @@ from .common import (
     context_technicals,
     earnings_blackout_ok,
     extra_fundamentals_context,
+    ownership_alignment_score,
+    safety_score,
     sector_relative_strength,
 )
 
@@ -74,6 +76,7 @@ class LongTermStrategy:
         roe = fundamentals.get("return_on_equity")
         debt_to_equity = fundamentals.get("debt_to_equity")
         profit_margins = fundamentals.get("profit_margins")
+        price_to_book = fundamentals.get("price_to_book")
         extra, extra_notes = extra_fundamentals_context(fundamentals, lt.max_beta, lt.max_short_interest_pct)
         peg = extra["peg_ratio"]
 
@@ -124,36 +127,73 @@ class LongTermStrategy:
             notes.append(f"Deuda/equity {debt_to_equity:.0f} por encima del umbral preferido ({lt.max_debt_to_equity}).")
         notes.extend(extra_notes)
 
-        # PE negativo (ganancias negativas, ej. eps muy cercano a 0 por
-        # debajo) puede dar un numero arbitrariamente grande en valor
-        # absoluto: sin este resguardo, "max_pe_ratio - pe" premiaba sin
-        # limite a una empresa con perdidas como si fuera la mejor
-        # oportunidad de valor, cuando en realidad ni siquiera pasa el
-        # filtro (value_ok exige pe > 0). Un PE alto pero positivo (empresa
-        # cara, no en perdida) si sigue dando un value_score negativo
-        # acotado, que es el comportamiento original e intencional.
-        value_score = (lt.max_pe_ratio - pe) if pe is not None and pe > 0 else 0.0
+        # Earnings yield (100/PE) y book yield (100/price_to_book): invertir
+        # el ratio en vez de restarlo de un tope (como antes) hace que ambas
+        # mitades de "value" se combinen en la misma escala (% de retorno
+        # implicito), no en unidades de PE. PE/PB negativo (ganancias o
+        # patrimonio negativo) puede dar un numero arbitrariamente grande en
+        # valor absoluto al invertirlo: sin este resguardo, una empresa con
+        # perdidas se premiaria sin limite como si fuera la mejor oportunidad
+        # de valor, cuando en realidad ni siquiera pasa el filtro (value_ok
+        # exige pe > 0). Ausente (None) tambien cae en 0.0: no hay base para
+        # asumir que una empresa sin el dato es mas barata que una que si lo
+        # reporta.
+        earnings_yield_pct = (100.0 / pe) if pe is not None and pe > 0 else 0.0
+        book_yield_pct = (100.0 / price_to_book) if price_to_book is not None and price_to_book > 0 else 0.0
+        value_score = 0.6 * earnings_yield_pct + 0.4 * book_yield_pct
         # Mismo resguardo que value_score: un PEG negativo (crecimiento de
         # ganancias negativo) no es "barato", es una division por un numero
         # negativo que daria un score arbitrariamente alto sin merecerlo.
         peg_score = (lt.max_peg_ratio - peg) if peg is not None and peg > 0 else 0.0
-        growth_pct = (earnings_growth or 0.0) * 100
+        # Crecimiento de ganancias y de ingresos (60/40): revenue_growth se
+        # extraia pero no se usaba en ningun lado. Si solo hay un dato
+        # disponible, se usa entero (sin reescalar por el peso del que
+        # falta): asumir 0.0 para el que falta penalizaria a una empresa solo
+        # porque yfinance no reporto ese campo, no porque su crecimiento sea
+        # malo.
+        earnings_growth_pct = earnings_growth * 100 if earnings_growth is not None else None
+        revenue_growth_pct = revenue_growth * 100 if revenue_growth is not None else None
+        if earnings_growth_pct is not None and revenue_growth_pct is not None:
+            growth_pct = 0.6 * earnings_growth_pct + 0.4 * revenue_growth_pct
+        elif earnings_growth_pct is not None:
+            growth_pct = earnings_growth_pct
+        elif revenue_growth_pct is not None:
+            growth_pct = revenue_growth_pct
+        else:
+            growth_pct = 0.0
         roe_pct = (roe or 0.0) * 100
         margin_pct = (profit_margins or 0.0) * 100
+        # Piotroski-lite: rentabilidad (ROE + margen, el "margin" que antes
+        # era una componente de score separada) con una penalizacion graduada
+        # por apalancamiento -- no gating (max_debt_to_equity sigue siendo
+        # solo una nota informativa, ver mas arriba), pero un apalancamiento
+        # alto si pesa en contra de la calidad. Penaliza solo el exceso sobre
+        # max_debt_to_equity (debajo de ese umbral, sin penalizacion), y la
+        # combinacion no puede quedar negativa.
+        debt_penalty = (
+            max(0.0, debt_to_equity - lt.max_debt_to_equity) / lt.max_debt_to_equity * 50.0
+            if debt_to_equity is not None
+            else 0.0
+        )
+        quality_score = max(0.0, (roe_pct + margin_pct) / 2 - debt_penalty)
+        safety = safety_score(extra["current_ratio"], extra["quick_ratio"], extra["free_cash_flow"], extra["beta"])
+        ownership_alignment = ownership_alignment_score(extra["insider_ownership_pct"], extra["institutional_ownership_pct"])
 
         components = {
             "value": value_score,
             "growth": growth_pct,
-            "quality": roe_pct,
-            "margin": margin_pct,
+            "quality": quality_score,
             "peg": peg_score,
+            "safety": safety,
+            "ownership_alignment": ownership_alignment,
         }
         score = (
             lt.score_weight_value * components["value"]
             + lt.score_weight_growth * components["growth"]
             + lt.score_weight_quality * components["quality"]
-            + lt.score_weight_margin * components["margin"]
             + lt.score_weight_peg * components["peg"]
+            + lt.score_weight_safety * components["safety"]
+            + lt.score_weight_ownership_alignment * components["ownership_alignment"]
         )
 
         stop_loss_price = max(0.0, last_price - lt.stop_loss_atr_multiplier * ctx["atr"])
@@ -173,10 +213,13 @@ class LongTermStrategy:
             suggested_stop_loss_price=round(stop_loss_price, 2),
             suggested_stop_loss_pct=round(stop_loss_pct, 2),
             passes_filters=value_ok and growth_ok and liquidity_ok and earnings_ok,
+            liquidity_ok=liquidity_ok,
+            earnings_ok=earnings_ok,
             notes=notes,
             strategy_id=self.id,
             sector=get_sector(symbol),
             pe_ratio=round(pe, 2) if pe is not None else None,
+            price_to_book=round(price_to_book, 2) if price_to_book is not None else None,
             peg_ratio=round(peg, 2) if peg is not None else None,
             beta=round(extra["beta"], 2) if extra["beta"] is not None else None,
             analyst_recommendation=extra["analyst_recommendation"],
@@ -215,8 +258,9 @@ class LongTermStrategy:
             "value": lt.score_weight_value,
             "growth": lt.score_weight_growth,
             "quality": lt.score_weight_quality,
-            "margin": lt.score_weight_margin,
             "peg": lt.score_weight_peg,
+            "safety": lt.score_weight_safety,
+            "ownership_alignment": lt.score_weight_ownership_alignment,
         })
         results.sort(key=lambda r: r.score, reverse=True)
         return results

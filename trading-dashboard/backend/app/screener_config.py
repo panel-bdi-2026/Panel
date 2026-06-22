@@ -117,34 +117,48 @@ class OpportunisticConfig(BaseModel):
     # mas volatil" (si no, el filtro deja pasar nombres tan tranquilos como
     # los de Momentum, que no es el objetivo de esta estrategia).
     min_volatility_pct: float = 3.0
+    # Techo solo para el componente de score (no gating, sin filtro de
+    # volatilidad maxima): mas alla de este punto, mas volatilidad ya no
+    # suma al score de "giro al alza" (band_score en common.py), es solo
+    # mas riesgo sin contrapartida en la tesis de esta estrategia.
+    max_volatility_pct: float = 12.0
     # Cuanto debe estar por debajo del maximo de 52 semanas (lo opuesto al
     # filtro de "cerca del maximo" de Momentum): da el espacio de crecimiento.
     min_pct_below_52w_high: float = 10.0
+    # Techo solo para el componente de score (no gating): mas alla de este
+    # punto ya no es "espacio de crecimiento" sino una caida sostenida que
+    # probablemente señala un problema de fondo, no una oportunidad de giro.
+    max_pct_below_52w_high: float = 30.0
     stop_loss_atr_multiplier: float = 2.0
     max_holding_days: int = 15
 
-    score_weight_momentum: float = 0.4
-    score_weight_volatility: float = 0.2
-    score_weight_rsi_recovery: float = 0.2
-    score_weight_room_to_grow: float = 0.2
+    # Pesos normalizados a suma 1.0 (percentiles 0-100 por componente => el
+    # score promedio de un simbolo "del monton" es ~50, no un multiplo de
+    # 50): permite comparar el score directamente contra el mismo umbral que
+    # usa el trigger de auto-trading en vivo (ver _live_score_entry_threshold
+    # en main.py), sin tener que escalarlo primero.
+    score_weight_momentum: float = 0.3077
+    score_weight_volatility: float = 0.1538
+    score_weight_rsi_recovery: float = 0.1538
+    score_weight_room_to_grow: float = 0.1538
     # MACD recien cruzando a alcista es, literalmente, la señal de "giro al
     # alza" que esta estrategia busca: encaja con su tesis mejor que las
     # Bandas de Bollinger (que premiarian estar cerca de la banda superior,
     # lo opuesto al "espacio de crecimiento" que room_to_grow ya valora).
-    score_weight_macd_turn: float = 0.15
-    score_weight_sector_relative_strength: float = 0.15
+    score_weight_macd_turn: float = 0.1154
+    score_weight_sector_relative_strength: float = 0.1154
 
     # Backtest score-driven (ver backtest.py): reemplaza el AND booleano de
     # filtros tecnicos por el mismo score percentil cross-sectional que usa
     # el scan en vivo (contra el resto del universo, ese mismo dia). Entra
     # cuando el score supera backtest_score_entry_threshold y sale cuando cae
     # por debajo de backtest_score_exit_threshold (o por stop-loss/tiempo
-    # maximo, lo que ocurra primero). Los pesos de score de esta estrategia
-    # suman 1.3: con percentiles 0-100 por componente, el score promedio de un
-    # simbolo "del monton" es ~65 (1.3 x 50), no 50 -- los defaults son
-    # relativos a eso.
-    backtest_score_entry_threshold: float = 75.0
-    backtest_score_exit_threshold: float = 50.0
+    # maximo, lo que ocurra primero). Mismo umbral se usa como gatillo de
+    # auto-trading en el scan en vivo (ver _live_score_entry_threshold en
+    # main.py): una sola fuente de verdad para "que tan bueno es lo bastante
+    # bueno" en esta estrategia, en vez de duplicar el numero.
+    backtest_score_entry_threshold: float = 57.7
+    backtest_score_exit_threshold: float = 38.5
 
 
 class LongTermConfig(BaseModel):
@@ -172,14 +186,31 @@ class LongTermConfig(BaseModel):
     max_short_interest_pct: float = 20.0
     stop_loss_atr_multiplier: float = 2.5
 
-    score_weight_value: float = 0.35
-    score_weight_growth: float = 0.30
+    score_weight_value: float = 0.25
+    score_weight_growth: float = 0.20
+    # "quality" es un Piotroski-lite: combina rentabilidad (ROE, margen, que
+    # antes era un componente "margin" separado) con una penalizacion graduada
+    # por apalancamiento (debt_to_equity), todo con los mismos datos snapshot
+    # que ya se pedian (sin requests ni costo adicional). Ver
+    # strategies/long_term.py.
     score_weight_quality: float = 0.20
-    score_weight_margin: float = 0.15
     # PEG extiende la tesis de valoracion (PE ajustado por crecimiento): mas
     # bajo es mejor, igual logica que value_score pero con max_peg_ratio como
     # tope en vez de max_pe_ratio.
-    score_weight_peg: float = 0.15
+    score_weight_peg: float = 0.10
+    # safety (liquidez corriente/rapida, flujo de caja libre, beta) y
+    # ownership_alignment (insiders e institucionales) son nuevos componentes
+    # de score que antes solo aparecian como notas informativas (no gating):
+    # ver safety_score/ownership_alignment_score en strategies/common.py.
+    score_weight_safety: float = 0.15
+    score_weight_ownership_alignment: float = 0.10
+
+    # Umbral de score para el trigger de auto-trading en el scan en vivo (ver
+    # _live_score_entry_threshold en main.py). Distinto de Momentum/
+    # Oportunista, que reusan su backtest_score_entry_threshold: Largo Plazo
+    # no es backtesteable (sin historia point-in-time de fundamentals), asi
+    # que no existe un campo de backtest para reusar.
+    live_score_entry_threshold: float = 60.0
 
 
 class DividendConfig(BaseModel):
@@ -189,6 +220,12 @@ class DividendConfig(BaseModel):
     datos gratuitos de yfinance: solo escaneo en vivo."""
 
     min_dividend_yield_pct: float = 3.0
+    # Techo solo para el componente de score (no gating, sin filtro de yield
+    # maximo): un yield muy por encima de este punto suele ser señal de
+    # "yield trap" (precio castigado por riesgo de recorte), no de mejor
+    # oportunidad -- band_score en common.py puntua mejor cerca del centro
+    # de este rango que en cualquiera de los dos extremos.
+    max_dividend_yield_pct: float = 9.0
     min_payout_ratio_pct: float = 20.0
     max_payout_ratio_pct: float = 75.0
     min_return_on_equity_pct: float = 8.0
@@ -201,9 +238,21 @@ class DividendConfig(BaseModel):
     max_short_interest_pct: float = 20.0
     stop_loss_atr_multiplier: float = 2.5
 
-    score_weight_yield: float = 0.45
-    score_weight_payout_quality: float = 0.25
-    score_weight_quality: float = 0.30
+    score_weight_yield: float = 0.35
+    score_weight_payout_quality: float = 0.20
+    score_weight_quality: float = 0.20
+    # safety (liquidez corriente/rapida, flujo de caja libre, beta) y
+    # ownership_alignment (insiders e institucionales) son nuevos componentes
+    # de score, igual que en LongTermConfig (ver strategies/common.py):
+    # antes solo aparecian como notas informativas, no gating.
+    score_weight_safety: float = 0.15
+    score_weight_ownership_alignment: float = 0.10
+
+    # Umbral de score para el trigger de auto-trading en el scan en vivo (ver
+    # _live_score_entry_threshold en main.py). Dividendos tampoco es
+    # backtesteable, igual que Largo Plazo: no hay campo de backtest que
+    # reusar.
+    live_score_entry_threshold: float = 60.0
 
 
 class ScreenerConfig(BaseModel):
@@ -240,32 +289,33 @@ class ScreenerConfig(BaseModel):
     rsi_max: float = 75
 
     # Pesos del score de ranking de Momentum (ver evaluate_symbol en
-    # strategies/momentum.py). No necesitan sumar 1: son pesos relativos, no
-    # una probabilidad. Los valores default reproducen el score que estaba
-    # hardcodeado antes de hacerlo configurable.
-    score_weight_relative_strength: float = 0.35
-    score_weight_momentum_3m: float = 0.25
-    score_weight_momentum_1m: float = 0.15
-    score_weight_trend: float = 0.15
-    score_weight_rsi: float = 0.10
+    # screener.py), normalizados a suma 1.0 (percentiles 0-100 por componente
+    # => el score promedio de un simbolo "del monton" es ~50, comparable
+    # directamente contra backtest_score_entry_threshold, que tambien sirve
+    # de umbral de auto-trading en vivo, ver mas abajo).
+    score_weight_relative_strength: float = 0.25
+    score_weight_momentum_3m: float = 0.1786
+    score_weight_momentum_1m: float = 0.1071
+    score_weight_trend: float = 0.1071
+    score_weight_rsi: float = 0.0714
     # Señales tecnicas adicionales (confirmacion de tendencia, no gating):
     # MACD e indice %B de Bollinger refuerzan la misma tesis de momentum ya
     # confirmado (cerca/sobre la banda superior, histograma positivo), y la
     # fuerza relativa contra el ETF del propio sector (distinta de
     # score_weight_relative_strength, que es contra el benchmark general).
-    score_weight_macd: float = 0.10
-    score_weight_bollinger: float = 0.10
-    score_weight_sector_relative_strength: float = 0.20
+    score_weight_macd: float = 0.0714
+    score_weight_bollinger: float = 0.0714
+    score_weight_sector_relative_strength: float = 0.1429
 
     # Backtest score-driven (ver backtest.py): mismo mecanismo que el de
-    # OpportunisticConfig.backtest_score_entry_threshold/_exit_threshold, solo
-    # que para Momentum (cuyos pesos de score suman 1.40, ver score_weight_*
-    # arriba: el score promedio "del monton" es ~70, no 50). regime_filter y
-    # near_high_filter NO son parte del score (son gates booleanos puros, ver
-    # screener.py) y siguen aplicandose ademas del umbral de score, igual que
-    # en el scan en vivo.
-    backtest_score_entry_threshold: float = 80.0
-    backtest_score_exit_threshold: float = 55.0
+    # OpportunisticConfig.backtest_score_entry_threshold/_exit_threshold.
+    # regime_filter y near_high_filter NO son parte del score (son gates
+    # booleanos puros, ver screener.py) y siguen aplicandose ademas del
+    # umbral de score, igual que en el scan en vivo. Mismo umbral se usa
+    # como gatillo de auto-trading en el scan en vivo (ver
+    # _live_score_entry_threshold en main.py).
+    backtest_score_entry_threshold: float = 57.1
+    backtest_score_exit_threshold: float = 39.3
 
     # Volumen promedio en DOLARES (precio x acciones), no en cantidad de
     # acciones: una accion barata puede superar un umbral de acciones y

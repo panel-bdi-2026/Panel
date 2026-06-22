@@ -128,6 +128,21 @@ class SignalResult(BaseModel):
     suggested_stop_loss_pct: float
     passes_filters: bool
     notes: list[str] = []
+    # Gates operativos individuales (liquidez, blackout de earnings, regimen de
+    # mercado, cercania al maximo de 52 semanas). A diferencia de
+    # passes_filters (que exige TODOS los filtros, incluidos los de calidad de
+    # la estrategia, y controla los badges/draft manual en la UI), estos
+    # cuatro son solo los que verifican que es operativamente seguro entrar
+    # (no que el papel sea "bueno"): el trigger de auto-trading los exige
+    # ademas de un score minimo, en vez de exigir passes_filters completo, asi
+    # un score alto no se descarta por un filtro de calidad mas estricto que
+    # el listón de auto-trading. regime_ok/near_high_ok son None cuando la
+    # estrategia no aplica ese filtro (ej. Largo Plazo/Dividendos): None no
+    # bloquea, solo bloquea un False explicito.
+    liquidity_ok: bool = True
+    earnings_ok: bool = True
+    regime_ok: Optional[bool] = None
+    near_high_ok: Optional[bool] = None
     # Estrategia que produjo esta fila (ver app/strategies/): permite mostrar
     # resultados de varias estrategias en la misma tabla sin ambiguedad.
     strategy_id: str = "momentum"
@@ -140,6 +155,9 @@ class SignalResult(BaseModel):
     pe_ratio: Optional[float] = None
     dividend_yield_pct: Optional[float] = None
     payout_ratio_pct: Optional[float] = None
+    # Precio/valor libro (yfinance price_to_book), usado junto a pe_ratio en
+    # el componente "value" de Largo Plazo. None si yfinance no lo reporta.
+    price_to_book: Optional[float] = None
     # Fundamentales adicionales "casi gratis" (vienen en la misma respuesta de
     # info de yfinance que ya se pedia, sin requests extra): solo Largo plazo
     # y Dividendos las consultan, igual que el resto de los fundamentales de
@@ -167,6 +185,17 @@ class SignalResult(BaseModel):
     # sin que evaluate_symbol() necesite saber nada de los demas simbolos del
     # batch.
     score_components: dict[str, float] = {}
+
+    @property
+    def operational_gates_ok(self) -> bool:
+        """AND de los gates operativos (no de calidad). regime_ok/near_high_ok
+        en None significa "no aplica para esta estrategia", no bloquea."""
+        return (
+            self.liquidity_ok
+            and self.earnings_ok
+            and (self.regime_ok is not False)
+            and (self.near_high_ok is not False)
+        )
 
 
 class BacktestTrade(BaseModel):

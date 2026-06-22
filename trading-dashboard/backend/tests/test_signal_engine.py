@@ -34,7 +34,7 @@ def make_account(net_liq: float = 100_000, daily_pnl_pct: float = 0.0) -> Accoun
     )
 
 
-def make_signal(symbol="AAPL", last_price=100.0, stop=95.0, passes=True, score=1.0) -> SignalResult:
+def make_signal(symbol="AAPL", last_price=100.0, stop=95.0, passes=True, score=65.0) -> SignalResult:
     return SignalResult(
         symbol=symbol,
         as_of=datetime.now(timezone.utc),
@@ -321,7 +321,7 @@ def test_signal_scan_cycle_caps_drafts_per_cycle(monkeypatch):
     # 5 simbolos transicionan a "pasa" en el mismo ciclo, ordenados por score
     # descendente (S0 el mas fuerte). Con el tope de 3, solo se draftean los 3
     # mejores.
-    signals = [make_signal(symbol=f"S{i}", score=10 - i, passes=True) for i in range(5)]
+    signals = [make_signal(symbol=f"S{i}", score=100 - i, passes=True) for i in range(5)]
     monkeypatch.setattr(main_module.screener, "scan", lambda: signals)
 
     asyncio.run(main_module._run_signal_scan_cycle())
@@ -352,7 +352,7 @@ def test_signal_scan_cycle_respects_free_slots_vs_top_n(monkeypatch):
     )
     main_module.state["pending_orders"]["pending-x"] = existing
 
-    signals = [make_signal(symbol=f"S{i}", score=10 - i, passes=True) for i in range(3)]
+    signals = [make_signal(symbol=f"S{i}", score=100 - i, passes=True) for i in range(3)]
     monkeypatch.setattr(main_module.screener, "scan", lambda: signals)
 
     asyncio.run(main_module._run_signal_scan_cycle())

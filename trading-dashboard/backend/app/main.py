@@ -269,8 +269,10 @@ def _compute_sector_exposure(positions: list[Position], exclude_symbol: str) -> 
 
 
 async def _draft_order_from_signal(result: SignalResult, positions: list[Position]) -> PendingOrder | None:
-    """Convierte una señal recien pasada a passes_filters=True en una orden de
-    compra en borrador, sizeada por riesgo via RulesEngine.suggested_quantity().
+    """Convierte una señal que recien cruzo el umbral de auto-trading (ver
+    _live_score_entry_threshold/operational_gates_ok en _run_signal_scan_cycle)
+    en una orden de compra en borrador, sizeada por riesgo via
+    RulesEngine.suggested_quantity().
 
     Se salta el draft (sin loggear error, es esperable que pase seguido) si ya
     hay una posicion abierta o una orden pendiente en ese simbolo, o si el
@@ -435,6 +437,26 @@ async def _try_auto_trade_entry(result: SignalResult) -> None:
         )
 
 
+def _live_score_entry_threshold(strategy_id: str) -> float:
+    """Umbral de score para el trigger de auto-trading en el scan en vivo,
+    distinto por estrategia. Momentum/Oportunista reusan su umbral de
+    backtest (backtest_score_entry_threshold): una sola fuente de verdad
+    para "que tan bueno es lo bastante bueno" en cada una, en vez de
+    duplicar el numero en un campo aparte. Largo Plazo/Dividendos no son
+    backtesteables (sin historia point-in-time de fundamentals), asi que
+    tienen su propio campo live_score_entry_threshold."""
+    cfg = screener_config
+    if strategy_id == "momentum":
+        return cfg.backtest_score_entry_threshold
+    if strategy_id == "opportunistic":
+        return cfg.opportunistic.backtest_score_entry_threshold
+    if strategy_id == "long_term":
+        return cfg.long_term.live_score_entry_threshold
+    if strategy_id == "dividend":
+        return cfg.dividend.live_score_entry_threshold
+    raise ValueError(f"strategy_id desconocido: {strategy_id!r}")
+
+
 async def _run_signal_scan_cycle() -> None:
     """Un ciclo del escaneo proactivo: corre el screener, detecta simbolos que
     recien empiezan a pasar los filtros (transicion no-pasa -> pasa) y les
@@ -454,7 +476,16 @@ async def _run_signal_scan_cycle() -> None:
         return
 
     top_results = results[: screener_config.top_n]
-    passing_now = {r.symbol for r in top_results if r.passes_filters}
+    # Gatillo de auto-trading: score >= umbral en vivo Y gates operativos
+    # (liquidez, blackout de earnings, regimen, cercania al maximo de 52
+    # semanas), NO passes_filters completo. passes_filters exige ademas los
+    # filtros de CALIDAD propios de cada estrategia (ej. RSI en rango, yield
+    # minimo): un score alto ya resume esa calidad de forma continua, asi que
+    # exigir el AND booleano completo descartaria señales fuertes por un solo
+    # filtro de calidad mas estricto que el listón de auto-trading (ver
+    # operational_gates_ok en models.py).
+    threshold = _live_score_entry_threshold(screener_config.strategy_id)
+    passing_now = {r.symbol for r in top_results if r.score >= threshold and r.operational_gates_ok}
     previously_passing = _signal_state["previously_passing"]
 
     if previously_passing is None:

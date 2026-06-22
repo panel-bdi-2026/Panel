@@ -25,6 +25,14 @@ class BacktestError(RuntimeError):
     pass
 
 
+def _band_score_series(value: pd.Series, center: float, half_range: float) -> pd.Series:
+    """Vectorizado, misma formula que band_score en strategies/common.py (no
+    se importa de ahi por el mismo motivo que _OPPORTUNISTIC_CONTEXT_MOMENTUM_DAYS:
+    evitar el ciclo de import documentado en sector_strength.py)."""
+    half_range = max(1e-9, half_range)
+    return 100.0 * (1.0 - (value - center).abs().div(half_range).clip(upper=1.0))
+
+
 def _trade_daily_marks(
     bars: pd.DataFrame, entry_idx: int, exit_idx: int, entry_fill: float, ret_pct: float
 ) -> dict:
@@ -104,9 +112,19 @@ def _momentum_raw_components(
         # ranking cross-sectional con momentum/tendencia indefinidos.
         valid = ~(sma_slow_s.isna() | roc_3m.isna())
 
+        # Fuerza continua de la tendencia, mismo calculo que screener.py:
+        # promedio de cuanto el precio esta por encima de la SMA rapida y
+        # cuanto la SMA rapida esta por encima de la SMA lenta, ambos en %.
+        # Si falta alguna SMA (NaN o cero) se cae al viejo +-10 fijo, igual
+        # que el fallback en evaluate_symbol.
         trend_ok = (close > sma_fast_s) & (sma_fast_s > sma_slow_s)
-        trend_component = pd.Series(-10.0, index=close.index)
-        trend_component[trend_ok] = 10.0
+        trend_fallback = pd.Series(-10.0, index=close.index)
+        trend_fallback[trend_ok] = 10.0
+        trend_strength_pct = (
+            (close - sma_fast_s) / sma_fast_s.where(sma_fast_s != 0) * 100
+            + (sma_fast_s - sma_slow_s) / sma_slow_s.where(sma_slow_s != 0) * 100
+        ) / 2
+        trend_component = trend_strength_pct.fillna(trend_fallback)
 
         sector_rel = sector_relative_strength_series(symbol, roc_3m, history_days)
         sector_component = sector_rel.fillna(0.0) if sector_rel is not None else pd.Series(0.0, index=close.index)
@@ -262,6 +280,14 @@ def _opportunistic_raw_components(
     keys = ("momentum", "volatility", "rsi_recovery", "room_to_grow", "macd_turn", "sector_relative_strength")
     per_symbol: dict[str, dict[str, pd.Series]] = {key: {} for key in keys}
 
+    # Mismos centro/medio-rango que evaluate_symbol (ver opportunistic.py):
+    # banded, no monotonico, calculados una sola vez fuera del loop por
+    # simbolo ya que no dependen del simbolo.
+    volatility_mid = (opp.min_volatility_pct + opp.max_volatility_pct) / 2
+    volatility_half_range = max(1.0, (opp.max_volatility_pct - opp.min_volatility_pct) / 2)
+    room_to_grow_mid = (opp.min_pct_below_52w_high + opp.max_pct_below_52w_high) / 2
+    room_to_grow_half_range = max(1.0, (opp.max_pct_below_52w_high - opp.min_pct_below_52w_high) / 2)
+
     for symbol, bars in bars_by_symbol.items():
         close = bars["Close"]
         atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
@@ -278,13 +304,15 @@ def _opportunistic_raw_components(
         valid = ~(atr_s.isna() | roc_3m_context.isna() | roc_short.isna())
 
         volatility_pct_s = (atr_s / close * 100).where(close != 0)
-        room_to_grow_component = from_high_s.abs().fillna(0.0)
+        volatility_component = _band_score_series(volatility_pct_s, volatility_mid, volatility_half_range)
+        room_to_grow_raw = from_high_s.abs().fillna(0.0)
+        room_to_grow_component = _band_score_series(room_to_grow_raw, room_to_grow_mid, room_to_grow_half_range)
 
         sector_rel = sector_relative_strength_series(symbol, roc_3m_context, history_days)
         sector_component = sector_rel.fillna(0.0) if sector_rel is not None else pd.Series(0.0, index=close.index)
 
         per_symbol["momentum"][symbol] = roc_short.where(valid)
-        per_symbol["volatility"][symbol] = volatility_pct_s.where(valid)
+        per_symbol["volatility"][symbol] = volatility_component.where(valid)
         per_symbol["rsi_recovery"][symbol] = (rsi_s - opp.rsi_min).where(valid)
         per_symbol["room_to_grow"][symbol] = room_to_grow_component.where(valid)
         per_symbol["macd_turn"][symbol] = macd_pct_s.fillna(0.0).where(valid)

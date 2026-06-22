@@ -11,9 +11,12 @@ from ..sectors import get_sector
 from .common import (
     avg_dollar_volume,
     avg_volume,
+    band_score,
     context_technicals,
     earnings_blackout_ok,
     extra_fundamentals_context,
+    ownership_alignment_score,
+    safety_score,
     sector_relative_strength,
 )
 
@@ -104,25 +107,47 @@ class DividendStrategy:
             notes.append(f"Earnings estimados en {days_to_earnings} dia(s): dentro de la ventana de blackout.")
         if roe is not None and roe * 100 < dv.min_return_on_equity_pct:
             notes.append(f"ROE {roe * 100:.1f}% por debajo del umbral preferido ({dv.min_return_on_equity_pct}%) (no bloquea, solo score).")
+        if profit_margins is not None and profit_margins * 100 < dv.min_profit_margin_pct:
+            notes.append(
+                f"Margen de ganancia {profit_margins * 100:.1f}% por debajo del umbral "
+                f"preferido ({dv.min_profit_margin_pct}%) (no bloquea, solo score)."
+            )
         notes.extend(extra_notes)
 
-        # Penaliza payout cerca de los extremos del rango sostenible (mas
-        # cerca del centro = mas margen antes de un recorte de dividendo).
+        # Yield y payout_quality usan band_score (no monotonico, ver
+        # common.py): un yield muy por encima del rango sostenible suele ser
+        # "yield trap" (no mejor oportunidad), y un payout cerca del centro
+        # del rango configurado da mas margen antes de un recorte de
+        # dividendo que cualquiera de los dos extremos. Yield ausente se
+        # trata como 0 (el peor caso, ya bloquea passes_filters); payout
+        # ausente se asume en el centro del rango sostenible (no hay base
+        # para asumir lo peor solo porque falta el dato).
+        yield_mid = (dv.min_dividend_yield_pct + dv.max_dividend_yield_pct) / 2
+        yield_half_range = max(1.0, (dv.max_dividend_yield_pct - dv.min_dividend_yield_pct) / 2)
+        yield_score = band_score(div_yield_pct if div_yield_pct is not None else 0.0, yield_mid, yield_half_range)
+
         payout_mid = (dv.min_payout_ratio_pct + dv.max_payout_ratio_pct) / 2
         payout_half_range = max(1.0, (dv.max_payout_ratio_pct - dv.min_payout_ratio_pct) / 2)
-        payout_quality = 100 * (1 - min(1.0, abs((payout_pct or payout_mid) - payout_mid) / payout_half_range))
+        payout_quality = band_score(payout_pct if payout_pct is not None else payout_mid, payout_mid, payout_half_range)
+
         roe_pct = (roe or 0.0) * 100
         margin_pct = (profit_margins or 0.0) * 100
+        safety = safety_score(extra["current_ratio"], extra["quick_ratio"], extra["free_cash_flow"], extra["beta"])
+        ownership_alignment = ownership_alignment_score(extra["insider_ownership_pct"], extra["institutional_ownership_pct"])
 
         components = {
-            "yield": div_yield_pct or 0.0,
+            "yield": yield_score,
             "payout_quality": payout_quality,
             "quality": (roe_pct + margin_pct) / 2,
+            "safety": safety,
+            "ownership_alignment": ownership_alignment,
         }
         score = (
             dv.score_weight_yield * components["yield"]
             + dv.score_weight_payout_quality * components["payout_quality"]
             + dv.score_weight_quality * components["quality"]
+            + dv.score_weight_safety * components["safety"]
+            + dv.score_weight_ownership_alignment * components["ownership_alignment"]
         )
 
         stop_loss_price = max(0.0, last_price - dv.stop_loss_atr_multiplier * ctx["atr"])
@@ -142,6 +167,8 @@ class DividendStrategy:
             suggested_stop_loss_price=round(stop_loss_price, 2),
             suggested_stop_loss_pct=round(stop_loss_pct, 2),
             passes_filters=yield_ok and payout_ok and liquidity_ok and earnings_ok,
+            liquidity_ok=liquidity_ok,
+            earnings_ok=earnings_ok,
             notes=notes,
             strategy_id=self.id,
             sector=get_sector(symbol),
@@ -185,6 +212,8 @@ class DividendStrategy:
             "yield": dv.score_weight_yield,
             "payout_quality": dv.score_weight_payout_quality,
             "quality": dv.score_weight_quality,
+            "safety": dv.score_weight_safety,
+            "ownership_alignment": dv.score_weight_ownership_alignment,
         })
         results.sort(key=lambda r: r.score, reverse=True)
         return results

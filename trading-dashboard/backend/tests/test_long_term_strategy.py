@@ -146,7 +146,9 @@ def test_high_debt_to_equity_adds_note_but_does_not_block_filter(monkeypatch, pa
 
 def test_evaluate_symbol_exposes_score_components(strategy):
     result = strategy.evaluate_symbol("STRONG")
-    assert set(result.score_components.keys()) == {"value", "growth", "quality", "margin", "peg"}
+    assert set(result.score_components.keys()) == {
+        "value", "growth", "quality", "peg", "safety", "ownership_alignment",
+    }
 
 
 def test_results_sorted_descending_by_score(strategy):

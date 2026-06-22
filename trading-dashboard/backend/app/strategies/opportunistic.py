@@ -12,6 +12,7 @@ from ..sectors import get_sector
 from .common import (
     avg_dollar_volume,
     avg_volume,
+    band_score,
     context_technicals,
     earnings_blackout_ok,
     sector_relative_strength,
@@ -98,11 +99,23 @@ class OpportunisticStrategy:
         if not earnings_ok:
             notes.append(f"Earnings estimados en {days_to_earnings} dia(s): dentro de la ventana de blackout.")
 
+        # volatility y room_to_grow usan band_score (no monotonico: "mas no es
+        # siempre mejor", ver common.py): demasiada volatilidad o estar
+        # demasiado lejos del maximo de 52 semanas dejan de ser una mejor
+        # señal de "giro al alza" y pasan a ser solo mas riesgo/una caida
+        # sostenida, asi que el centro de cada rango configurado puntua mas
+        # alto que cualquiera de los dos extremos.
+        volatility_mid = (opp.min_volatility_pct + opp.max_volatility_pct) / 2
+        volatility_half_range = max(1.0, (opp.max_volatility_pct - opp.min_volatility_pct) / 2)
+        room_to_grow_mid = (opp.min_pct_below_52w_high + opp.max_pct_below_52w_high) / 2
+        room_to_grow_half_range = max(1.0, (opp.max_pct_below_52w_high - opp.min_pct_below_52w_high) / 2)
+        room_to_grow_raw = abs(last_from_high) if last_from_high is not None else 0.0
+
         components = {
             "momentum": last_roc,
-            "volatility": volatility_pct,
+            "volatility": band_score(volatility_pct, volatility_mid, volatility_half_range),
             "rsi_recovery": last_rsi - opp.rsi_min,
-            "room_to_grow": abs(last_from_high or 0.0),
+            "room_to_grow": band_score(room_to_grow_raw, room_to_grow_mid, room_to_grow_half_range),
             "macd_turn": ctx["macd_histogram_pct"] if ctx["macd_histogram_pct"] is not None else 0.0,
             "sector_relative_strength": last_sector_rel_strength if last_sector_rel_strength is not None else 0.0,
         }
@@ -132,6 +145,8 @@ class OpportunisticStrategy:
             suggested_stop_loss_price=round(stop_loss_price, 2),
             suggested_stop_loss_pct=round(stop_loss_pct, 2),
             passes_filters=momentum_ok and rsi_ok and volatility_ok and liquidity_ok and room_to_grow_ok and earnings_ok,
+            liquidity_ok=liquidity_ok,
+            earnings_ok=earnings_ok,
             notes=notes,
             strategy_id=self.id,
             sector=get_sector(symbol),

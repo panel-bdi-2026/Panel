@@ -161,11 +161,27 @@ class MomentumScreener:
 
         relative_strength = last_roc_3m - benchmark_roc_3m if benchmark_roc_3m is not None else 0.0
 
+        # Fuerza continua de la tendencia (no solo SI/NO): promedio de cuanto
+        # el precio esta por encima de la SMA rapida y cuanto la SMA rapida
+        # esta por encima de la SMA lenta, ambos en %. Negativo si el stack
+        # esta invertido. Reemplaza el viejo +-10 fijo: una tendencia muy
+        # fuerte ahora puntua mas que una apenas confirmada, en vez de
+        # tratarlas igual con el mismo valor binario.
+        sma_fast_last = sma_fast_s.iloc[-1]
+        sma_slow_last = sma_slow_s.iloc[-1]
+        if not pd.isna(sma_fast_last) and sma_fast_last and sma_slow_last:
+            trend_strength_pct = (
+                (last_price - sma_fast_last) / sma_fast_last * 100
+                + (sma_fast_last - sma_slow_last) / sma_slow_last * 100
+            ) / 2
+        else:
+            trend_strength_pct = 10.0 if trend_ok else -10.0
+
         components = {
             "relative_strength": relative_strength,
             "momentum_3m": last_roc_3m,
             "momentum_1m": last_roc_1m,
-            "trend": 10.0 if trend_ok else -10.0,
+            "trend": trend_strength_pct,
             "rsi": last_rsi - 50,
             "macd": last_macd_hist_pct if last_macd_hist_pct is not None else 0.0,
             "bollinger": last_bollinger_pct_b if last_bollinger_pct_b is not None else 0.5,
@@ -199,6 +215,10 @@ class MomentumScreener:
             suggested_stop_loss_price=round(stop_loss_price, 2),
             suggested_stop_loss_pct=round(stop_loss_pct, 2),
             passes_filters=trend_ok and liquidity_ok and rsi_ok and regime_ok and earnings_ok and near_high_ok,
+            liquidity_ok=liquidity_ok,
+            earnings_ok=earnings_ok,
+            regime_ok=regime_ok,
+            near_high_ok=near_high_ok,
             notes=notes,
             strategy_id=self.id,
             sector=get_sector(symbol),
