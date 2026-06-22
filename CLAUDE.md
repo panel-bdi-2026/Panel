@@ -21,10 +21,20 @@ ssh root@100.92.236.44
 cd /opt/panel
 git fetch origin
 git pull origin claude/investment-dashboard-trades-x2vkn8
+cd trading-dashboard/backend
+.venv/bin/pip install -r requirements.txt
+cd /opt/panel
 chown -R trading:trading /opt/panel
 systemctl restart trading-dashboard
 systemctl status trading-dashboard
 ```
+
+El paso de `pip install` es obligatorio en cada deploy, no solo cuando "se
+sabe" que cambió una dependencia: el 2026-06-22 un deploy sin este paso dejó
+el servicio en crash-loop (`ModuleNotFoundError: No module named
+'anthropic'`) porque se había agregado `anthropic` a `requirements.txt` en un
+commit previo. `pip install -r requirements.txt` no hace nada (rápido) si no
+hay paquetes nuevos, así que no tiene costo correrlo siempre.
 
 Si no levanta: `journalctl -u trading-dashboard -n 50 --no-pager`.
 
