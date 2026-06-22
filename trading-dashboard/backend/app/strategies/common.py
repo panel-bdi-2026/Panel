@@ -101,3 +101,70 @@ def earnings_blackout_ok(symbol: str, blackout_days: int, force: bool = False) -
     days = (earnings_date - datetime.now(timezone.utc).date()).days if earnings_date else None
     ok = days is None or not (0 <= days <= blackout_days)
     return ok, days
+
+
+def _as_pct(fraction: "float | None") -> "float | None":
+    return fraction * 100 if fraction is not None else None
+
+
+def extra_fundamentals_context(fundamentals: dict, max_beta: float, max_short_interest_pct: float) -> tuple[dict, list[str]]:
+    """Fundamentales adicionales "casi gratis" (vienen en la misma respuesta
+    de info de yfinance que Largo plazo y Dividendos ya pedian, sin requests
+    extra): PEG, beta, recomendacion de analistas, ownership de insiders/
+    institucional, interes en corto y ratios de liquidez/FCF. Ninguno de
+    estos bloquea passes_filters: son notas informativas (no afectan
+    `score`), igual que max_debt_to_equity en LongTermConfig. Comun a ambas
+    estrategias para no duplicar la misma extraccion y las mismas notas dos
+    veces."""
+    peg = fundamentals.get("peg_ratio")
+    peg_is_trailing_estimate = False
+    if peg is None:
+        peg = fundamentals.get("peg_ratio_trailing")
+        peg_is_trailing_estimate = peg is not None
+    beta = fundamentals.get("beta")
+    recommendation = fundamentals.get("recommendation_key")
+    insider_pct = _as_pct(fundamentals.get("insider_ownership"))
+    institutional_pct = _as_pct(fundamentals.get("institutional_ownership"))
+    short_pct = _as_pct(fundamentals.get("short_pct_of_float"))
+    current_ratio = fundamentals.get("current_ratio")
+    quick_ratio = fundamentals.get("quick_ratio")
+    free_cash_flow = fundamentals.get("free_cash_flow")
+
+    notes: list[str] = []
+    if peg_is_trailing_estimate:
+        notes.append("PEG calculado con trailing PEG ratio: no hay PEG estandar disponible.")
+    if beta is not None and beta > max_beta:
+        notes.append(
+            f"Beta {beta:.2f} por encima del umbral preferido ({max_beta}): mas volatil que el "
+            "mercado (no bloquea, solo informativo)."
+        )
+    if short_pct is not None and short_pct > max_short_interest_pct:
+        notes.append(
+            f"Interes en corto {short_pct:.1f}% por encima del umbral preferido "
+            f"({max_short_interest_pct}%) (no bloquea, solo informativo)."
+        )
+    if current_ratio is not None and current_ratio < 1.0:
+        notes.append(f"Current ratio {current_ratio:.2f} por debajo de 1.0 (no bloquea, solo informativo).")
+    if quick_ratio is not None and quick_ratio < 1.0:
+        notes.append(f"Quick ratio {quick_ratio:.2f} por debajo de 1.0 (no bloquea, solo informativo).")
+    if free_cash_flow is not None and free_cash_flow < 0:
+        notes.append("Free cash flow negativo (no bloquea, solo informativo).")
+    if recommendation in {"sell", "strong_sell", "underperform"}:
+        notes.append(f"Consenso de analistas: {recommendation} (no bloquea, solo informativo).")
+
+    # Sin redondear: el llamador (evaluate_symbol de cada estrategia) redondea
+    # recien al construir el SignalResult, igual que el resto de los campos
+    # fundamentales existentes (ver pe_ratio en long_term.py/dividend.py). peg
+    # ratio ademas se usa crudo en el calculo de score de Largo plazo.
+    ctx = {
+        "peg_ratio": peg,
+        "beta": beta,
+        "analyst_recommendation": recommendation,
+        "insider_ownership_pct": insider_pct,
+        "institutional_ownership_pct": institutional_pct,
+        "short_pct_of_float": short_pct,
+        "current_ratio": current_ratio,
+        "quick_ratio": quick_ratio,
+        "free_cash_flow": free_cash_flow,
+    }
+    return ctx, notes

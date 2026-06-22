@@ -161,3 +161,42 @@ def test_evaluate_symbol_attaches_sector(strategy, monkeypatch):
     monkeypatch.setattr(dividend_module, "get_sector", lambda symbol: "Utilities")
     result = strategy.evaluate_symbol("GOODDIV")
     assert result.sector == "Utilities"
+
+
+def test_extra_fundamentals_are_exposed_on_signal_result(monkeypatch, patched_market_data):
+    fundamentals = dict(
+        FUNDAMENTALS["GOODDIV"], peg_ratio=1.2, beta=0.8, recommendation_key="buy",
+        insider_ownership=0.02, institutional_ownership=0.55, short_pct_of_float=0.04,
+        current_ratio=1.5, quick_ratio=1.1, free_cash_flow=3_000_000.0,
+    )
+    monkeypatch.setattr(dividend_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    config = ScreenerConfig(universe=["GOODDIV"])
+    result = DividendStrategy(config).evaluate_symbol("GOODDIV")
+    assert result.peg_ratio == 1.2
+    assert result.beta == 0.8
+    assert result.analyst_recommendation == "buy"
+    assert result.insider_ownership_pct == pytest.approx(2.0)
+    assert result.institutional_ownership_pct == pytest.approx(55.0)
+    assert result.short_pct_of_float == pytest.approx(4.0)
+    assert result.current_ratio == 1.5
+    assert result.quick_ratio == 1.1
+    assert result.free_cash_flow == 3_000_000.0
+
+
+def test_high_beta_adds_advisory_note_but_does_not_block_filter(monkeypatch, patched_market_data):
+    fundamentals = dict(FUNDAMENTALS["GOODDIV"], beta=3.0)
+    monkeypatch.setattr(dividend_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    config = ScreenerConfig(universe=["GOODDIV"])
+    result = DividendStrategy(config).evaluate_symbol("GOODDIV")
+    assert result.passes_filters
+    assert any("beta" in note.lower() for note in result.notes)
+
+
+def test_weak_liquidity_ratios_add_advisory_notes_but_do_not_block_filter(monkeypatch, patched_market_data):
+    fundamentals = dict(FUNDAMENTALS["GOODDIV"], current_ratio=0.6, quick_ratio=0.4)
+    monkeypatch.setattr(dividend_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    config = ScreenerConfig(universe=["GOODDIV"])
+    result = DividendStrategy(config).evaluate_symbol("GOODDIV")
+    assert result.passes_filters
+    assert any("current ratio" in note.lower() for note in result.notes)
+    assert any("quick ratio" in note.lower() for note in result.notes)

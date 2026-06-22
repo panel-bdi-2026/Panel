@@ -145,6 +145,22 @@ _INFO_FIELD_MAP = {
     "profit_margins": "profitMargins",
     "dividend_yield": "dividendYield",
     "payout_ratio": "payoutRatio",
+    # peg_ratio_trailing es el respaldo de peg_ratio: yfinance reemplazo
+    # "pegRatio" por "trailingPegRatio" en versiones recientes, y no hay forma
+    # de saber de antemano cual de las dos va a estar presente (ver el mismo
+    # patron de respaldo trailing_pe -> forward_pe en strategies/long_term.py).
+    "peg_ratio": "pegRatio",
+    "peg_ratio_trailing": "trailingPegRatio",
+    "beta": "beta",
+    "recommendation_key": "recommendationKey",
+    # Fracciones (0-1) en yfinance, no porcentajes: se normalizan a % recien
+    # en las estrategias que las consumen, igual que payout_ratio.
+    "insider_ownership": "heldPercentInsiders",
+    "institutional_ownership": "heldPercentInstitutions",
+    "short_pct_of_float": "shortPercentOfFloat",
+    "current_ratio": "currentRatio",
+    "quick_ratio": "quickRatio",
+    "free_cash_flow": "freeCashflow",
 }
 
 

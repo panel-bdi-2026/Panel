@@ -140,6 +140,21 @@ class SignalResult(BaseModel):
     pe_ratio: Optional[float] = None
     dividend_yield_pct: Optional[float] = None
     payout_ratio_pct: Optional[float] = None
+    # Fundamentales adicionales "casi gratis" (vienen en la misma respuesta de
+    # info de yfinance que ya se pedia, sin requests extra): solo Largo plazo
+    # y Dividendos las consultan, igual que el resto de los fundamentales de
+    # arriba. peg_ratio entra al score de Largo plazo (extiende su tesis de
+    # valoracion); el resto es informativo/notas, no afecta ningun score (ver
+    # comentarios de gating en strategies/long_term.py y strategies/dividend.py).
+    peg_ratio: Optional[float] = None
+    beta: Optional[float] = None
+    analyst_recommendation: Optional[str] = None
+    insider_ownership_pct: Optional[float] = None
+    institutional_ownership_pct: Optional[float] = None
+    short_pct_of_float: Optional[float] = None
+    current_ratio: Optional[float] = None
+    quick_ratio: Optional[float] = None
+    free_cash_flow: Optional[float] = None
     # Contexto tecnico adicional (ver strategies/common.py), informativo para
     # las 4 estrategias; solo entra en `score` (via score_components) para
     # Momentum/Oportunista, que son las dos basadas en señales de precio.

@@ -13,6 +13,7 @@ from .common import (
     avg_volume,
     context_technicals,
     earnings_blackout_ok,
+    extra_fundamentals_context,
     sector_relative_strength,
 )
 
@@ -73,6 +74,8 @@ class LongTermStrategy:
         roe = fundamentals.get("return_on_equity")
         debt_to_equity = fundamentals.get("debt_to_equity")
         profit_margins = fundamentals.get("profit_margins")
+        extra, extra_notes = extra_fundamentals_context(fundamentals, lt.max_beta, lt.max_short_interest_pct)
+        peg = extra["peg_ratio"]
 
         last_price = ctx["last_price"]
         last_avg_dollar_vol = avg_dollar_volume(bars)
@@ -119,6 +122,7 @@ class LongTermStrategy:
             notes.append("Sin dato de ROE disponible (no afecta el filtro, solo el score).")
         if debt_to_equity is not None and debt_to_equity > lt.max_debt_to_equity:
             notes.append(f"Deuda/equity {debt_to_equity:.0f} por encima del umbral preferido ({lt.max_debt_to_equity}).")
+        notes.extend(extra_notes)
 
         # PE negativo (ganancias negativas, ej. eps muy cercano a 0 por
         # debajo) puede dar un numero arbitrariamente grande en valor
@@ -129,6 +133,10 @@ class LongTermStrategy:
         # cara, no en perdida) si sigue dando un value_score negativo
         # acotado, que es el comportamiento original e intencional.
         value_score = (lt.max_pe_ratio - pe) if pe is not None and pe > 0 else 0.0
+        # Mismo resguardo que value_score: un PEG negativo (crecimiento de
+        # ganancias negativo) no es "barato", es una division por un numero
+        # negativo que daria un score arbitrariamente alto sin merecerlo.
+        peg_score = (lt.max_peg_ratio - peg) if peg is not None and peg > 0 else 0.0
         growth_pct = (earnings_growth or 0.0) * 100
         roe_pct = (roe or 0.0) * 100
         margin_pct = (profit_margins or 0.0) * 100
@@ -138,12 +146,14 @@ class LongTermStrategy:
             "growth": growth_pct,
             "quality": roe_pct,
             "margin": margin_pct,
+            "peg": peg_score,
         }
         score = (
             lt.score_weight_value * components["value"]
             + lt.score_weight_growth * components["growth"]
             + lt.score_weight_quality * components["quality"]
             + lt.score_weight_margin * components["margin"]
+            + lt.score_weight_peg * components["peg"]
         )
 
         stop_loss_price = max(0.0, last_price - lt.stop_loss_atr_multiplier * ctx["atr"])
@@ -167,6 +177,15 @@ class LongTermStrategy:
             strategy_id=self.id,
             sector=get_sector(symbol),
             pe_ratio=round(pe, 2) if pe is not None else None,
+            peg_ratio=round(peg, 2) if peg is not None else None,
+            beta=round(extra["beta"], 2) if extra["beta"] is not None else None,
+            analyst_recommendation=extra["analyst_recommendation"],
+            insider_ownership_pct=round(extra["insider_ownership_pct"], 2) if extra["insider_ownership_pct"] is not None else None,
+            institutional_ownership_pct=round(extra["institutional_ownership_pct"], 2) if extra["institutional_ownership_pct"] is not None else None,
+            short_pct_of_float=round(extra["short_pct_of_float"], 2) if extra["short_pct_of_float"] is not None else None,
+            current_ratio=round(extra["current_ratio"], 2) if extra["current_ratio"] is not None else None,
+            quick_ratio=round(extra["quick_ratio"], 2) if extra["quick_ratio"] is not None else None,
+            free_cash_flow=round(extra["free_cash_flow"], 2) if extra["free_cash_flow"] is not None else None,
             macd_histogram_pct=round(ctx["macd_histogram_pct"], 2) if ctx["macd_histogram_pct"] is not None else None,
             bollinger_pct_b=round(ctx["bollinger_pct_b"], 2) if ctx["bollinger_pct_b"] is not None else None,
             sector_relative_strength_pct=round(last_sector_rel_strength, 2) if last_sector_rel_strength is not None else None,
@@ -197,6 +216,7 @@ class LongTermStrategy:
             "growth": lt.score_weight_growth,
             "quality": lt.score_weight_quality,
             "margin": lt.score_weight_margin,
+            "peg": lt.score_weight_peg,
         })
         results.sort(key=lambda r: r.score, reverse=True)
         return results

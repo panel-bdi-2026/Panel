@@ -13,6 +13,7 @@ from .common import (
     avg_volume,
     context_technicals,
     earnings_blackout_ok,
+    extra_fundamentals_context,
     sector_relative_strength,
 )
 
@@ -67,6 +68,7 @@ class DividendStrategy:
         payout_pct = payout_ratio * 100 if payout_ratio is not None else None
         roe = fundamentals.get("return_on_equity")
         profit_margins = fundamentals.get("profit_margins")
+        extra, extra_notes = extra_fundamentals_context(fundamentals, dv.max_beta, dv.max_short_interest_pct)
 
         last_price = ctx["last_price"]
         last_avg_dollar_vol = avg_dollar_volume(bars)
@@ -102,6 +104,7 @@ class DividendStrategy:
             notes.append(f"Earnings estimados en {days_to_earnings} dia(s): dentro de la ventana de blackout.")
         if roe is not None and roe * 100 < dv.min_return_on_equity_pct:
             notes.append(f"ROE {roe * 100:.1f}% por debajo del umbral preferido ({dv.min_return_on_equity_pct}%) (no bloquea, solo score).")
+        notes.extend(extra_notes)
 
         # Penaliza payout cerca de los extremos del rango sostenible (mas
         # cerca del centro = mas margen antes de un recorte de dividendo).
@@ -144,6 +147,15 @@ class DividendStrategy:
             sector=get_sector(symbol),
             dividend_yield_pct=round(div_yield_pct, 2) if div_yield_pct is not None else None,
             payout_ratio_pct=round(payout_pct, 2) if payout_pct is not None else None,
+            peg_ratio=round(extra["peg_ratio"], 2) if extra["peg_ratio"] is not None else None,
+            beta=round(extra["beta"], 2) if extra["beta"] is not None else None,
+            analyst_recommendation=extra["analyst_recommendation"],
+            insider_ownership_pct=round(extra["insider_ownership_pct"], 2) if extra["insider_ownership_pct"] is not None else None,
+            institutional_ownership_pct=round(extra["institutional_ownership_pct"], 2) if extra["institutional_ownership_pct"] is not None else None,
+            short_pct_of_float=round(extra["short_pct_of_float"], 2) if extra["short_pct_of_float"] is not None else None,
+            current_ratio=round(extra["current_ratio"], 2) if extra["current_ratio"] is not None else None,
+            quick_ratio=round(extra["quick_ratio"], 2) if extra["quick_ratio"] is not None else None,
+            free_cash_flow=round(extra["free_cash_flow"], 2) if extra["free_cash_flow"] is not None else None,
             macd_histogram_pct=round(ctx["macd_histogram_pct"], 2) if ctx["macd_histogram_pct"] is not None else None,
             bollinger_pct_b=round(ctx["bollinger_pct_b"], 2) if ctx["bollinger_pct_b"] is not None else None,
             sector_relative_strength_pct=round(last_sector_rel_strength, 2) if last_sector_rel_strength is not None else None,

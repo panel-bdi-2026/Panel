@@ -1629,6 +1629,15 @@ function signalDetailHtml(r){
     r.pe_ratio != null ? `<tr><td><b>P/E ratio</b></td><td>${r.pe_ratio.toFixed(1)}</td></tr>` : '',
     r.dividend_yield_pct != null ? `<tr><td><b>Dividend yield</b></td><td>${fmtPct(r.dividend_yield_pct, 2)}</td></tr>` : '',
     r.payout_ratio_pct != null ? `<tr><td><b>Payout ratio</b></td><td>${fmtPct(r.payout_ratio_pct)}</td></tr>` : '',
+    r.peg_ratio != null ? `<tr><td><b title="PE ajustado por crecimiento de ganancias (PE / crecimiento %). Mas bajo = mas barato en relacion a su crecimiento.">PEG ratio</b></td><td>${r.peg_ratio.toFixed(2)}${effectiveStrategyId === 'long_term' ? '' : ' <span class="muted-sm">(informativo)</span>'}</td></tr>` : '',
+    r.beta != null ? `<tr><td><b title="Volatilidad relativa al mercado (SPY): 1.0 = misma volatilidad, mayor a 1 mas volatil, menor a 1 menos volatil. Informativo, no afecta ningun score.">Beta</b></td><td>${r.beta.toFixed(2)}</td></tr>` : '',
+    r.analyst_recommendation ? `<tr><td><b title="Consenso de recomendacion de analistas (segun yfinance). Informativo, no afecta ningun score.">Recomendación analistas</b></td><td>${esc(r.analyst_recommendation)}</td></tr>` : '',
+    r.insider_ownership_pct != null ? `<tr><td><b title="% de las acciones en manos de insiders (directivos/fundadores). Informativo, no afecta ningun score.">Ownership insiders</b></td><td>${fmtPct(r.insider_ownership_pct, 2)}</td></tr>` : '',
+    r.institutional_ownership_pct != null ? `<tr><td><b title="% de las acciones en manos de inversores institucionales. Informativo, no afecta ningun score.">Ownership institucional</b></td><td>${fmtPct(r.institutional_ownership_pct, 2)}</td></tr>` : '',
+    r.short_pct_of_float != null ? `<tr><td><b title="% del float vendido en corto. Un valor alto puede reflejar una vision bajista del mercado o riesgo de short squeeze. Informativo, no afecta ningun score.">Interés en corto</b></td><td>${fmtPct(r.short_pct_of_float, 2)}</td></tr>` : '',
+    r.current_ratio != null ? `<tr><td><b title="Activo corriente / pasivo corriente. Por debajo de 1.0 puede indicar tension de liquidez de corto plazo. Informativo, no afecta ningun score.">Current ratio</b></td><td>${r.current_ratio.toFixed(2)}</td></tr>` : '',
+    r.quick_ratio != null ? `<tr><td><b title="Igual que current ratio pero excluyendo inventario: medida mas estricta de liquidez inmediata. Informativo, no afecta ningun score.">Quick ratio</b></td><td>${r.quick_ratio.toFixed(2)}</td></tr>` : '',
+    r.free_cash_flow != null ? `<tr><td><b title="Flujo de caja libre: efectivo generado por el negocio despues de gastos de capital. Negativo no es necesariamente malo (ej. empresas en fuerte expansion), pero vale la pena revisarlo. Informativo, no afecta ningun score.">Free cash flow</b></td><td>${fmtUsd(r.free_cash_flow)}</td></tr>` : '',
   ].join('');
   // Señales tecnicas adicionales (ver app/strategies/common.py): se muestran
   // para las 4 estrategias a modo informativo, aunque solo entran al score

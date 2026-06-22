@@ -148,12 +148,26 @@ class LongTermConfig(BaseModel):
     min_return_on_equity_pct: float = 10.0
     max_debt_to_equity: float = 150.0
     min_profit_margin_pct: float = 5.0
+    # PEG (PE / crecimiento de ganancias) solo a modo de nota/bonus de score,
+    # no gating: a diferencia del PE (value_ok bloquea el filtro), un PEG
+    # ausente o alto no descarta el simbolo por si solo, ya que el filtro de
+    # valoracion principal (PE) y de crecimiento (earnings_growth) ya cubren
+    # ambos lados de la misma tesis por separado.
+    max_peg_ratio: float = 2.0
+    # Riesgo de volatilidad (beta) e interes en corto: solo generan una nota
+    # informativa (no bloquean ni puntuan), igual que max_debt_to_equity.
+    max_beta: float = 1.5
+    max_short_interest_pct: float = 20.0
     stop_loss_atr_multiplier: float = 2.5
 
     score_weight_value: float = 0.35
     score_weight_growth: float = 0.30
     score_weight_quality: float = 0.20
     score_weight_margin: float = 0.15
+    # PEG extiende la tesis de valoracion (PE ajustado por crecimiento): mas
+    # bajo es mejor, igual logica que value_score pero con max_peg_ratio como
+    # tope en vez de max_pe_ratio.
+    score_weight_peg: float = 0.15
 
 
 class DividendConfig(BaseModel):
@@ -167,6 +181,12 @@ class DividendConfig(BaseModel):
     max_payout_ratio_pct: float = 75.0
     min_return_on_equity_pct: float = 8.0
     min_profit_margin_pct: float = 5.0
+    # Riesgo de volatilidad (beta) e interes en corto: solo generan una nota
+    # informativa (no bloquean ni puntuan). Un inversor de dividendos suele
+    # preferir baja volatilidad, pero eso es una preferencia de riesgo, no
+    # parte de la tesis de yield/payout/calidad que ya puntua el score.
+    max_beta: float = 1.5
+    max_short_interest_pct: float = 20.0
     stop_loss_atr_multiplier: float = 2.5
 
     score_weight_yield: float = 0.45

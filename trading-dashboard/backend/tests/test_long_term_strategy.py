@@ -146,7 +146,7 @@ def test_high_debt_to_equity_adds_note_but_does_not_block_filter(monkeypatch, pa
 
 def test_evaluate_symbol_exposes_score_components(strategy):
     result = strategy.evaluate_symbol("STRONG")
-    assert set(result.score_components.keys()) == {"value", "growth", "quality", "margin"}
+    assert set(result.score_components.keys()) == {"value", "growth", "quality", "margin", "peg"}
 
 
 def test_results_sorted_descending_by_score(strategy):
@@ -207,3 +207,56 @@ def test_trailing_pe_preferred_over_forward_pe_when_both_present(strategy):
     result = strategy.evaluate_symbol("STRONG")
     assert result.pe_ratio == 15.0  # trailing_pe, no forward_pe (14.0)
     assert not any("forward pe" in note.lower() for note in result.notes)
+
+
+def test_low_peg_ratio_scores_higher_than_high_peg_ratio(monkeypatch, patched_market_data):
+    config = ScreenerConfig(universe=["STRONG"])
+    s = LongTermStrategy(config)
+
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: dict(FUNDAMENTALS["STRONG"], peg_ratio=0.5))
+    low_result = s.evaluate_symbol("STRONG")
+
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: dict(FUNDAMENTALS["STRONG"], peg_ratio=4.0))
+    high_result = s.evaluate_symbol("STRONG")
+
+    assert low_result.peg_ratio == 0.5
+    assert high_result.peg_ratio == 4.0
+    assert low_result.score_components["peg"] > high_result.score_components["peg"]
+
+
+def test_extra_fundamentals_are_exposed_on_signal_result(monkeypatch, patched_market_data):
+    fundamentals = dict(
+        FUNDAMENTALS["STRONG"], peg_ratio=1.2, beta=1.1, recommendation_key="buy",
+        insider_ownership=0.05, institutional_ownership=0.65, short_pct_of_float=0.03,
+        current_ratio=1.8, quick_ratio=1.3, free_cash_flow=2_000_000.0,
+    )
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    config = ScreenerConfig(universe=["STRONG"])
+    result = LongTermStrategy(config).evaluate_symbol("STRONG")
+    assert result.peg_ratio == 1.2
+    assert result.beta == 1.1
+    assert result.analyst_recommendation == "buy"
+    assert result.insider_ownership_pct == pytest.approx(5.0)
+    assert result.institutional_ownership_pct == pytest.approx(65.0)
+    assert result.short_pct_of_float == pytest.approx(3.0)
+    assert result.current_ratio == 1.8
+    assert result.quick_ratio == 1.3
+    assert result.free_cash_flow == 2_000_000.0
+
+
+def test_high_beta_adds_advisory_note_but_does_not_block_filter(monkeypatch, patched_market_data):
+    fundamentals = dict(FUNDAMENTALS["STRONG"], beta=3.0)
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    config = ScreenerConfig(universe=["STRONG"])
+    result = LongTermStrategy(config).evaluate_symbol("STRONG")
+    assert result.passes_filters
+    assert any("beta" in note.lower() for note in result.notes)
+
+
+def test_negative_free_cash_flow_adds_advisory_note_but_does_not_block_filter(monkeypatch, patched_market_data):
+    fundamentals = dict(FUNDAMENTALS["STRONG"], free_cash_flow=-500_000.0)
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    config = ScreenerConfig(universe=["STRONG"])
+    result = LongTermStrategy(config).evaluate_symbol("STRONG")
+    assert result.passes_filters
+    assert any("free cash flow negativo" in note.lower() for note in result.notes)
