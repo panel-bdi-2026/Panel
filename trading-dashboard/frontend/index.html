@@ -1395,7 +1395,7 @@ function renderSignalsTable(){
   const visible = filtered.slice(0, signalsDisplayCount);
   let rowsHtml = visible.map(r => `
         <tr>
-          <td><b>${esc(r.symbol)}</b>${r.is_hot ? ' <span class="badge-live" title="Precio en vivo via streaming de IBKR">en vivo</span>' : ''}${currentStrategyId === 'general' && r.winning_strategy_id ? ` <span class="via-strategy">vía ${esc(strategyName(r.winning_strategy_id))}</span>` : ''}${r.passes_filters ? '' : ' <span class="badge-fail" title="No cumple todos los filtros configurados para esta estrategia. Ver más para el detalle.">no pasa filtros</span>'}<br><span class="price-age" title="Hace cuánto se actualizó este precio (${r.price_as_of ? new Date(r.price_as_of).toLocaleString() : 'sin dato'})">🕐 ${fmtAge(r.price_as_of)}</span></td>
+          <td><b>${esc(r.symbol)}</b>${r.is_hot ? ' <span class="badge-live" title="Precio en vivo via streaming de IBKR">en vivo</span>' : ''}${currentStrategyId === 'general' && r.winning_strategy_id ? ` <span class="via-strategy">vía ${esc(strategyName(r.winning_strategy_id))}</span>` : ''}${r.passes_filters ? '' : ' <span class="badge-fail" title="No cumple todos los filtros configurados para esta estrategia. Ver más para el detalle.">no pasa filtros</span>'}<br><span class="price-age" data-price-as-of="${r.price_as_of || ''}" title="Hace cuánto se actualizó este precio (${r.price_as_of ? new Date(r.price_as_of).toLocaleString() : 'sin dato'})">🕐 ${fmtAge(r.price_as_of)}</span></td>
           <td>${esc(r.sector || '—')}</td>
           <td>${scoresCellHtml(r)}</td>
           <td>${fmtUsd(r.last_price)}</td>
@@ -1418,6 +1418,19 @@ function renderSignalsTable(){
   }
   body.innerHTML = rowsHtml;
 }
+
+// Recalcula el texto "hace Ns/Nm/Nh" de cada fila sin volver a pedir nada al
+// backend ni re-renderizar la tabla entera: el timestamp real (price_as_of)
+// ya esta guardado en el data-attribute desde renderSignalsTable(), asi que
+// solo hace falta releerlo y reformatearlo. El reset a "0s" ocurre solo
+// cuando llega un price_as_of mas nuevo de verdad (via un nuevo render).
+function tickPriceAges(){
+  document.querySelectorAll('.price-age').forEach(el => {
+    const iso = el.dataset.priceAsOf;
+    if(iso) el.textContent = `🕐 ${fmtAge(iso)}`;
+  });
+}
+setInterval(tickPriceAges, 1000);
 
 // Incrementado en cada llamada a scanSignals(): si el usuario cambia de
 // estrategia o pide otro escaneo mientras el anterior todavia esta en
@@ -1678,12 +1691,22 @@ function useSignal(symbol){
 let backtestChart = null;
 
 async function runBacktest(){
+  const btn = document.getElementById('backtestBtn');
   const box = document.getElementById('backtestBox');
   const stats = document.getElementById('backtestStats');
   const chartWrap = document.getElementById('backtestChartWrap');
+  const original = btn.textContent;
+  // Feedback inmediato en el boton donde el usuario ya tiene la vista/cursor:
+  // el backtest pega un request por simbolo del universo a la API gratuita
+  // de datos (con pausa anti-rate-limit entre cada uno), asi que puede tardar
+  // bastante mas que un click comun; sin esto, la unica señal de que algo
+  // esta pasando era el scroll hacia backtestBox, facil de no registrar como
+  // "se esta corriendo algo" si el texto de mas abajo no se nota.
+  btn.disabled = true;
+  btn.textContent = '⏳ Corriendo backtest…';
   box.style.display = 'block';
   chartWrap.style.display = 'none';
-  stats.textContent = 'Corriendo backtest (puede tardar; depende de la API gratuita de datos)…';
+  stats.textContent = 'Corriendo backtest (puede tardar 1-2 minutos: pega un request por símbolo del universo a la API gratuita de datos)…';
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try{
     const r = await api(`/api/signals/backtest?strategy_id=${encodeURIComponent(currentStrategyId)}`, { auth:true });
@@ -1711,14 +1734,21 @@ async function runBacktest(){
     }
   }catch(e){
     stats.textContent = 'Error al correr el backtest: ' + e.message;
+  }finally{
+    btn.disabled = false;
+    btn.textContent = original;
   }
 }
 
 async function runWalkForward(){
+  const btn = document.getElementById('walkForwardBtn');
   const box = document.getElementById('walkForwardBox');
   const stats = document.getElementById('walkForwardStats');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Corriendo validación…';
   box.style.display = 'block';
-  stats.textContent = 'Corriendo validación out-of-sample (corre el mismo backtest una vez y lo divide en tramos; puede tardar)…';
+  stats.textContent = 'Corriendo validación out-of-sample (corre el mismo backtest una vez y lo divide en tramos; puede tardar 1-2 minutos)…';
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try{
     const r = await api(`/api/signals/backtest/walk-forward?strategy_id=${encodeURIComponent(currentStrategyId)}`, { auth:true });
@@ -1741,6 +1771,9 @@ async function runWalkForward(){
       </table>`;
   }catch(e){
     stats.textContent = 'Error al correr la validación out-of-sample: ' + e.message;
+  }finally{
+    btn.disabled = false;
+    btn.textContent = original;
   }
 }
 
