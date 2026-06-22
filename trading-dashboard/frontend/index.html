@@ -1788,6 +1788,24 @@ function useSignal(symbol){
   toast(`${r.symbol} cargado en el ticket de orden. Revisa cantidad y confirma.`);
 }
 
+// Cuenta el tiempo transcurrido dentro de un modal mientras un backtest/scan
+// largo esta en vuelo: sin esto, la pantalla queda con un texto estatico
+// ("corriendo...") durante varios minutos sin ningun cambio visible, y es
+// facil pensar que se colgo aunque siga progresando (un backtest sobre todo
+// el universo configurado puede tardar varios minutos: un request por
+// simbolo a la API gratuita de datos, con reintentos si hay rate-limiting).
+function _startElapsedTicker(elementId){
+  const startedAt = Date.now();
+  const tick = () => {
+    const el = document.getElementById(elementId);
+    if(!el) return; // el modal se cerro o se reemplazo por el resultado final
+    const secs = Math.floor((Date.now() - startedAt) / 1000);
+    el.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  };
+  tick();
+  return setInterval(tick, 1000);
+}
+
 async function runBacktest(){
   const btn = document.getElementById('backtestBtn');
   const original = btn.textContent;
@@ -1799,7 +1817,8 @@ async function runBacktest(){
   // que sea obvio que el backtest generó algo nuevo para revisar.
   btn.disabled = true;
   btn.textContent = '⏳ Corriendo backtest…';
-  openModal('Backtest', '<p class="muted-sm">Corriendo backtest (puede tardar 1-2 minutos: pega un request por símbolo del universo a la API gratuita de datos)…</p>');
+  openModal('Backtest', '<p class="muted-sm">Corriendo backtest (puede tardar varios minutos: pega un request por símbolo del universo configurado a la API gratuita de datos, con reintentos si hay límite de uso). Llevamos <span id="backtestElapsed">0:00</span>…</p>');
+  const elapsedTimer = _startElapsedTicker('backtestElapsed');
   try{
     const r = await api(`/api/signals/backtest?strategy_id=${encodeURIComponent(currentStrategyId)}`, { auth:true });
     const hasCurve = r.equity_curve && r.equity_curve.length;
@@ -1833,6 +1852,7 @@ async function runBacktest(){
   }catch(e){
     openModal('Backtest', `<p class="muted-sm">Error al correr el backtest: ${esc(e.message)}</p>`);
   }finally{
+    clearInterval(elapsedTimer);
     btn.disabled = false;
     btn.textContent = original;
   }
@@ -1843,7 +1863,8 @@ async function runWalkForward(){
   const original = btn.textContent;
   btn.disabled = true;
   btn.textContent = '⏳ Corriendo validación…';
-  openModal('Validación out-of-sample', '<p class="muted-sm">Corriendo validación out-of-sample (corre el mismo backtest una vez y lo divide en tramos; puede tardar 1-2 minutos)…</p>');
+  openModal('Validación out-of-sample', '<p class="muted-sm">Corriendo validación out-of-sample (corre el mismo backtest una vez y lo divide en tramos; puede tardar varios minutos). Llevamos <span id="walkForwardElapsed">0:00</span>…</p>');
+  const elapsedTimer = _startElapsedTicker('walkForwardElapsed');
   try{
     const r = await api(`/api/signals/backtest/walk-forward?strategy_id=${encodeURIComponent(currentStrategyId)}`, { auth:true });
     const rows = r.folds.map((f, i) => `
@@ -1875,6 +1896,7 @@ async function runWalkForward(){
   }catch(e){
     openModal('Validación out-of-sample', `<p class="muted-sm">Error al correr la validación out-of-sample: ${esc(e.message)}</p>`);
   }finally{
+    clearInterval(elapsedTimer);
     btn.disabled = false;
     btn.textContent = original;
   }
