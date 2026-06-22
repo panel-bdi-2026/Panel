@@ -241,13 +241,6 @@ td{padding:8px;border-bottom:1px solid var(--border)}
           </table>
           <div id="signalsMeta" class="muted-sm" style="margin-top:8px"></div>
           <div class="chart-wrap sm" id="signalsChartWrap" style="display:none"><canvas id="signalsChart"></canvas></div>
-          <div id="backtestBox" class="muted-sm" style="margin-top:10px;display:none;background:var(--bg);padding:10px;border-radius:var(--r2)">
-            <div id="backtestStats"></div>
-            <div class="chart-wrap" id="backtestChartWrap" style="display:none"><canvas id="backtestChart"></canvas></div>
-          </div>
-          <div id="walkForwardBox" class="muted-sm" style="margin-top:10px;display:none;background:var(--bg);padding:10px;border-radius:var(--r2)">
-            <div id="walkForwardStats"></div>
-          </div>
         </div>
       </div>
 
@@ -1532,8 +1525,6 @@ function applyStrategyUi(){
 function onStrategyChange(){
   currentStrategyId = document.getElementById('strategySelect').value;
   applyStrategyUi();
-  document.getElementById('backtestBox').style.display = 'none';
-  document.getElementById('walkForwardBox').style.display = 'none';
   document.getElementById('signalSearch').value = '';
   signalSearchQuery = '';
   scanSignals(false);
@@ -1688,38 +1679,31 @@ function useSignal(symbol){
   toast(`${r.symbol} cargado en el ticket de orden. Revisa cantidad y confirma.`);
 }
 
-let backtestChart = null;
-
 async function runBacktest(){
   const btn = document.getElementById('backtestBtn');
-  const box = document.getElementById('backtestBox');
-  const stats = document.getElementById('backtestStats');
-  const chartWrap = document.getElementById('backtestChartWrap');
   const original = btn.textContent;
   // Feedback inmediato en el boton donde el usuario ya tiene la vista/cursor:
   // el backtest pega un request por simbolo del universo a la API gratuita
   // de datos (con pausa anti-rate-limit entre cada uno), asi que puede tardar
-  // bastante mas que un click comun; sin esto, la unica señal de que algo
-  // esta pasando era el scroll hacia backtestBox, facil de no registrar como
-  // "se esta corriendo algo" si el texto de mas abajo no se nota.
+  // bastante mas que un click comun. Los resultados se muestran en una
+  // pantalla (modal) dedicada en vez de un box colapsable bajo la tabla, para
+  // que sea obvio que el backtest generó algo nuevo para revisar.
   btn.disabled = true;
   btn.textContent = '⏳ Corriendo backtest…';
-  box.style.display = 'block';
-  chartWrap.style.display = 'none';
-  stats.textContent = 'Corriendo backtest (puede tardar 1-2 minutos: pega un request por símbolo del universo a la API gratuita de datos)…';
-  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  openModal('Backtest', '<p class="muted-sm">Corriendo backtest (puede tardar 1-2 minutos: pega un request por símbolo del universo a la API gratuita de datos)…</p>');
   try{
     const r = await api(`/api/signals/backtest?strategy_id=${encodeURIComponent(currentStrategyId)}`, { auth:true });
-    stats.innerHTML = `
-      <b>Backtest ${new Date(r.start_date).toLocaleDateString()} → ${new Date(r.end_date).toLocaleDateString()}</b><br>
-      ${r.total_trades} operaciones · win rate ${r.win_rate_pct}% · profit factor ${r.profit_factor_is_infinite ? '∞' : (r.profit_factor ?? '—')} · Sharpe ${r.sharpe_ratio ?? '—'}<br>
-      Retorno estrategia (neto de comisión/slippage estimados): ${r.strategy_cumulative_return_pct}% vs benchmark (${r.benchmark_cumulative_return_pct}%)<br>
-      Max drawdown: ${r.max_drawdown_pct}% · Exposición promedio del capital: ${r.avg_exposure_pct ?? '—'}%
-      <p class="muted-sm" style="margin-top:6px">Backtest simplificado: incluye comisión/slippage estimados, stop-loss con fill realista (mínimo intradiario) y filtro de régimen de mercado. La curva de equity, el drawdown y el Sharpe se calculan día por día sobre el universo configurado HOY (sin supervivencia histórica) y aproximan el camino intradiario de cada operación con interpolación lineal entre entrada y salida. Resultados pasados no garantizan resultados futuros.</p>`;
-    if(r.equity_curve && r.equity_curve.length){
-      chartWrap.style.display = 'block';
-      if(backtestChart) backtestChart.destroy();
-      backtestChart = new Chart(document.getElementById('backtestChart'), {
+    const hasCurve = r.equity_curve && r.equity_curve.length;
+    openModal(`Backtest: ${new Date(r.start_date).toLocaleDateString()} → ${new Date(r.end_date).toLocaleDateString()}`, `
+      <p class="muted-sm">
+        ${r.total_trades} operaciones · win rate ${r.win_rate_pct}% · profit factor ${r.profit_factor_is_infinite ? '∞' : (r.profit_factor ?? '—')} · Sharpe ${r.sharpe_ratio ?? '—'}<br>
+        Retorno estrategia (neto de comisión/slippage estimados): ${r.strategy_cumulative_return_pct}% vs benchmark (${r.benchmark_cumulative_return_pct}%)<br>
+        Max drawdown: ${r.max_drawdown_pct}% · Exposición promedio del capital: ${r.avg_exposure_pct ?? '—'}%
+      </p>
+      ${hasCurve ? '<div class="chart-wrap"><canvas id="modalBacktestChart"></canvas></div>' : ''}
+      <p class="muted-sm" style="margin-top:6px">Backtest simplificado: incluye comisión/slippage estimados, stop-loss con fill realista (mínimo intradiario) y filtro de régimen de mercado. La curva de equity, el drawdown y el Sharpe se calculan día por día sobre el universo configurado HOY (sin supervivencia histórica) y aproximan el camino intradiario de cada operación con interpolación lineal entre entrada y salida. Resultados pasados no garantizan resultados futuros.</p>`);
+    if(hasCurve){
+      modalCharts.push(new Chart(document.getElementById('modalBacktestChart'), {
         type: 'line',
         data: {
           labels: r.equity_curve.map(p => new Date(p.date).toLocaleDateString()),
@@ -1730,10 +1714,10 @@ async function runBacktest(){
           plugins: { legend: { display: false }, title: { display: true, text: 'Curva de equity del backtest', font: { size: 11 } } },
           scales: { y: { ticks: { callback: v => v + '%' } } },
         },
-      });
+      }));
     }
   }catch(e){
-    stats.textContent = 'Error al correr el backtest: ' + e.message;
+    openModal('Backtest', `<p class="muted-sm">Error al correr el backtest: ${esc(e.message)}</p>`);
   }finally{
     btn.disabled = false;
     btn.textContent = original;
@@ -1742,14 +1726,10 @@ async function runBacktest(){
 
 async function runWalkForward(){
   const btn = document.getElementById('walkForwardBtn');
-  const box = document.getElementById('walkForwardBox');
-  const stats = document.getElementById('walkForwardStats');
   const original = btn.textContent;
   btn.disabled = true;
   btn.textContent = '⏳ Corriendo validación…';
-  box.style.display = 'block';
-  stats.textContent = 'Corriendo validación out-of-sample (corre el mismo backtest una vez y lo divide en tramos; puede tardar 1-2 minutos)…';
-  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  openModal('Validación out-of-sample', '<p class="muted-sm">Corriendo validación out-of-sample (corre el mismo backtest una vez y lo divide en tramos; puede tardar 1-2 minutos)…</p>');
   try{
     const r = await api(`/api/signals/backtest/walk-forward?strategy_id=${encodeURIComponent(currentStrategyId)}`, { auth:true });
     const rows = r.folds.map((f, i) => `
@@ -1763,14 +1743,14 @@ async function runWalkForward(){
         <td>${f.max_drawdown_pct ?? '—'}${f.max_drawdown_pct != null ? '%' : ''}</td>
         <td>${f.sharpe_ratio ?? '—'}</td>
       </tr>`).join('');
-    stats.innerHTML = `
-      <p class="muted-sm" style="margin-bottom:8px"><b>Validación out-of-sample (${r.n_folds} tramos)</b>: corre el backtest UNA sola vez con los thresholds ya configurados y lo parte en tramos consecutivos de igual duración calendario, para ver si el resultado se sostiene en distintos períodos o se concentra en uno solo. No es walk-forward optimization: no se reajusta ningún parámetro por tramo.</p>
+    openModal(`Validación out-of-sample (${r.n_folds} tramos)`, `
+      <p class="muted-sm" style="margin-bottom:8px">Corre el backtest UNA sola vez con los thresholds ya configurados y lo parte en tramos consecutivos de igual duración calendario, para ver si el resultado se sostiene en distintos períodos o se concentra en uno solo. No es walk-forward optimization: no se reajusta ningún parámetro por tramo.</p>
       <table>
         <thead><tr><th>Tramo</th><th>Período</th><th>Operaciones</th><th>Win rate</th><th>Retorno estrategia</th><th>Retorno benchmark</th><th>Max drawdown</th><th>Sharpe</th></tr></thead>
         <tbody>${rows}</tbody>
-      </table>`;
+      </table>`);
   }catch(e){
-    stats.textContent = 'Error al correr la validación out-of-sample: ' + e.message;
+    openModal('Validación out-of-sample', `<p class="muted-sm">Error al correr la validación out-of-sample: ${esc(e.message)}</p>`);
   }finally{
     btn.disabled = false;
     btn.textContent = original;
