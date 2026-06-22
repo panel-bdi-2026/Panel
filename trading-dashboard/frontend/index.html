@@ -37,8 +37,11 @@ code{background:var(--card2);color:var(--primary-mid);padding:1px 5px;border-rad
 .dot.on{background:var(--green)}.dot.off{background:var(--red)}
 .conn{font-size:12px;font-weight:700;display:flex;align-items:center;background:var(--card2);border:1px solid var(--border);
   padding:5px 11px;border-radius:20px}
-.conn.on{background:var(--green-bg);color:var(--green);border:1px solid rgba(31,110,68,.3)}
-.conn.off{background:var(--red-bg);color:var(--red);border:1px solid rgba(156,59,46,.3)}
+/* Fondo casi opaco (no var(--green-bg)/--red-bg, pensados para tarjetas
+   claras): sobre el degradado azul oscuro del header, un tinte al 10% queda
+   casi invisible. */
+.conn.on{background:rgba(255,255,255,.95);color:var(--green);border:1px solid rgba(31,110,68,.4)}
+.conn.off{background:rgba(255,255,255,.95);color:var(--red);border:1px solid rgba(156,59,46,.4)}
 .btn{padding:7px 15px;border-radius:var(--r2);border:none;cursor:pointer;font-size:12px;
   font-weight:700;font-family:inherit}
 .btn-halt{background:#b5651d;color:#fff}.btn-halt.on{background:var(--red)}
