@@ -54,6 +54,14 @@ class Settings:
         )
 
         self.api_key = os.getenv("API_KEY", "")
+        # Para app/news_sentiment.py (clasificacion de sentimiento de noticias
+        # via Claude Haiku 4.5): a diferencia de api_key, no es requerido en
+        # _validate() porque la feature es opt-in (news_sentiment_enabled,
+        # apagado por defecto en ScreenerConfig) -- sin esta key, simplemente
+        # no se calcula sentimiento (fail-safe, ver get_news_sentiment), no
+        # hace falta tirar abajo todo el backend por una funcionalidad que el
+        # usuario ni siquiera prendio.
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
 
         # Origenes permitidos para CORS. Vacio por defecto: el frontend se sirve
         # desde el mismo backend (mismo origen), asi que no necesita CORS, y

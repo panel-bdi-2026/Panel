@@ -411,6 +411,24 @@ class ScreenerConfig(BaseModel):
     # respecto a top_n contando lo que ya esta pendiente.
     max_auto_drafts_per_cycle: int = 3
 
+    # Sentimiento de noticias via Claude Haiku 4.5 (ver app/news_sentiment.py):
+    # ajuste acotado de score en una segunda etapa, posterior al ranking
+    # cross-sectional, solo para el shortlist de los mejores candidatos (no
+    # todo el universo: cada simbolo nuevo le pega a la API de Claude, que
+    # tiene costo a diferencia del resto de market_data.py). Apagado por
+    # defecto: requiere ANTHROPIC_API_KEY configurada y es una decision
+    # explicita del usuario gastar en esto, no el comportamiento nuevo por
+    # defecto de una version anterior que nunca lo tuvo.
+    news_sentiment_enabled: bool = False
+    # Tamaño del shortlist como multiplo de top_n (ej. top_n=10, multiplier=3
+    # => se clasifican los 30 mejores tras el ranking, no los ~500 del
+    # universo completo).
+    news_sentiment_shortlist_multiplier: float = 3.0
+    # Maximo que el sentimiento puede sumar/restar al score (ya en escala
+    # percentil 0-100 tras apply_cross_sectional_normalization): positivo
+    # suma este valor, negativo lo resta, neutral no mueve el score.
+    news_sentiment_max_adjustment: float = 10.0
+
     # Configuracion especifica de las estrategias adicionales (ver
     # app/strategies/). Los campos compartidos arriba (universe, lookback_days,
     # min_avg_dollar_volume, atr_period, top_n, earnings_blackout_days, etc.)

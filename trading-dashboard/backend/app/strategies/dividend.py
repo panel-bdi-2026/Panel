@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from ..market_data import MarketDataError, get_daily_bars, get_fundamentals, is_bars_cached
 from ..models import SignalResult
+from ..news_sentiment import apply_news_sentiment_adjustment
 from ..scoring import apply_cross_sectional_normalization
 from ..screener_config import ScreenerConfig
 from ..sectors import get_sector
@@ -216,4 +217,12 @@ class DividendStrategy:
             "ownership_alignment": dv.score_weight_ownership_alignment,
         })
         results.sort(key=lambda r: r.score, reverse=True)
+        if self.config.news_sentiment_enabled:
+            apply_news_sentiment_adjustment(
+                results,
+                self.config.top_n,
+                self.config.news_sentiment_shortlist_multiplier,
+                self.config.news_sentiment_max_adjustment,
+            )
+            results.sort(key=lambda r: r.score, reverse=True)
         return results

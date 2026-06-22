@@ -179,6 +179,14 @@ class SignalResult(BaseModel):
     macd_histogram_pct: Optional[float] = None
     bollinger_pct_b: Optional[float] = None
     sector_relative_strength_pct: Optional[float] = None
+    # Sentimiento de noticias recientes (ver app/news_sentiment.py): solo se
+    # calcula para el shortlist de mejores candidatos tras el ranking
+    # cross-sectional (no todo el universo escaneado, por costo de la API de
+    # Claude) y solo si news_sentiment_enabled esta prendido en la config
+    # (apagado por defecto). None para el resto de las filas: "sin dato", no
+    # "neutral" (ver apply_news_sentiment_adjustment).
+    news_sentiment: Optional[str] = None  # positive | negative | neutral
+    news_summary: Optional[str] = None
     # Componentes crudos (sin ponderar) que entraron en `score`, indexados por
     # nombre (ver app/scoring.py). Vacio si la estrategia no los expone. Le
     # permite a scan() recalcular `score` con normalizacion cross-sectional
