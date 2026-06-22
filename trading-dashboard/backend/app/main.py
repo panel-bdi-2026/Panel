@@ -148,7 +148,7 @@ _screener_config_lock = threading.Lock()
 # significa "todavia no hay base": el primer ciclo solo la establece, sin
 # generar borradores, para no inundar la cola de pendientes apenas arranca el
 # backend o se cambia la config del screener.
-_signal_state: dict = {"previously_passing": None}
+_signal_state: dict = {"previously_passing": None, "previously_passing_by_strategy": {}}
 
 # Radar en vivo (ver _hot_set_loop / _price_rotation_loop mas abajo):
 # _hot_symbols son los simbolos con streaming persistente activo en IBKR en
@@ -343,18 +343,32 @@ async def _draft_order_from_signal(result: SignalResult, positions: list[Positio
     return pending
 
 
-async def _try_auto_trade_entry(result: SignalResult) -> None:
-    """Para fondos con auto_trading_enabled, ejecuta la compra de inmediato
-    (sin aprobacion manual) en vez de dejarla en borrador. Solo corre en modo
-    paper: el auto-trading nunca opera en live, sin importar el toggle del
-    fondo. La senal se asigna a un solo fondo (el primero con cupo, por orden
-    de creacion, que pueda afrontar al menos 1 unidad) para que varios fondos
-    no compitan por el mismo simbolo a la vez."""
+async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = None) -> None:
+    """Para fondos con auto_trading_enabled cuya estrategia coincida con
+    `strategy_id`, ejecuta la compra de inmediato (sin aprobacion manual) en
+    vez de dejarla en borrador. Solo corre en modo paper: el auto-trading
+    nunca opera en live, sin importar el toggle del fondo. La senal se asigna
+    a un solo fondo (el primero con cupo, por orden de creacion, que pueda
+    afrontar al menos 1 unidad) para que varios fondos con la misma estrategia
+    no compitan por el mismo simbolo a la vez.
+
+    `strategy_id` default None = la estrategia activa global
+    (screener_config.strategy_id), igual que el comportamiento previo a que
+    existiera fund.strategy_id. Un fondo con fund.strategy_id=None tambien
+    sigue siempre esa misma estrategia global (nunca queda "huerfano" si la
+    estrategia activa global cambia)."""
+    if strategy_id is None:
+        strategy_id = screener_config.strategy_id
     if state["mode"] != "paper" or result.last_price <= 0:
         return
     symbol = result.symbol
     async with _funds_order_lock:
-        candidates = [f for f in funds_store.list() if f.auto_trading_enabled and f.owned_quantity(symbol) == 0]
+        candidates = [
+            f for f in funds_store.list()
+            if f.auto_trading_enabled
+            and f.owned_quantity(symbol) == 0
+            and (f.strategy_id or screener_config.strategy_id) == strategy_id
+        ]
         if not candidates:
             return
 
@@ -494,42 +508,98 @@ async def _run_signal_scan_cycle() -> None:
         # (o desde el ultimo cambio de config) se draftearia de una al primer
         # ciclo, en vez de solo los que cambian de estado.
         _signal_state["previously_passing"] = passing_now
+    else:
+        new_symbols = passing_now - previously_passing
+        _signal_state["previously_passing"] = passing_now
+        if new_symbols:
+            # new_signals queda ordenado por score (top_results ya viene
+            # ordenado), asi que al recortar por el cap se conservan las
+            # señales mas fuertes. El cap es el menor entre el tope por ciclo
+            # y los cupos libres respecto a top_n (contando lo que ya esta
+            # pendiente), para no sobre-asignar la cartera de un golpe. Errar
+            # hacia MENOS ordenes automaticas es el lado seguro.
+            new_signals = [r for r in top_results if r.symbol in new_symbols]
+
+            # Intenta primero la entrada automatica por fondo (ver
+            # _try_auto_trade_entry): se ejecuta antes del draft manual y usa
+            # el mismo tope por ciclo, asi que si un fondo auto-trading ya
+            # tomo la señal, el draft manual de abajo la salta solo (chequea
+            # la posicion real en el broker, que ya quedo en no-cero).
+            for r in new_signals[: screener_config.max_auto_drafts_per_cycle]:
+                await _try_auto_trade_entry(r, screener_config.strategy_id)
+
+            free_slots = max(0, screener_config.top_n - len(state["pending_orders"]))
+            cap = min(screener_config.max_auto_drafts_per_cycle, free_slots)
+            new_signals = new_signals[:cap]
+            positions = await broker.get_positions()
+            drafted = []
+            for r in new_signals:
+                p = await _draft_order_from_signal(r, positions)
+                if p is not None:
+                    drafted.append(p)
+
+            await _broadcast({
+                "type": "signal_alert",
+                "new_signals": [r.model_dump() for r in new_signals],
+                "drafted_orders": [p.model_dump() for p in drafted],
+            })
+
+    # Fondos en auto-trading que eligieron explicitamente una estrategia
+    # distinta a la activa global (ver fund.strategy_id) necesitan que ESA
+    # estrategia tambien se escanee en este ciclo: si no, solo entrarian
+    # señales de la estrategia global, sin importar lo que el fondo configuro.
+    # Independiente de si hubo señales nuevas en la estrategia global (arriba):
+    # son escaneos no relacionados.
+    fund_strategy_ids = {
+        f.strategy_id
+        for f in funds_store.list()
+        if f.auto_trading_enabled
+        and not f.closed
+        and f.strategy_id
+        and f.strategy_id != screener_config.strategy_id
+    }
+    for extra_strategy_id in fund_strategy_ids:
+        await _run_fund_strategy_auto_trade_scan(extra_strategy_id)
+
+
+async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
+    """Mismo patron de deteccion de transiciones que _run_signal_scan_cycle,
+    pero para una estrategia que ningun fondo usa como estrategia activa
+    global: solo se llega aca cuando al menos un fondo en auto-trading elige
+    explicitamente esta estrategia (fund.strategy_id), distinta de
+    screener_config.strategy_id.
+
+    A diferencia de _run_signal_scan_cycle, nunca arma borradores manuales
+    (_draft_order_from_signal): esos quedan reservados a la estrategia activa
+    global, que es la unica que se muestra en el Radar para revision humana.
+    Lleva su propio "previously_passing" por estrategia (ver
+    _signal_state["previously_passing_by_strategy"]) para no compartir base
+    con la estrategia activa global ni con otras estrategias de otros fondos.
+    """
+    active_strategy = strategy_registry[strategy_id]
+    try:
+        async with _market_scan_lock:
+            results = await asyncio.to_thread(active_strategy.scan)
+    except Exception as exc:
+        audit.record("signal_scan_failed", {"strategy_id": strategy_id}, {"error": str(exc)})
+        return
+
+    top_results = results[: screener_config.top_n]
+    threshold = _live_score_entry_threshold(strategy_id)
+    passing_now = {r.symbol for r in top_results if r.score >= threshold and r.operational_gates_ok}
+
+    by_strategy = _signal_state["previously_passing_by_strategy"]
+    previously_passing = by_strategy.get(strategy_id)
+    by_strategy[strategy_id] = passing_now
+    if previously_passing is None:
         return
 
     new_symbols = passing_now - previously_passing
-    _signal_state["previously_passing"] = passing_now
     if not new_symbols:
         return
-
-    # new_signals queda ordenado por score (top_results ya viene ordenado), asi
-    # que al recortar por el cap se conservan las señales mas fuertes. El cap es
-    # el menor entre el tope por ciclo y los cupos libres respecto a top_n
-    # (contando lo que ya esta pendiente), para no sobre-asignar la cartera de
-    # un golpe. Errar hacia MENOS ordenes automaticas es el lado seguro.
     new_signals = [r for r in top_results if r.symbol in new_symbols]
-
-    # Intenta primero la entrada automatica por fondo (ver _try_auto_trade_entry):
-    # se ejecuta antes del draft manual y usa el mismo tope por ciclo, asi que si
-    # un fondo auto-trading ya tomo la señal, el draft manual de abajo la salta
-    # solo (chequea la posicion real en el broker, que ya quedo en no-cero).
     for r in new_signals[: screener_config.max_auto_drafts_per_cycle]:
-        await _try_auto_trade_entry(r)
-
-    free_slots = max(0, screener_config.top_n - len(state["pending_orders"]))
-    cap = min(screener_config.max_auto_drafts_per_cycle, free_slots)
-    new_signals = new_signals[:cap]
-    positions = await broker.get_positions()
-    drafted = []
-    for r in new_signals:
-        p = await _draft_order_from_signal(r, positions)
-        if p is not None:
-            drafted.append(p)
-
-    await _broadcast({
-        "type": "signal_alert",
-        "new_signals": [r.model_dump() for r in new_signals],
-        "drafted_orders": [p.model_dump() for p in drafted],
-    })
+        await _try_auto_trade_entry(r, strategy_id)
 
 
 async def _signal_scan_loop() -> None:
@@ -1143,8 +1213,10 @@ def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_k
         # completo: se descarta la base de simbolos "pasando" para que el
         # proximo ciclo del scan proactivo no trate la config nueva como
         # transiciones reales (vuelve a ser un primer ciclo, solo establece
-        # base).
+        # base). Mismo motivo para la base por estrategia de fondos con
+        # strategy_id propio (ver _run_fund_strategy_auto_trade_scan).
         _signal_state["previously_passing"] = None
+        _signal_state["previously_passing_by_strategy"] = {}
     audit.record("screener_config_updated", body.config, {})
     return screener_config.model_dump()
 
@@ -1626,6 +1698,7 @@ class FundCreate(BaseModel):
     name: str
     initial_capital_usd: float
     auto_trading_enabled: bool = False
+    strategy_id: Optional[str] = None
 
 
 def _fund_view(fund) -> dict:
@@ -1674,6 +1747,8 @@ async def create_fund(body: FundCreate, _: None = Depends(require_api_key)):
     holdings que no se registraron en el."""
     if body.initial_capital_usd <= 0:
         raise HTTPException(status_code=422, detail="initial_capital_usd debe ser mayor a 0.")
+    if body.strategy_id is not None and body.strategy_id not in strategy_registry:
+        raise HTTPException(status_code=422, detail=f"strategy_id desconocido: {body.strategy_id}")
     if not state["connected"]:
         raise HTTPException(status_code=503, detail="No conectado a IBKR.")
     real_cash = (await broker.get_account_summary()).cash
@@ -1683,7 +1758,8 @@ async def create_fund(body: FundCreate, _: None = Depends(require_api_key)):
 
     try:
         fund = funds_store.create(
-            body.name.strip(), body.initial_capital_usd, body.auto_trading_enabled, allocation_check=allocation_check
+            body.name.strip(), body.initial_capital_usd, body.auto_trading_enabled,
+            strategy_id=body.strategy_id, allocation_check=allocation_check,
         )
     except FundValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -1918,6 +1994,25 @@ def set_fund_auto_trading(fund_id: str, body: FundAutoTradingUpdate, _: None = D
     if fund is None:
         raise HTTPException(status_code=404, detail="Fondo no encontrado.")
     audit.record("fund_auto_trading_toggled", {"fund_id": fund_id, "enabled": body.enabled}, {})
+    return _fund_view(fund)
+
+
+class FundStrategyUpdate(BaseModel):
+    strategy_id: Optional[str] = None
+
+
+@app.put("/api/funds/{fund_id}/strategy")
+def set_fund_strategy(fund_id: str, body: FundStrategyUpdate, _: None = Depends(require_api_key)):
+    """Define que estrategia debe usar el motor de auto-trading para elegir
+    señales en este fondo (ver _try_auto_trade_entry). strategy_id=None
+    revierte al comportamiento previo: el fondo sigue la estrategia activa
+    global (screener_config.strategy_id)."""
+    if body.strategy_id is not None and body.strategy_id not in strategy_registry:
+        raise HTTPException(status_code=422, detail=f"strategy_id desconocido: {body.strategy_id}")
+    fund = funds_store.set_strategy(fund_id, body.strategy_id)
+    if fund is None:
+        raise HTTPException(status_code=404, detail="Fondo no encontrado.")
+    audit.record("fund_strategy_changed", {"fund_id": fund_id, "strategy_id": body.strategy_id}, {})
     return _fund_view(fund)
 
 

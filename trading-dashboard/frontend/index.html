@@ -208,6 +208,12 @@ td{padding:8px;border-bottom:1px solid var(--border)}
               <label class="fl">Capital inicial (USD)</label>
               <input id="fund-capital" class="fi" type="number" min="0" step="any" placeholder="5000">
             </div>
+            <div class="fg">
+              <label class="fl">Estrategia de auto-trading</label>
+              <select id="fund-strategy" class="fs">
+                <option value="">Sigue la estrategia activa global</option>
+              </select>
+            </div>
           </div>
           <button class="btn-submit" onclick="createFund()">+ Crear fondo</button>
         </div>
@@ -609,6 +615,13 @@ function renderFunds(funds){
             Auto-trading
           </label>`}
         </div>
+        ${f.closed ? '' : `
+        <div style="margin-top:6px">
+          <select class="fs" style="width:auto;padding:4px 6px;font-size:11px" title="Estrategia que rige las entradas automáticas de este fondo. 'Sigue la estrategia activa global' significa que cambia junto con el selector del Radar de oportunidades." onchange="setFundStrategy('${f.id}', this.value)">
+            <option value="" ${!f.strategy_id ? 'selected' : ''}>Sigue la estrategia activa global</option>
+            ${STRATEGIES.map(s => `<option value="${esc(s.id)}" ${f.strategy_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+          </select>
+        </div>`}
         <div class="muted-sm" style="margin-top:4px">
           <span title="Cash del fondo + valor de mercado estimado de sus posiciones (último precio conocido, o costo promedio si todavía no hay precio).">Valor estimado</span> ${fmtUsd(totalValue)} (cash ${fmtUsd(f.cash_usd)} · ${posCount} posición(es))
           · <span title="Suma de aportes menos retiros de capital de este fondo, sin contar ganancias o pérdidas de trading.">Aportado neto</span> ${fmtUsd(netContributed)}
@@ -1197,11 +1210,13 @@ async function openFundDetail(fundId){
 async function createFund(){
   const name = document.getElementById('fund-name').value.trim();
   const capital = parseFloat(document.getElementById('fund-capital').value);
+  const strategyId = document.getElementById('fund-strategy').value || null;
   if(!name || !capital || capital <= 0){ toast('Completa nombre y capital inicial'); return; }
   try{
-    await api('/api/funds', { method:'POST', auth:true, body:{ name, initial_capital_usd: capital } });
+    await api('/api/funds', { method:'POST', auth:true, body:{ name, initial_capital_usd: capital, strategy_id: strategyId } });
     document.getElementById('fund-name').value = '';
     document.getElementById('fund-capital').value = '';
+    document.getElementById('fund-strategy').value = '';
     toast(`✓ Fondo "${name}" creado`);
     refreshFunds();
   }catch(e){ toast('Error: ' + e.message); }
@@ -1227,6 +1242,17 @@ async function toggleFundAutoTrading(fundId, enabled){
     toast(enabled
       ? '🤖 Auto-trading activado: el motor podrá abrir y cerrar posiciones en este fondo sin aprobación manual (modo paper)'
       : 'Auto-trading desactivado');
+  }catch(e){
+    toast('Error: ' + e.message);
+    refreshFunds();
+  }
+}
+
+async function setFundStrategy(fundId, strategyId){
+  try{
+    await api(`/api/funds/${fundId}/strategy`, { method:'PUT', auth:true, body:{ strategy_id: strategyId || null } });
+    const strat = STRATEGIES.find(s => s.id === strategyId);
+    toast(strat ? `✓ Estrategia del fondo: ${strat.name}` : '✓ El fondo vuelve a seguir la estrategia activa global');
   }catch(e){
     toast('Error: ' + e.message);
     refreshFunds();
@@ -1539,6 +1565,12 @@ async function loadStrategies(){
   sel.value = currentStrategyId;
   applyStrategyUi();
   scanSignals(false);
+  const fundStrategySel = document.getElementById('fund-strategy');
+  if(fundStrategySel){
+    fundStrategySel.innerHTML = '<option value="">Sigue la estrategia activa global</option>'
+      + STRATEGIES.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+  }
+  refreshFunds();
 }
 
 function applyStrategyUi(){

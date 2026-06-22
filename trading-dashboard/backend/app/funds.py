@@ -88,6 +88,13 @@ class Fund(BaseModel):
     # _check_fund_exit en main.py). Sigue paper-only sin excepcion: el motor
     # nunca opera en real sin importar este toggle (ver state["mode"]).
     auto_trading_enabled: bool = False
+    # Estrategia que el motor de auto-trading usa para decidir que señales
+    # tomar en ESTE fondo (ver _try_auto_trade_entry en main.py). None = sigue
+    # la estrategia activa global (screener_config.strategy_id), que es el
+    # comportamiento que tenian todos los fondos antes de que existiera este
+    # campo (un solo fondo "ganador" por orden de creacion, sin importar la
+    # estrategia que disparo la señal).
+    strategy_id: Optional[str] = None
     created_at: datetime
     positions: dict[str, FundPosition] = Field(default_factory=dict)
     trades: list[FundTrade] = Field(default_factory=list)
@@ -291,6 +298,7 @@ class FundsStore:
         name: str,
         initial_capital_usd: float,
         auto_trading_enabled: bool = False,
+        strategy_id: Optional[str] = None,
         allocation_check: Optional[Callable[[float], None]] = None,
     ) -> Fund:
         """Crea un fondo. `allocation_check`, si se pasa, recibe la suma de
@@ -309,6 +317,7 @@ class FundsStore:
             name=name,
             cash_usd=0.0,
             auto_trading_enabled=auto_trading_enabled,
+            strategy_id=strategy_id,
             created_at=datetime.now(timezone.utc),
         )
         with self._lock:
@@ -337,6 +346,15 @@ class FundsStore:
             if fund is None:
                 return None
             fund.auto_trading_enabled = enabled
+            self.save()
+            return fund
+
+    def set_strategy(self, fund_id: str, strategy_id: Optional[str]) -> Fund | None:
+        with self._lock:
+            fund = self.funds.get(fund_id)
+            if fund is None:
+                return None
+            fund.strategy_id = strategy_id
             self.save()
             return fund
 
