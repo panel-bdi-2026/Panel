@@ -107,22 +107,6 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .chart-wrap{position:relative;height:200px;margin-top:10px}
 .chart-wrap.sm{height:150px}
 .info-btn{background:none;border:none;color:var(--primary-mid);cursor:pointer;font-size:13px;padding:0 4px}
-.info-tip{position:relative;display:inline-flex;align-items:center;justify-content:center;
-  width:14px;height:14px;border-radius:50%;background:var(--card2);border:1px solid var(--border);
-  color:var(--primary-mid);font-size:10px;font-weight:700;font-style:normal;cursor:help;
-  margin-left:5px;flex:none;line-height:1;vertical-align:middle}
-.info-tip::after{content:attr(data-tip);position:absolute;bottom:22px;left:50%;
-  transform:translateX(-50%);background:#262521;color:#fdfaf2;font-size:11.5px;font-weight:400;
-  line-height:1.4;padding:7px 10px;border-radius:6px;width:max-content;max-width:230px;
-  white-space:normal;text-transform:none;letter-spacing:normal;box-shadow:var(--sh2);
-  opacity:0;visibility:hidden;transition:opacity .15s,visibility .15s;z-index:50;
-  pointer-events:none}
-.info-tip::before{content:'';position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
-  border:5px solid transparent;border-top-color:#262521;
-  opacity:0;visibility:hidden;transition:opacity .15s,visibility .15s;z-index:50}
-.info-tip:hover::after,.info-tip:hover::before{opacity:1;visibility:visible}
-.info-tip.tip-down::after{bottom:auto;top:22px}
-.info-tip.tip-down::before{bottom:auto;top:14px;border-top-color:transparent;border-bottom-color:#262521}
 .modal-overlay{position:fixed;inset:0;background:rgba(2,4,8,.7);display:none;
   align-items:center;justify-content:center;z-index:4000;padding:20px}
 .modal-overlay.show{display:flex}
@@ -228,10 +212,8 @@ td{padding:8px;border-bottom:1px solid var(--border)}
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
             <select id="strategySelect" class="fs" style="width:auto;padding:6px 8px;font-size:12px" onchange="onStrategyChange()"></select>
             <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="scanSignals(true)">↻ Escanear</button>
-            <button class="btn btn-ghost" id="backtestBtn" style="background:var(--bg);color:var(--muted)" onclick="runBacktest()">📊 Backtest</button>
-            <span class="info-tip tip-down" data-tip="Simula la estrategia elegida sobre datos históricos para estimar cómo le habría ido en el pasado. No ejecuta órdenes reales ni usa dinero; resultados pasados no garantizan resultados futuros.">ⓘ</span>
-            <button class="btn btn-ghost" id="walkForwardBtn" style="background:var(--bg);color:var(--muted)" onclick="runWalkForward()">🧪 Validación out-of-sample</button>
-            <span class="info-tip tip-down" data-tip="Corre el mismo backtest una sola vez y lo divide en tramos consecutivos, para ver si el resultado se sostiene en distintos períodos o se concentra en uno solo. No reajusta ningún parámetro por tramo.">ⓘ</span>
+            <button class="btn btn-ghost" id="backtestBtn" style="background:var(--bg);color:var(--muted)" onclick="runBacktest()" title="Simula la estrategia elegida sobre datos históricos para estimar cómo le habría ido en el pasado. No ejecuta órdenes reales ni usa dinero; resultados pasados no garantizan resultados futuros.">📊 Backtest</button>
+            <button class="btn btn-ghost" id="walkForwardBtn" style="background:var(--bg);color:var(--muted)" onclick="runWalkForward()" title="Corre el mismo backtest una sola vez y lo divide en tramos consecutivos, para ver si el resultado se sostiene en distintos períodos o se concentra en uno solo. No reajusta ningún parámetro por tramo.">🧪 Validación out-of-sample</button>
           </div>
         </div>
         <div class="card-body">
@@ -247,7 +229,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
             <button class="btn btn-ghost" id="refreshSectorsBtn" style="background:var(--bg);color:var(--muted)" onclick="refreshSectors()">🌐 Refrescar sectores</button>
           </div>
           <table>
-            <thead><tr><th>Símbolo</th><th>Sector</th><th title="Score de este candidato bajo cada estrategia: la activa queda resaltada">Scores por estrategia</th><th>Precio</th><th>3M%</th><th>1M%</th><th>RSI<span class="info-tip" data-tip="Índice de Fuerza Relativa (0-100, 14 períodos): valores altos (>70) sugieren que el precio subió muy rápido (sobrecomprado); valores bajos (<30) sugieren que cayó muy rápido (sobrevendido).">ⓘ</span></th><th>Stop sugerido<span class="info-tip" data-tip="Precio de stop-loss sugerido según la volatilidad reciente del activo (ATR): un múltiplo del rango de movimiento típico por debajo del precio actual.">ⓘ</span></th><th></th></tr></thead>
+            <thead><tr><th>Símbolo</th><th>Sector</th><th title="Score de este candidato bajo cada estrategia: la activa queda resaltada">Scores por estrategia</th><th>Precio</th><th>3M%</th><th>1M%</th><th title="Índice de Fuerza Relativa (0-100, 14 períodos): valores altos (>70) sugieren que el precio subió muy rápido (sobrecomprado); valores bajos (<30) sugieren que cayó muy rápido (sobrevendido).">RSI</th><th title="Precio de stop-loss sugerido según la volatilidad reciente del activo (ATR): un múltiplo del rango de movimiento típico por debajo del precio actual.">Stop sugerido</th><th></th></tr></thead>
             <tbody id="signalsBody"><tr><td colspan="9" class="empty">Sin escanear aún</td></tr></tbody>
           </table>
           <div id="signalsMeta" class="muted-sm" style="margin-top:8px"></div>
