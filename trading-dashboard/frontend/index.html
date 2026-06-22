@@ -35,8 +35,10 @@ code{background:var(--card2);color:var(--primary-mid);padding:1px 5px;border-rad
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
 .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:5px}
 .dot.on{background:var(--green)}.dot.off{background:var(--red)}
-.conn{font-size:12px;display:flex;align-items:center;background:var(--card2);border:1px solid var(--border);
+.conn{font-size:12px;font-weight:700;display:flex;align-items:center;background:var(--card2);border:1px solid var(--border);
   padding:5px 11px;border-radius:20px}
+.conn.on{background:var(--green-bg);color:var(--green);border:1px solid rgba(31,110,68,.3)}
+.conn.off{background:var(--red-bg);color:var(--red);border:1px solid rgba(156,59,46,.3)}
 .btn{padding:7px 15px;border-radius:var(--r2);border:none;cursor:pointer;font-size:12px;
   font-weight:700;font-family:inherit}
 .btn-halt{background:#b5651d;color:#fff}.btn-halt.on{background:var(--red)}
@@ -81,7 +83,11 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .badge-live{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;
   background:var(--green-bg);color:var(--green);border:1px solid rgba(31,110,68,.35);
   font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
+.badge-fail{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;
+  background:var(--red-bg);color:var(--red);border:1px solid rgba(156,59,46,.3);
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
 .via-strategy{color:var(--muted);font-size:11px;margin-left:6px}
+.price-age{color:var(--muted);font-size:10px;margin-left:6px}
 .side-sel{display:flex;border:1.5px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:11px}
 .side-opt{flex:1;padding:8px;border:none;background:var(--card2);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;color:var(--muted)}
 .side-opt.on-buy{background:var(--green-bg);color:var(--green)}
@@ -217,6 +223,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
           </div>
         </div>
         <div class="card-body">
+          <p id="strategyDesc" class="muted-sm" style="margin-bottom:4px;display:none"></p>
           <p class="muted-sm" style="margin-bottom:10px">
             No es una recomendación de inversión: rankea candidatos del universo en
             <code>screener.yaml</code> según la estrategia elegida. Toda orden que envíes
@@ -435,6 +442,16 @@ function fmtPct(v, decimals=1){
   return Number(v).toFixed(decimals) + '%';
 }
 
+function fmtAge(iso){
+  if(!iso) return '—';
+  const sec = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if(sec < 60) return `${sec}s`;
+  const min = Math.round(sec / 60);
+  if(min < 60) return `${min}m`;
+  const hr = Math.round(min / 60);
+  return `${hr}h`;
+}
+
 // Escapa texto antes de meterlo en innerHTML. Aunque el backend ya valida el
 // simbolo de las ordenes, cualquier string que venga del broker, del screener
 // o de la bitacora se escapa aca tambien (defensa en profundidad): nunca se
@@ -468,6 +485,7 @@ async function refreshStatus(){
     modeBadge.className = 'badge ' + (s.mode === 'live' ? 'live' : 'paper');
     document.getElementById('bannerLive').classList.toggle('show', s.mode === 'live');
     document.getElementById('bannerHalted').classList.toggle('show', s.halted);
+    document.getElementById('connBadge').className = 'conn ' + (s.connected ? 'on' : 'off');
     document.getElementById('connDot').className = 'dot ' + (s.connected ? 'on' : 'off');
     document.getElementById('connTxt').textContent = s.connected ? 'Conectado' : 'Desconectado';
     const haltBtn = document.getElementById('haltBtn');
@@ -478,6 +496,8 @@ async function refreshStatus(){
     modeBtn.classList.toggle('danger', s.mode !== 'live');
     return s;
   }catch(e){
+    document.getElementById('connBadge').className = 'conn off';
+    document.getElementById('connDot').className = 'dot off';
     document.getElementById('connTxt').textContent =
       e.status === 401 ? 'Sesión inválida' : 'Backend no responde';
   }
@@ -920,6 +940,7 @@ async function loadConfigForms(){
     loadedScreenerConfig = screener;
     try{ STRATEGIES = await api('/api/strategies', { auth:true }); }catch(e){ /* select usa lo que ya hubiera cargado */ }
     document.getElementById('cfgScreenerPane').innerHTML = `
+      <p class="muted-sm" style="margin-bottom:10px">${esc(strategyDescription('momentum'))}</p>
       <div class="modal-grid">${renderConfigFields(SCREENER_FIELDS, screener)}</div>
       <div class="fg" style="margin-top:6px">
         <label class="fl">Universo de símbolos a escanear (${(screener.universe||[]).length} actualmente)</label>
@@ -930,19 +951,19 @@ async function loadConfigForms(){
       <button class="btn-submit" onclick="saveScreenerConfig()">Guardar Momentum / Screener</button>
     `;
     document.getElementById('cfgOpportunisticPane').innerHTML = `
-      <p class="muted-sm" style="margin-bottom:10px">Corto plazo (días/semanas): acciones con señal de giro al alza, lejos todavía de su máximo de 52 semanas. Disponible para escaneo en vivo y backtest.</p>
+      <p class="muted-sm" style="margin-bottom:10px">${esc(strategyDescription('opportunistic'))}</p>
       <div class="modal-grid">${renderConfigFields(OPPORTUNISTIC_FIELDS, screener)}</div>
       <div class="violations" id="cfgOpportunisticErr"></div>
       <button class="btn-submit" onclick="saveStrategySubConfig(OPPORTUNISTIC_FIELDS, 'cfgOpportunisticErr', 'opportunistic')">Guardar Oportunista</button>
     `;
     document.getElementById('cfgLongTermPane').innerHTML = `
-      <p class="muted-sm" style="margin-bottom:10px">Largo plazo (meses/1 año): fundamentales de crecimiento y rentabilidad con valoración razonable. Solo escaneo en vivo (sin backtest).</p>
+      <p class="muted-sm" style="margin-bottom:10px">${esc(strategyDescription('long_term'))}</p>
       <div class="modal-grid">${renderConfigFields(LONG_TERM_FIELDS, screener)}</div>
       <div class="violations" id="cfgLongTermErr"></div>
       <button class="btn-submit" onclick="saveStrategySubConfig(LONG_TERM_FIELDS, 'cfgLongTermErr', 'long_term')">Guardar Largo plazo</button>
     `;
     document.getElementById('cfgDividendPane').innerHTML = `
-      <p class="muted-sm" style="margin-bottom:10px">Dividend yield: buen yield con payout sostenible y fundamentales sanos. Solo escaneo en vivo (sin backtest).</p>
+      <p class="muted-sm" style="margin-bottom:10px">${esc(strategyDescription('dividend'))}</p>
       <div class="modal-grid">${renderConfigFields(DIVIDEND_FIELDS, screener)}</div>
       <div class="violations" id="cfgDividendErr"></div>
       <button class="btn-submit" onclick="saveStrategySubConfig(DIVIDEND_FIELDS, 'cfgDividendErr', 'dividend')">Guardar Dividendos</button>
@@ -1338,6 +1359,11 @@ function strategyName(strategyId){
   return strat ? strat.name : strategyId;
 }
 
+function strategyDescription(strategyId){
+  const strat = STRATEGIES.find(s => s.id === strategyId);
+  return strat ? strat.description : '';
+}
+
 function scoresCellHtml(r){
   const scores = r.scores || {};
   const ids = STRATEGIES.length ? STRATEGIES.map(s => s.id) : [currentStrategyId];
@@ -1369,7 +1395,7 @@ function renderSignalsTable(){
   const visible = filtered.slice(0, signalsDisplayCount);
   let rowsHtml = visible.map(r => `
         <tr>
-          <td><b>${esc(r.symbol)}</b>${r.is_hot ? ' <span class="badge-live" title="Precio en vivo via streaming de IBKR">en vivo</span>' : ''}${currentStrategyId === 'general' && r.winning_strategy_id ? ` <span class="via-strategy">vía ${esc(strategyName(r.winning_strategy_id))}</span>` : ''}${r.passes_filters ? '' : ' <span class="muted-sm">(no pasa filtros)</span>'}</td>
+          <td><b>${esc(r.symbol)}</b>${r.is_hot ? ' <span class="badge-live" title="Precio en vivo via streaming de IBKR">en vivo</span>' : ''}${currentStrategyId === 'general' && r.winning_strategy_id ? ` <span class="via-strategy">vía ${esc(strategyName(r.winning_strategy_id))}</span>` : ''}${r.passes_filters ? '' : ' <span class="badge-fail" title="No cumple todos los filtros configurados para esta estrategia. Ver más para el detalle.">no pasa filtros</span>'}<br><span class="price-age" title="Hace cuánto se actualizó este precio (${r.price_as_of ? new Date(r.price_as_of).toLocaleString() : 'sin dato'})">🕐 ${fmtAge(r.price_as_of)}</span></td>
           <td>${esc(r.sector || '—')}</td>
           <td>${scoresCellHtml(r)}</td>
           <td>${fmtUsd(r.last_price)}</td>
@@ -1423,7 +1449,10 @@ async function scanSignals(force=false){
       data.results.forEach(r => lastSignals[r.symbol] = r);
       renderSignalsTable();
     }
-    meta.textContent = `Actualizado: ${new Date(data.as_of).toLocaleString()}${data.cached ? ' (cache)' : ''} · ${data.results.length} símbolos con datos`;
+    const hotInfo = data.live_hot_cap
+      ? ` · 🟢 ${data.live_hot_count || 0}/${data.live_hot_cap} símbolos con streaming en vivo (compartido entre estrategias, los de mejor score en cualquiera de ellas)`
+      : '';
+    meta.textContent = `Actualizado: ${new Date(data.as_of).toLocaleString()}${data.cached ? ' (cache)' : ''} · ${data.results.length} símbolos con datos${hotInfo}`;
     renderSignalsChart(data.results);
     // El score de las otras estrategias se trae aparte y nunca con force: la
     // activa ya se forzo arriba si correspondia, y las demas usan su propio
@@ -1478,6 +1507,13 @@ function applyStrategyUi(){
   const showBacktest = (!isGeneral && strat && strat.supports_backtest) ? '' : 'none';
   document.getElementById('backtestBtn').style.display = showBacktest;
   document.getElementById('walkForwardBtn').style.display = showBacktest;
+  const descEl = document.getElementById('strategyDesc');
+  if(!isGeneral && strat && strat.description){
+    descEl.textContent = strat.description;
+    descEl.style.display = 'block';
+  }else{
+    descEl.style.display = 'none';
+  }
 }
 
 function onStrategyChange(){
@@ -1567,10 +1603,23 @@ function renderSignalsChart(results){
   });
 }
 
+// Unica estrategia que exige tendencia alcista para pasar sus filtros (ver
+// passes_filters en screener.py): en Oportunista/Largo plazo/Dividendos,
+// trend_ok se calcula y se muestra solo a modo informativo, nunca bloquea.
+const TREND_GATING_STRATEGY_ID = 'momentum';
+
 function signalDetailHtml(r){
-  const notesHtml = r.notes && r.notes.length
-    ? `<ul style="margin-left:16px;margin-top:4px">${r.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`
-    : '<p class="muted-sm" style="margin-top:4px">Sin notas adicionales.</p>';
+  const effectiveStrategyId = currentStrategyId === 'general' ? r.winning_strategy_id : currentStrategyId;
+  const trendGates = effectiveStrategyId === TREND_GATING_STRATEGY_ID;
+  const summaryHtml = r.passes_filters
+    ? `<p style="margin-top:10px;color:var(--green)"><b>✅ Pasa todos los filtros${effectiveStrategyId ? ' de ' + esc(strategyName(effectiveStrategyId)) : ''}.</b></p>`
+    + (r.notes && r.notes.length
+        ? `<p class="muted-sm" style="margin-top:4px">Observaciones (no bloquean):</p><ul style="margin-left:16px;margin-top:2px">${r.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`
+        : '')
+    : `<p style="margin-top:10px;color:var(--red)"><b>❌ No pasa los filtros${effectiveStrategyId ? ' de ' + esc(strategyName(effectiveStrategyId)) : ''} por:</b></p>`
+    + (r.notes && r.notes.length
+        ? `<ul style="margin-left:16px;margin-top:4px">${r.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`
+        : '<p class="muted-sm" style="margin-top:4px">Sin notas adicionales.</p>');
   const fundamentalRows = [
     r.sector ? `<tr><td><b>Sector</b></td><td>${esc(r.sector)}</td></tr>` : '',
     r.pe_ratio != null ? `<tr><td><b>P/E ratio</b></td><td>${r.pe_ratio.toFixed(1)}</td></tr>` : '',
@@ -1583,12 +1632,11 @@ function signalDetailHtml(r){
         ${fundamentalRows}
         <tr><td><b>Distancia al máximo de 52 semanas</b></td><td>${fmtPct(r.pct_from_52w_high)}</td></tr>
         <tr><td><b>Volumen promedio (USD/día)</b></td><td>${fmtUsd(r.avg_volume)}</td></tr>
-        <tr><td><b>Tendencia OK</b></td><td>${r.trend_ok ? 'Sí' : 'No'}</td></tr>
+        <tr><td><b>Tendencia OK</b></td><td>${r.trend_ok ? 'Sí' : 'No'}${trendGates ? '' : ' <span class="muted-sm">(informativo: no es criterio de esta estrategia)</span>'}</td></tr>
         <tr><td><b>Pasa todos los filtros</b></td><td>${r.passes_filters ? 'Sí' : 'No'}</td></tr>
       </tbody>
     </table>
-    <p class="muted-sm" style="margin-top:10px"><b>Notas:</b></p>
-    ${notesHtml}
+    ${summaryHtml}
   `;
 }
 
@@ -1636,6 +1684,7 @@ async function runBacktest(){
   box.style.display = 'block';
   chartWrap.style.display = 'none';
   stats.textContent = 'Corriendo backtest (puede tardar; depende de la API gratuita de datos)…';
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try{
     const r = await api(`/api/signals/backtest?strategy_id=${encodeURIComponent(currentStrategyId)}`, { auth:true });
     stats.innerHTML = `
@@ -1670,6 +1719,7 @@ async function runWalkForward(){
   const stats = document.getElementById('walkForwardStats');
   box.style.display = 'block';
   stats.textContent = 'Corriendo validación out-of-sample (corre el mismo backtest una vez y lo divide en tramos; puede tardar)…';
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try{
     const r = await api(`/api/signals/backtest/walk-forward?strategy_id=${encodeURIComponent(currentStrategyId)}`, { auth:true });
     const rows = r.folds.map((f, i) => `

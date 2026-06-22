@@ -32,6 +32,10 @@ class DividendStrategy:
 
     id = "dividend"
     name = "Dividendos"
+    description = (
+        "Dividend yield: buen yield con payout sostenible y fundamentales "
+        "sanos. Solo escaneo en vivo (sin backtest)."
+    )
     supports_backtest = False
 
     def __init__(self, config: ScreenerConfig):

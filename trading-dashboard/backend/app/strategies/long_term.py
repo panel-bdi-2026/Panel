@@ -26,6 +26,11 @@ class LongTermStrategy:
 
     id = "long_term"
     name = "Largo plazo"
+    description = (
+        "Largo plazo (meses/1 año): fundamentales de crecimiento y "
+        "rentabilidad con valoración razonable. Solo escaneo en vivo (sin "
+        "backtest)."
+    )
     supports_backtest = False
 
     def __init__(self, config: ScreenerConfig):

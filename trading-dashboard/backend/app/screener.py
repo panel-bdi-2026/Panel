@@ -26,6 +26,11 @@ class MomentumScreener:
     # app/strategies/ para las demas estrategias).
     id = "momentum"
     name = "Momentum"
+    description = (
+        "Corto/mediano plazo (semanas/meses): acciones con tendencia alcista "
+        "confirmada (precio sobre sus medias móviles), buen impulso reciente "
+        "y RSI en rango saludable. Disponible para escaneo en vivo y backtest."
+    )
     supports_backtest = True
 
     def __init__(self, config: ScreenerConfig):

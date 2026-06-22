@@ -160,6 +160,7 @@ _signal_state: dict = {"previously_passing": None}
 # arriba sobre multiples workers).
 _hot_symbols: set[str] = set()
 _live_prices: dict[str, float] = {}
+_live_prices_as_of: dict[str, datetime] = {}
 _rotation_cursor = 0
 
 
@@ -812,6 +813,9 @@ async def _run_price_rotation_cycle() -> None:
         print(f"[WARN] Error al rotar precios en vivo del radar: {exc}")
         return
     _live_prices.update(prices)
+    now = datetime.now(timezone.utc)
+    for symbol in prices:
+        _live_prices_as_of[symbol] = now
 
 
 async def _price_rotation_loop() -> None:
@@ -1049,10 +1053,16 @@ def get_audit(limit: int = Query(default=100, ge=1, le=1000), _: None = Depends(
 @app.get("/api/strategies")
 def list_strategies(_: None = Depends(require_api_key)):
     """Metadata de las estrategias disponibles, para el selector del
-    dashboard: id/name para mostrar, supports_backtest para saber si ofrecer
-    el boton de backtest o no (Largo plazo y Dividendos no lo soportan)."""
+    dashboard: id/name para mostrar, description para el resumen junto al
+    selector, supports_backtest para saber si ofrecer el boton de backtest
+    o no (Largo plazo y Dividendos no lo soportan)."""
     return [
-        {"id": s.id, "name": s.name, "supports_backtest": s.supports_backtest}
+        {
+            "id": s.id,
+            "name": s.name,
+            "description": s.description,
+            "supports_backtest": s.supports_backtest,
+        }
         for s in strategy_registry.values()
     ]
 
@@ -1164,12 +1174,14 @@ def _overlay_live_data(results: list[dict]) -> list[dict]:
             overlay["is_hot"] = live_price is not None
             if live_price is not None:
                 overlay["last_price"] = live_price
+                overlay["price_as_of"] = datetime.now(timezone.utc)
         else:
             overlay["is_hot"] = False
             live_price = _live_prices.get(symbol)
             if live_price is not None:
                 overlay["last_price"] = live_price
-        out.append({**r, **overlay})
+                overlay["price_as_of"] = _live_prices_as_of.get(symbol, r["as_of"])
+        out.append({**r, "price_as_of": r["as_of"], **overlay})
     return out
 
 
@@ -1206,7 +1218,13 @@ async def scan_signals(force: bool = False, strategy_id: str | None = None, _: N
     except Exception as exc:
         print(f"[WARN] Error al escanear el mercado ({resolved_id}): {exc}")
         raise HTTPException(status_code=502, detail="Error al escanear el mercado. Revisa los logs del servidor.")
-    return {"as_of": as_of, "cached": cached, "results": _overlay_live_data(results)}
+    return {
+        "as_of": as_of,
+        "cached": cached,
+        "results": _overlay_live_data(results),
+        "live_hot_count": len(_hot_symbols),
+        "live_hot_cap": screener_config.live_hot_symbols_cap,
+    }
 
 
 @app.get("/api/signals/scan/all")

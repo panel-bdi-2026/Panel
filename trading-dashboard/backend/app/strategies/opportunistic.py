@@ -21,6 +21,11 @@ class OpportunisticStrategy:
 
     id = "opportunistic"
     name = "Oportunista"
+    description = (
+        "Corto plazo (días/semanas): acciones con señal de giro al alza, "
+        "lejos todavía de su máximo de 52 semanas. Disponible para escaneo "
+        "en vivo y backtest."
+    )
     supports_backtest = True
 
     def __init__(self, config: ScreenerConfig):

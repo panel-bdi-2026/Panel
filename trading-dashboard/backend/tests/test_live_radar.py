@@ -37,10 +37,12 @@ def reset_state(monkeypatch):
     monkeypatch.setattr(main_module, "screener_config", ScreenerConfig())
     main_module._hot_symbols.clear()
     main_module._live_prices.clear()
+    main_module._live_prices_as_of.clear()
     main_module._rotation_cursor = 0
     yield
     main_module._hot_symbols.clear()
     main_module._live_prices.clear()
+    main_module._live_prices_as_of.clear()
     main_module._rotation_cursor = 0
 
 
@@ -277,6 +279,7 @@ def test_price_rotation_updates_live_prices_with_snapshot_results(monkeypatch):
     asyncio.run(main_module._run_price_rotation_cycle())
 
     assert main_module._live_prices == {"AAPL": 155.0, "MSFT": 290.0}
+    assert main_module._live_prices_as_of.keys() == {"AAPL", "MSFT"}
 
 
 def test_price_rotation_handles_snapshot_failure_gracefully(monkeypatch):

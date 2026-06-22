@@ -97,6 +97,23 @@ def test_get_positions_treats_nan_price_as_missing(broker, monkeypatch):
     assert out[0].unrealized_pnl is None
 
 
+def test_get_positions_treats_negative_price_as_missing(broker, monkeypatch):
+    """Con datos demorados (reqMarketDataType(3)) IBKR puede mandar -1 como
+    valor real de last/close para indicar "sin dato disponible" en vez de
+    NaN: esto pasaba el viejo filtro de NaN sin chequeo aparte."""
+    pos1 = FakePosition(1, "AAPL", 10, 150.0)
+    monkeypatch.setattr(broker.ib, "positions", lambda: [pos1])
+
+    async def fake_req_tickers(*contracts, **kwargs):
+        return [FakeTicker(pos1.contract, -1.0)]
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", fake_req_tickers)
+
+    out = asyncio.run(broker.get_positions())
+    assert out[0].market_price is None
+    assert out[0].unrealized_pnl is None
+
+
 def test_get_position_qty_returns_zero_when_no_match(broker, monkeypatch):
     pos1 = FakePosition(1, "AAPL", 10, 150.0)
     monkeypatch.setattr(broker.ib, "positions", lambda: [pos1])
@@ -220,6 +237,11 @@ def test_get_live_price_treats_nan_as_missing(broker):
     assert broker.get_live_price("AAPL") is None
 
 
+def test_get_live_price_treats_negative_as_missing(broker):
+    broker._live_tickers["AAPL"] = FakeTicker(FakeContract(1, "AAPL"), -1.0)
+    assert broker.get_live_price("AAPL") is None
+
+
 def test_get_snapshot_prices_returns_empty_dict_without_calling_ib(broker, monkeypatch):
     async def fail_if_called(*contracts, **kwargs):
         raise AssertionError("no deberia pedir nada a IBKR con una lista vacia")
@@ -248,6 +270,16 @@ def test_get_snapshot_prices_filters_nan_prices(broker, monkeypatch):
 
     async def fake_req_tickers(*contracts, **kwargs):
         return [FakeTicker(FakeContract(1, "AAPL"), float("nan"))]
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", fake_req_tickers)
+    assert asyncio.run(broker.get_snapshot_prices(["AAPL"])) == {}
+
+
+def test_get_snapshot_prices_filters_negative_prices(broker, monkeypatch):
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", _noop_qualify)
+
+    async def fake_req_tickers(*contracts, **kwargs):
+        return [FakeTicker(FakeContract(1, "AAPL"), -1.0)]
 
     monkeypatch.setattr(broker.ib, "reqTickersAsync", fake_req_tickers)
     assert asyncio.run(broker.get_snapshot_prices(["AAPL"])) == {}
@@ -294,6 +326,17 @@ def test_get_reference_price_qualifies_class_share_symbol_with_space(broker, mon
 
     assert price == 450.0
     assert seen_contracts[0].symbol == "BRK B"  # formato que espera IBKR
+
+
+def test_get_reference_price_treats_negative_as_missing(broker, monkeypatch):
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", _noop_qualify)
+
+    async def fake_req_tickers(*contracts, **kwargs):
+        return [FakeTicker(contracts[0], -1.0)]
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", fake_req_tickers)
+
+    assert asyncio.run(broker.get_reference_price("AAPL")) is None
 
 
 def test_get_positions_translates_class_share_symbol_back_to_hyphen(broker, monkeypatch):

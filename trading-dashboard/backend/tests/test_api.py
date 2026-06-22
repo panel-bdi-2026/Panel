@@ -831,10 +831,12 @@ def _reset_live_radar_state():
     se limpian entre tests."""
     main_module._hot_symbols.clear()
     main_module._live_prices.clear()
+    main_module._live_prices_as_of.clear()
     main_module._rotation_cursor = 0
     yield
     main_module._hot_symbols.clear()
     main_module._live_prices.clear()
+    main_module._live_prices_as_of.clear()
     main_module._rotation_cursor = 0
 
 
@@ -1038,6 +1040,56 @@ def test_scan_signals_keeps_cached_price_when_no_rotation_price_yet(monkeypatch)
     result = resp.json()["results"][0]
     assert result["is_hot"] is False
     assert result["last_price"] == 100.0
+
+
+def test_scan_signals_price_as_of_is_now_for_hot_symbol(monkeypatch):
+    stale = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    signal = _make_signal("AAPL", 8.0)
+    signal.as_of = stale
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [signal])
+    main_module._hot_symbols.add("AAPL")
+    monkeypatch.setattr(main_module.broker, "get_live_price", lambda symbol: 123.45)
+
+    resp = client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    result = resp.json()["results"][0]
+    price_as_of = datetime.fromisoformat(result["price_as_of"])
+    assert price_as_of > stale  # un simbolo en vivo se reporta como recien actualizado
+
+
+def test_scan_signals_price_as_of_uses_rotation_timestamp_for_cold_symbol(monkeypatch):
+    stale = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    signal = _make_signal("AAPL", 8.0)
+    signal.as_of = stale
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [signal])
+    rotated_at = datetime(2025, 6, 1, tzinfo=timezone.utc)
+    main_module._live_prices["AAPL"] = 111.11
+    main_module._live_prices_as_of["AAPL"] = rotated_at
+
+    resp = client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    result = resp.json()["results"][0]
+    assert datetime.fromisoformat(result["price_as_of"]) == rotated_at
+
+
+def test_scan_signals_price_as_of_falls_back_to_scan_time_without_overlay(monkeypatch):
+    as_of = datetime(2024, 3, 1, tzinfo=timezone.utc)
+    signal = _make_signal("AAPL", 8.0)
+    signal.as_of = as_of
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [signal])
+
+    resp = client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    result = resp.json()["results"][0]
+    assert datetime.fromisoformat(result["price_as_of"]) == as_of
+
+
+def test_scan_signals_reports_hot_set_size_and_cap(monkeypatch):
+    monkeypatch.setattr(main_module.screener, "scan", lambda force=False: [_make_signal("AAPL", 8.0)])
+    main_module._hot_symbols.update({"AAPL", "MSFT"})
+    main_module.screener_config.live_hot_symbols_cap = 50
+
+    resp = client.get("/api/signals/scan", headers={"X-API-Key": "test-key"})
+    body = resp.json()
+    assert body["live_hot_count"] == 2
+    assert body["live_hot_cap"] == 50
 
 
 def test_scan_signals_general_view_includes_live_overlay(monkeypatch):

@@ -26,6 +26,18 @@ def _from_ib_symbol(symbol: str) -> str:
     return symbol.replace(" ", "-")
 
 
+def _clean_price(price: float) -> float | None:
+    """Ticker.marketPrice() de ib_async devuelve NaN cuando todavia no hay
+    ningun tick (filtrado con price == price). Pero con datos demorados/
+    congelados (reqMarketDataType(3), el default de este backend) IBKR
+    tambien puede mandar -1 como valor real de last/close para indicar
+    "sin dato disponible" en vez de omitir el campo, y eso SI es un float
+    valido que pasa el filtro de NaN sin este chequeo aparte -- se vio
+    como precio "-$1.00" en el radar para simbolos sin datos demorados
+    entitleados en ese momento."""
+    return price if price == price and price > 0 else None
+
+
 class IBKRConnectionError(RuntimeError):
     pass
 
@@ -168,11 +180,13 @@ class IBKRBroker:
             tickers = await self.ib.reqTickersAsync(*(p.contract for p in positions))
         except Exception:
             tickers = []
-        price_by_conid = {
-            t.contract.conId: t.marketPrice()
-            for t in tickers
-            if t.contract and t.marketPrice() == t.marketPrice()  # not NaN
-        }
+        price_by_conid: dict[int, float] = {}
+        for t in tickers:
+            if not t.contract:
+                continue
+            price = _clean_price(t.marketPrice())
+            if price is not None:
+                price_by_conid[t.contract.conId] = price
 
         out: list[Position] = []
         for p in positions:
@@ -199,8 +213,7 @@ class IBKRBroker:
         tickers = await self.ib.reqTickersAsync(contract)
         if not tickers:
             return None
-        price = tickers[0].marketPrice()
-        return price if price == price else None  # filtra NaN
+        return _clean_price(tickers[0].marketPrice())
 
     async def stream_subscribe(self, symbols: list[str]) -> None:
         """Abre suscripciones de streaming persistente para `symbols` que
@@ -233,8 +246,7 @@ class IBKRBroker:
         ticker = self._live_tickers.get(symbol)
         if ticker is None:
             return None
-        price = ticker.marketPrice()
-        return price if price == price else None  # filtra NaN
+        return _clean_price(ticker.marketPrice())
 
     async def get_snapshot_prices(self, symbols: list[str]) -> dict[str, float]:
         """Snapshot de precio para un lote de simbolos en una sola llamada
@@ -255,8 +267,8 @@ class IBKRBroker:
         for t in tickers:
             if t.contract is None:
                 continue
-            price = t.marketPrice()
-            if price == price:  # filtra NaN
+            price = _clean_price(t.marketPrice())
+            if price is not None:
                 out[_from_ib_symbol(t.contract.symbol)] = price
         return out
 
