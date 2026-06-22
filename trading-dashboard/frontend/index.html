@@ -168,10 +168,10 @@ td{padding:8px;border-bottom:1px solid var(--border)}
   <div class="banner halted" id="bannerHalted">⏸ Trading pausado manualmente (kill switch). No se ejecutarán nuevas órdenes.</div>
 
   <div class="kpis">
-    <div class="kpi"><div class="kpi-lbl">Net Liquidation</div><div class="kpi-val" id="kv-netliq">—</div></div>
-    <div class="kpi"><div class="kpi-lbl">Cash</div><div class="kpi-val" id="kv-cash">—</div></div>
-    <div class="kpi"><div class="kpi-lbl">Buying Power</div><div class="kpi-val" id="kv-bp">—</div></div>
-    <div class="kpi"><div class="kpi-lbl">P&L del día</div><div class="kpi-val" id="kv-pnl">—</div></div>
+    <div class="kpi"><div class="kpi-lbl" title="Valor total de la cuenta si se liquidaran todas las posiciones al precio de mercado actual: cash + valor de mercado de las posiciones.">Net Liquidation</div><div class="kpi-val" id="kv-netliq">—</div></div>
+    <div class="kpi"><div class="kpi-lbl" title="Efectivo disponible en la cuenta, sin contar el valor de las posiciones.">Cash</div><div class="kpi-val" id="kv-cash">—</div></div>
+    <div class="kpi"><div class="kpi-lbl" title="Poder de compra disponible (incluye margen si tu cuenta lo tiene habilitado): cuánto se podría comprar hoy sin aportar más fondos.">Buying Power</div><div class="kpi-val" id="kv-bp">—</div></div>
+    <div class="kpi"><div class="kpi-lbl" title="Ganancia o pérdida del día (realizada + no realizada) respecto al cierre anterior, según lo reporta IBKR.">P&L del día</div><div class="kpi-val" id="kv-pnl">—</div></div>
   </div>
 
   <div class="grid2">
@@ -180,7 +180,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
         <div class="card-hdr">Posiciones <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="refreshAll()">↻ Actualizar</button></div>
         <div class="card-body">
           <table id="posTable">
-            <thead><tr><th>Símbolo</th><th>Cantidad</th><th>Costo prom.</th><th>Precio mkt.</th><th>P&L no real.</th></tr></thead>
+            <thead><tr><th>Símbolo</th><th>Cantidad</th><th title="Precio promedio de compra de la posición actual.">Costo prom.</th><th title="Último precio de mercado conocido para este símbolo.">Precio mkt.</th><th title="Ganancia o pérdida no realizada: (precio de mercado − costo promedio) × cantidad. No se concreta hasta vender.">P&L no real.</th></tr></thead>
             <tbody id="posBody"><tr><td colspan="5" class="empty">Sin datos aún</td></tr></tbody>
           </table>
         </div>
@@ -610,10 +610,10 @@ function renderFunds(funds){
           </label>`}
         </div>
         <div class="muted-sm" style="margin-top:4px">
-          Valor estimado ${fmtUsd(totalValue)} (cash ${fmtUsd(f.cash_usd)} · ${posCount} posición(es))
-          · Aportado neto ${fmtUsd(netContributed)}
-          · PnL total <span style="color:${pnlTotal>=0?'var(--green)':'var(--red)'}">${fmtUsd(pnlTotal)} (${roiPct>=0?'+':''}${roiPct.toFixed(1)}%)</span>
-          · PnL realizado ${fmtUsd(f.realized_pnl_total)}
+          <span title="Cash del fondo + valor de mercado estimado de sus posiciones (último precio conocido, o costo promedio si todavía no hay precio).">Valor estimado</span> ${fmtUsd(totalValue)} (cash ${fmtUsd(f.cash_usd)} · ${posCount} posición(es))
+          · <span title="Suma de aportes menos retiros de capital de este fondo, sin contar ganancias o pérdidas de trading.">Aportado neto</span> ${fmtUsd(netContributed)}
+          · <span title="Valor estimado del fondo menos lo aportado neto: ganancia o pérdida total (realizada + no realizada) desde su creación.">PnL total</span> <span style="color:${pnlTotal>=0?'var(--green)':'var(--red)'}">${fmtUsd(pnlTotal)} (${roiPct>=0?'+':''}${roiPct.toFixed(1)}%)</span>
+          · <span title="Ganancia o pérdida ya concretada por ventas cerradas en este fondo (no incluye posiciones abiertas).">PnL realizado</span> ${fmtUsd(f.realized_pnl_total)}
         </div>
         ${f.closed ? `
         <div class="muted-sm" style="margin-top:8px">Cerrado el ${new Date(f.closed_at).toLocaleDateString()}</div>` : `
@@ -766,6 +766,12 @@ const SCREENER_FIELDS = [
   { key:'auto_scan_enabled', label:'Escaneo proactivo en background activo', type:'checkbox' },
   { key:'auto_scan_interval_minutes', label:'Intervalo del escaneo proactivo (minutos)', type:'number', min:1, step:1, integer:true },
   { key:'max_auto_drafts_per_cycle', label:'Máx. borradores por ciclo de escaneo proactivo', type:'number', min:0, step:1, integer:true },
+  { key:'news_sentiment_enabled', label:'Sentimiento de noticias activo (Claude Haiku 4.5)', type:'checkbox',
+    hint:'Requiere ANTHROPIC_API_KEY configurada en el servidor. Ajusta el score solo para el shortlist de mejores candidatos tras el ranking, según el sentimiento de sus titulares recientes (no afecta a todo el universo escaneado).' },
+  { key:'news_sentiment_shortlist_multiplier', label:'Multiplicador del shortlist de sentimiento', type:'number', min:0.1,
+    hint:'Tamaño del shortlist como múltiplo de "top N": con top_n=10 y multiplicador=3, se clasifican los 30 mejores tras el ranking (no los ~500 del universo completo).' },
+  { key:'news_sentiment_max_adjustment', label:'Ajuste máximo de score por sentimiento', type:'number', min:0,
+    hint:'Cuánto puede sumar (sentimiento positivo) o restar (negativo) al score, ya percentilado 0-100. Neutral o sin datos no mueve el score.' },
 ];
 
 // Sub-configs anidados de screener.yaml (screener.opportunistic / .long_term /
@@ -781,10 +787,20 @@ const OPPORTUNISTIC_FIELDS = [
   { key:'min_pct_below_52w_high', label:'Mínimo % por debajo del máximo de 52 semanas', type:'number', min:0, group:'opportunistic' },
   { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'opportunistic' },
   { key:'max_holding_days', label:'Máximo de días en una posición', type:'number', min:1, step:1, integer:true, group:'opportunistic' },
+  { key:'max_volatility_pct', label:'Volatilidad máxima (ATR % del precio, solo score)', type:'number', min:0, group:'opportunistic',
+    hint:'No es un filtro (no descarta candidatos): más allá de este punto, más volatilidad ya no suma al score de "giro al alza", solo es más riesgo.' },
+  { key:'max_pct_below_52w_high', label:'Máximo % por debajo del máximo de 52 sem. (solo score)', type:'number', min:0, group:'opportunistic',
+    hint:'No es un filtro: más allá de este punto ya no se considera "espacio de crecimiento" sino una caída sostenida, y deja de sumar al score.' },
   { key:'score_weight_momentum', label:'Peso: momentum', type:'number', min:0, group:'opportunistic' },
   { key:'score_weight_volatility', label:'Peso: volatilidad', type:'number', min:0, group:'opportunistic' },
   { key:'score_weight_rsi_recovery', label:'Peso: recuperación de RSI', type:'number', min:0, group:'opportunistic' },
   { key:'score_weight_room_to_grow', label:'Peso: espacio de crecimiento', type:'number', min:0, group:'opportunistic' },
+  { key:'score_weight_macd_turn', label:'Peso: giro de MACD', type:'number', min:0, group:'opportunistic' },
+  { key:'score_weight_sector_relative_strength', label:'Peso: fuerza relativa vs. sector', type:'number', min:0, group:'opportunistic' },
+  { key:'backtest_score_entry_threshold', label:'Umbral de score de entrada (backtest y auto-trading en vivo)', type:'number', min:0, max:100, group:'opportunistic',
+    hint:'Score (0-100 percentil) a partir del cual el backtest simula una entrada. También dispara el auto-trading en el escaneo en vivo si está activo.' },
+  { key:'backtest_score_exit_threshold', label:'Umbral de score de salida (backtest)', type:'number', min:0, max:100, group:'opportunistic',
+    hint:'Score (0-100 percentil) por debajo del cual el backtest simula una salida (además de stop-loss o tiempo máximo, lo que ocurra primero).' },
 ];
 
 const LONG_TERM_FIELDS = [
@@ -794,23 +810,43 @@ const LONG_TERM_FIELDS = [
   { key:'min_return_on_equity_pct', label:'ROE mínimo (%)', type:'number', group:'long_term' },
   { key:'max_debt_to_equity', label:'Deuda/Equity máxima', type:'number', min:0, group:'long_term' },
   { key:'min_profit_margin_pct', label:'Margen de ganancia mínimo (%)', type:'number', group:'long_term' },
+  { key:'max_peg_ratio', label:'PEG máximo (solo score, no bloquea)', type:'number', min:0, group:'long_term',
+    hint:'PE ajustado por crecimiento de ganancias. A diferencia del P/E, un PEG ausente o alto no descarta el candidato por sí solo: solo afecta el componente "peg" del score.' },
+  { key:'max_beta', label:'Beta máxima (informativo)', type:'number', min:0, group:'long_term',
+    hint:'Volatilidad relativa al mercado (SPY). Solo genera una nota informativa, no bloquea ni puntúa.' },
+  { key:'max_short_interest_pct', label:'Interés en corto máximo % (informativo)', type:'number', min:0, group:'long_term',
+    hint:'% del float vendido en corto. Solo genera una nota informativa, no bloquea ni puntúa.' },
   { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'long_term' },
   { key:'score_weight_value', label:'Peso: valoración (P/E)', type:'number', min:0, group:'long_term' },
   { key:'score_weight_growth', label:'Peso: crecimiento', type:'number', min:0, group:'long_term' },
-  { key:'score_weight_quality', label:'Peso: calidad (ROE/deuda)', type:'number', min:0, group:'long_term' },
-  { key:'score_weight_margin', label:'Peso: margen', type:'number', min:0, group:'long_term' },
+  { key:'score_weight_quality', label:'Peso: calidad (Piotroski-lite: ROE, margen, deuda)', type:'number', min:0, group:'long_term' },
+  { key:'score_weight_peg', label:'Peso: PEG', type:'number', min:0, group:'long_term' },
+  { key:'score_weight_safety', label:'Peso: solidez financiera (liquidez/FCF/beta)', type:'number', min:0, group:'long_term' },
+  { key:'score_weight_ownership_alignment', label:'Peso: alineación de ownership (insiders/institucional)', type:'number', min:0, group:'long_term' },
+  { key:'live_score_entry_threshold', label:'Umbral de score para auto-trading en vivo', type:'number', min:0, max:100, group:'long_term',
+    hint:'Score (0-100 percentil) a partir del cual el escaneo en vivo puede disparar una entrada de auto-trading. Largo Plazo no es backtesteable, por eso no reusa un umbral de backtest.' },
 ];
 
 const DIVIDEND_FIELDS = [
   { key:'min_dividend_yield_pct', label:'Dividend yield mínimo (%)', type:'number', min:0, group:'dividend' },
+  { key:'max_dividend_yield_pct', label:'Dividend yield máximo (solo score, no bloquea)', type:'number', min:0, group:'dividend',
+    hint:'Un yield muy por encima de este punto suele ser señal de "yield trap" (precio castigado por riesgo de recorte), no de mejor oportunidad: el score puntúa mejor cerca del centro del rango que en cualquiera de los dos extremos.' },
   { key:'min_payout_ratio_pct', label:'Payout ratio mínimo (%)', type:'number', min:0, group:'dividend' },
   { key:'max_payout_ratio_pct', label:'Payout ratio máximo (%)', type:'number', min:0, group:'dividend' },
   { key:'min_return_on_equity_pct', label:'ROE mínimo (%)', type:'number', group:'dividend' },
   { key:'min_profit_margin_pct', label:'Margen de ganancia mínimo (%)', type:'number', group:'dividend' },
+  { key:'max_beta', label:'Beta máxima (informativo)', type:'number', min:0, group:'dividend',
+    hint:'Volatilidad relativa al mercado (SPY). Solo genera una nota informativa, no bloquea ni puntúa.' },
+  { key:'max_short_interest_pct', label:'Interés en corto máximo % (informativo)', type:'number', min:0, group:'dividend',
+    hint:'% del float vendido en corto. Solo genera una nota informativa, no bloquea ni puntúa.' },
   { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'dividend' },
   { key:'score_weight_yield', label:'Peso: yield', type:'number', min:0, group:'dividend' },
   { key:'score_weight_payout_quality', label:'Peso: calidad del payout', type:'number', min:0, group:'dividend' },
   { key:'score_weight_quality', label:'Peso: calidad (ROE/margen)', type:'number', min:0, group:'dividend' },
+  { key:'score_weight_safety', label:'Peso: solidez financiera (liquidez/FCF/beta)', type:'number', min:0, group:'dividend' },
+  { key:'score_weight_ownership_alignment', label:'Peso: alineación de ownership (insiders/institucional)', type:'number', min:0, group:'dividend' },
+  { key:'live_score_entry_threshold', label:'Umbral de score para auto-trading en vivo', type:'number', min:0, max:100, group:'dividend',
+    hint:'Score (0-100 percentil) a partir del cual el escaneo en vivo puede disparar una entrada de auto-trading. Dividendos no es backtesteable, por eso no reusa un umbral de backtest.' },
 ];
 
 function configFieldId(f){
@@ -1612,6 +1648,27 @@ function renderSignalsChart(results){
 // trend_ok se calcula y se muestra solo a modo informativo, nunca bloquea.
 const TREND_GATING_STRATEGY_ID = 'momentum';
 
+// Sentimiento de noticias recientes (ver app/news_sentiment.py): solo viene
+// poblado para el shortlist de mejores candidatos tras el ranking (no todo
+// el universo escaneado) y solo si news_sentiment_enabled esta prendido en
+// la config (apagado por defecto). Sin dato (r.news_sentiment null) no
+// muestra nada, en vez de asumir "neutral" -- el modelo nunca lo evaluo.
+const NEWS_SENTIMENT_LABELS = { positive: '🟢 Positivo', negative: '🔴 Negativo', neutral: '⚪ Neutral' };
+const NEWS_SENTIMENT_COLORS = { positive: 'var(--green)', negative: 'var(--red)', neutral: 'var(--muted)' };
+
+function newsSentimentHtml(r){
+  if(!r.news_sentiment) return '';
+  const label = NEWS_SENTIMENT_LABELS[r.news_sentiment] || esc(r.news_sentiment);
+  const color = NEWS_SENTIMENT_COLORS[r.news_sentiment] || 'var(--muted)';
+  return `
+    <p style="margin-top:10px">
+      <b title="Sentimiento de mercado predominante en los titulares recientes de este símbolo, vía Claude Haiku 4.5. Solo se calcula para los mejores candidatos del ranking, no todo el universo escaneado.">📰 Sentimiento de noticias:</b>
+      <span style="color:${color}">${label}</span>
+    </p>
+    ${r.news_summary ? `<p class="muted-sm" style="margin-top:2px">${esc(r.news_summary)}</p>` : ''}
+  `;
+}
+
 function signalDetailHtml(r){
   const effectiveStrategyId = currentStrategyId === 'general' ? r.winning_strategy_id : currentStrategyId;
   const trendGates = effectiveStrategyId === TREND_GATING_STRATEGY_ID;
@@ -1660,6 +1717,7 @@ function signalDetailHtml(r){
       </tbody>
     </table>
     ${summaryHtml}
+    ${newsSentimentHtml(r)}
   `;
 }
 
