@@ -462,6 +462,82 @@ def test_capital_flow_withdrawal_allowed_even_when_disconnected(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Cierre definitivo de un fondo (/api/funds/{fund_id}/close)
+# ---------------------------------------------------------------------------
+
+def test_close_fund_succeeds_when_cash_zero_and_no_positions(monkeypatch):
+    main_module.state["connected"] = True
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=10_000)))
+    created = client.post(
+        "/api/funds",
+        json={"name": "Fondo", "initial_capital_usd": 3_000},
+        headers={"X-API-Key": "test-key"},
+    ).json()
+    client.post(
+        f"/api/funds/{created['id']}/capital-flows",
+        json={"amount": -3_000},
+        headers={"X-API-Key": "test-key"},
+    )
+
+    resp = client.post(f"/api/funds/{created['id']}/close", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+    assert resp.json()["closed"] is True
+    assert resp.json()["closed_at"] is not None
+
+
+def test_close_fund_rejects_when_cash_not_zero(monkeypatch):
+    main_module.state["connected"] = True
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=10_000)))
+    created = client.post(
+        "/api/funds",
+        json={"name": "Fondo", "initial_capital_usd": 3_000},
+        headers={"X-API-Key": "test-key"},
+    ).json()
+
+    resp = client.post(f"/api/funds/{created['id']}/close", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 422
+
+
+def test_close_fund_unknown_returns_404():
+    resp = client.post("/api/funds/no-existe/close", headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 404
+
+
+def test_capital_flow_rejected_on_closed_fund(monkeypatch):
+    main_module.state["connected"] = True
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=10_000)))
+    created = client.post(
+        "/api/funds",
+        json={"name": "Fondo", "initial_capital_usd": 3_000},
+        headers={"X-API-Key": "test-key"},
+    ).json()
+    client.post(
+        f"/api/funds/{created['id']}/capital-flows",
+        json={"amount": -3_000},
+        headers={"X-API-Key": "test-key"},
+    )
+    client.post(f"/api/funds/{created['id']}/close", headers={"X-API-Key": "test-key"})
+
+    resp = client.post(
+        f"/api/funds/{created['id']}/capital-flows",
+        json={"amount": 1_000},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert resp.status_code == 422
+    assert "cerrado" in resp.json()["detail"].lower()
+
+
+def test_validate_fund_order_rejects_orders_on_closed_fund():
+    fund = main_module.funds_store.create("Fondo", 1000)
+    main_module.funds_store.apply_capital_flow(fund.id, -1000, note="Retiro total")
+    main_module.funds_store.close(fund.id)
+    order = main_module.OrderRequest(symbol="AAPL", side=main_module.Side.BUY, quantity=1, fund_id=fund.id)
+    with pytest.raises(main_module.HTTPException) as exc_info:
+        main_module._validate_fund_order(order, 100.0)
+    assert exc_info.value.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # Comparativa de retorno acumulado vs. benchmark (/api/funds/roi-history)
 # ---------------------------------------------------------------------------
 

@@ -92,10 +92,18 @@ class Fund(BaseModel):
     positions: dict[str, FundPosition] = Field(default_factory=dict)
     trades: list[FundTrade] = Field(default_factory=list)
     capital_flows: list[CapitalFlow] = Field(default_factory=list)
+    # True una vez cerrado (ver FundsStore.close()): el fondo queda de solo
+    # lectura, sin nuevas ordenes, aportes/retiros ni auto-trading. No hay
+    # operacion inversa: cerrar un fondo no se puede deshacer.
+    closed: bool = False
+    closed_at: Optional[datetime] = None
 
     def owned_quantity(self, symbol: str) -> float:
         pos = self.positions.get(symbol)
         return pos.quantity if pos else 0.0
+
+    def has_open_positions(self) -> bool:
+        return any(p.quantity > 0 for p in self.positions.values())
 
     def can_afford(self, estimated_cost_usd: float) -> bool:
         return estimated_cost_usd <= self.cash_usd
@@ -378,5 +386,36 @@ class FundsStore:
             if fund is None:
                 return None
             fund.update_stop_loss(symbol, new_stop_price)
+            self.save()
+            return fund
+
+    def close(self, fund_id: str) -> Fund | None:
+        """Cierra un fondo de forma definitiva (no hay operacion inversa).
+        Exige cash_usd en 0 y ninguna posicion abierta: cerrar un fondo que
+        todavia tiene plata o activos asignados los dejaria atrapados en un
+        fondo de solo lectura, sin forma de retirarlos ni venderlos despues.
+
+        La tolerancia de 0.005 (medio centavo) en la comparacion de cash_usd
+        es para no bloquear un retiro total legitimo por arrastre de punto
+        flotante (sumas/restas de muchos fills) que deje, por ejemplo,
+        -1e-10 en vez de un 0.0 exacto."""
+        with self._lock:
+            fund = self.funds.get(fund_id)
+            if fund is None:
+                return None
+            if fund.closed:
+                raise FundValidationError("El fondo ya esta cerrado.")
+            if abs(fund.cash_usd) > 0.005:
+                raise FundValidationError(
+                    f"El fondo todavia tiene ${fund.cash_usd:,.2f} de cash: retira el saldo "
+                    "completo antes de cerrarlo."
+                )
+            if fund.has_open_positions():
+                raise FundValidationError(
+                    "El fondo todavia tiene posiciones abiertas: vendelas antes de cerrarlo."
+                )
+            fund.closed = True
+            fund.closed_at = datetime.now(timezone.utc)
+            fund.auto_trading_enabled = False
             self.save()
             return fund

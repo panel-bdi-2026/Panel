@@ -1406,6 +1406,10 @@ def _validate_fund_order(order: OrderRequest, reference_price: float) -> None:
     fund = funds_store.get(order.fund_id)
     if fund is None:
         raise HTTPException(status_code=404, detail="Fondo no encontrado.")
+    if fund.closed:
+        raise HTTPException(
+            status_code=422, detail=f"El fondo '{fund.name}' esta cerrado: no se pueden enviar ordenes."
+        )
     if order.side == Side.SELL:
         owned = fund.owned_quantity(order.symbol)
         if order.quantity > owned:
@@ -1812,8 +1816,13 @@ async def create_capital_flow(fund_id: str, body: CapitalFlowCreate, _: None = D
     fondo leido en ese instante: sin esto, dos retiros (o un retiro y una
     compra) concurrentes sobre el mismo fondo podian leer el mismo cash_usd
     desactualizado y, combinados, dejarlo negativo."""
-    if funds_store.get(fund_id) is None:
+    existing_fund = funds_store.get(fund_id)
+    if existing_fund is None:
         raise HTTPException(status_code=404, detail="Fondo no encontrado.")
+    if existing_fund.closed:
+        raise HTTPException(
+            status_code=422, detail="Fondo cerrado: no se pueden registrar aportes ni retiros."
+        )
     if body.amount == 0:
         raise HTTPException(status_code=422, detail="El monto no puede ser cero.")
 
@@ -1860,6 +1869,20 @@ def set_fund_auto_trading(fund_id: str, body: FundAutoTradingUpdate, _: None = D
     if fund is None:
         raise HTTPException(status_code=404, detail="Fondo no encontrado.")
     audit.record("fund_auto_trading_toggled", {"fund_id": fund_id, "enabled": body.enabled}, {})
+    return _fund_view(fund)
+
+
+@app.post("/api/funds/{fund_id}/close")
+def close_fund(fund_id: str, _: None = Depends(require_api_key)):
+    """Cierra un fondo de forma definitiva (ver FundsStore.close()): exige
+    cash_usd en 0 y ninguna posicion abierta. No hay endpoint para reabrirlo."""
+    try:
+        fund = funds_store.close(fund_id)
+    except FundValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if fund is None:
+        raise HTTPException(status_code=404, detail="Fondo no encontrado.")
+    audit.record("fund_closed", {"fund_id": fund_id}, {})
     return _fund_view(fund)
 
 

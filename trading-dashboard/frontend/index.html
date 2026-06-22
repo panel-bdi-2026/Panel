@@ -23,15 +23,15 @@ body{font-family:-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;background
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:6px}
 ::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 code{background:var(--card2);color:var(--primary-mid);padding:1px 5px;border-radius:4px;font-family:var(--mono);font-size:.92em}
-.hdr{background:linear-gradient(180deg,#fbf8f1 0%,#f2eee3 100%);color:var(--text);border-bottom:1px solid var(--border);
+.hdr{background:linear-gradient(180deg,#3a6bb3 0%,#22487f 100%);color:#fff;border-bottom:1px solid #1b3a66;
   padding:14px 28px;display:flex;align-items:center;justify-content:space-between;
-  box-shadow:0 2px 14px rgba(40,32,16,.08);flex-wrap:wrap;gap:10px}
-.hdr-l h1{font-size:19px;font-weight:600;font-family:var(--serif);letter-spacing:.01em;color:var(--primary)}
-.hdr-l p{font-size:12px;opacity:.8;margin-top:2px;color:var(--muted)}
+  box-shadow:0 2px 14px rgba(20,32,56,.28);flex-wrap:wrap;gap:10px}
+.hdr-l h1{font-size:19px;font-weight:600;font-family:var(--serif);letter-spacing:.01em;color:#fff}
+.hdr-l p{font-size:12px;opacity:.9;margin-top:2px;color:rgba(255,255,255,.78)}
 .hdr-r{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .badge{font-size:11px;font-weight:800;padding:5px 11px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}
-.badge.paper{background:rgba(47,95,168,.14);color:var(--primary)}
-.badge.live{background:rgba(156,59,46,.16);color:var(--red);animation:pulse 1.8s infinite}
+.badge.paper{background:rgba(255,255,255,.92);color:var(--primary)}
+.badge.live{background:rgba(255,255,255,.92);color:var(--red);animation:pulse 1.8s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
 .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:5px}
 .dot.on{background:var(--green)}.dot.off{background:var(--red)}
@@ -40,7 +40,7 @@ code{background:var(--card2);color:var(--primary-mid);padding:1px 5px;border-rad
 .btn{padding:7px 15px;border-radius:var(--r2);border:none;cursor:pointer;font-size:12px;
   font-weight:700;font-family:inherit}
 .btn-halt{background:#b5651d;color:#fff}.btn-halt.on{background:var(--red)}
-.btn-mode{background:var(--primary);color:var(--on-primary)}.btn-mode.danger{background:var(--red);color:#fff}
+.btn-mode{background:var(--primary);color:var(--on-primary);border:1.5px solid rgba(255,255,255,.55)}.btn-mode.danger{background:var(--red);color:#fff;border:1.5px solid rgba(255,255,255,.55)}
 .btn-ghost{background:var(--card2);color:var(--text);border:1px solid var(--border)}
 .main{padding:22px 28px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
 .banner{padding:11px 16px;border-radius:var(--r2);font-size:13px;font-weight:600;display:none}
@@ -107,6 +107,22 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .chart-wrap{position:relative;height:200px;margin-top:10px}
 .chart-wrap.sm{height:150px}
 .info-btn{background:none;border:none;color:var(--primary-mid);cursor:pointer;font-size:13px;padding:0 4px}
+.info-tip{position:relative;display:inline-flex;align-items:center;justify-content:center;
+  width:14px;height:14px;border-radius:50%;background:var(--card2);border:1px solid var(--border);
+  color:var(--primary-mid);font-size:10px;font-weight:700;font-style:normal;cursor:help;
+  margin-left:5px;flex:none;line-height:1;vertical-align:middle}
+.info-tip::after{content:attr(data-tip);position:absolute;bottom:22px;left:50%;
+  transform:translateX(-50%);background:#262521;color:#fdfaf2;font-size:11.5px;font-weight:400;
+  line-height:1.4;padding:7px 10px;border-radius:6px;width:max-content;max-width:230px;
+  white-space:normal;text-transform:none;letter-spacing:normal;box-shadow:var(--sh2);
+  opacity:0;visibility:hidden;transition:opacity .15s,visibility .15s;z-index:50;
+  pointer-events:none}
+.info-tip::before{content:'';position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
+  border:5px solid transparent;border-top-color:#262521;
+  opacity:0;visibility:hidden;transition:opacity .15s,visibility .15s;z-index:50}
+.info-tip:hover::after,.info-tip:hover::before{opacity:1;visibility:visible}
+.info-tip.tip-down::after{bottom:auto;top:22px}
+.info-tip.tip-down::before{bottom:auto;top:14px;border-top-color:transparent;border-bottom-color:#262521}
 .modal-overlay{position:fixed;inset:0;background:rgba(2,4,8,.7);display:none;
   align-items:center;justify-content:center;z-index:4000;padding:20px}
 .modal-overlay.show{display:flex}
@@ -213,7 +229,9 @@ td{padding:8px;border-bottom:1px solid var(--border)}
             <select id="strategySelect" class="fs" style="width:auto;padding:6px 8px;font-size:12px" onchange="onStrategyChange()"></select>
             <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="scanSignals(true)">↻ Escanear</button>
             <button class="btn btn-ghost" id="backtestBtn" style="background:var(--bg);color:var(--muted)" onclick="runBacktest()">📊 Backtest</button>
+            <span class="info-tip tip-down" data-tip="Simula la estrategia elegida sobre datos históricos para estimar cómo le habría ido en el pasado. No ejecuta órdenes reales ni usa dinero; resultados pasados no garantizan resultados futuros.">ⓘ</span>
             <button class="btn btn-ghost" id="walkForwardBtn" style="background:var(--bg);color:var(--muted)" onclick="runWalkForward()">🧪 Validación out-of-sample</button>
+            <span class="info-tip tip-down" data-tip="Corre el mismo backtest una sola vez y lo divide en tramos consecutivos, para ver si el resultado se sostiene en distintos períodos o se concentra en uno solo. No reajusta ningún parámetro por tramo.">ⓘ</span>
           </div>
         </div>
         <div class="card-body">
@@ -229,7 +247,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
             <button class="btn btn-ghost" id="refreshSectorsBtn" style="background:var(--bg);color:var(--muted)" onclick="refreshSectors()">🌐 Refrescar sectores</button>
           </div>
           <table>
-            <thead><tr><th>Símbolo</th><th>Sector</th><th title="Score de este candidato bajo cada estrategia: la activa queda resaltada">Scores por estrategia</th><th>Precio</th><th>3M%</th><th>1M%</th><th>RSI</th><th>Stop sugerido</th><th></th></tr></thead>
+            <thead><tr><th>Símbolo</th><th>Sector</th><th title="Score de este candidato bajo cada estrategia: la activa queda resaltada">Scores por estrategia</th><th>Precio</th><th>3M%</th><th>1M%</th><th>RSI<span class="info-tip" data-tip="Índice de Fuerza Relativa (0-100, 14 períodos): valores altos (>70) sugieren que el precio subió muy rápido (sobrecomprado); valores bajos (<30) sugieren que cayó muy rápido (sobrevendido).">ⓘ</span></th><th>Stop sugerido<span class="info-tip" data-tip="Precio de stop-loss sugerido según la volatilidad reciente del activo (ATR): un múltiplo del rango de movimiento típico por debajo del precio actual.">ⓘ</span></th><th></th></tr></thead>
             <tbody id="signalsBody"><tr><td colspan="9" class="empty">Sin escanear aún</td></tr></tbody>
           </table>
           <div id="signalsMeta" class="muted-sm" style="margin-top:8px"></div>
@@ -566,8 +584,8 @@ function populateFundSelect(funds){
   if(!sel) return;
   const current = sel.value;
   sel.innerHTML = '<option value="">Sin fondo (cuenta general)</option>' +
-    funds.map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('');
-  if(funds.some(f => f.id === current)) sel.value = current;
+    funds.filter(f => !f.closed).map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('');
+  if(funds.some(f => f.id === current && !f.closed)) sel.value = current;
 }
 
 function renderFunds(funds){
@@ -582,14 +600,19 @@ function renderFunds(funds){
       const pnlTotal = totalValue - netContributed;
       const roiPct = netContributed > 0 ? (pnlTotal / netContributed * 100) : 0;
       const posCount = Object.keys(f.positions || {}).length;
+      const canClose = Math.abs(f.cash_usd) < 0.005 && posCount === 0;
       return `
       <div class="pending-item" style="border-color:var(--border);background:var(--bg)">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <b class="fund-name-link" onclick="openFundDetail('${f.id}')" title="Ver detalle del fondo">${esc(f.name)}</b>
+          <span>
+            <b class="fund-name-link" onclick="openFundDetail('${f.id}')" title="Ver detalle del fondo">${esc(f.name)}</b>
+            ${f.closed ? '<span class="muted-sm" style="margin-left:6px;font-weight:700;text-transform:uppercase">🔒 Cerrado</span>' : ''}
+          </span>
+          ${f.closed ? '' : `
           <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--muted)" title="Si está activo, el motor autónomo puede abrir y cerrar posiciones en este fondo sin aprobación manual (siempre en modo paper)">
             <input type="checkbox" ${f.auto_trading_enabled ? 'checked' : ''} onchange="toggleFundAutoTrading('${f.id}', this.checked)">
             Auto-trading
-          </label>
+          </label>`}
         </div>
         <div class="muted-sm" style="margin-top:4px">
           Valor estimado ${fmtUsd(totalValue)} (cash ${fmtUsd(f.cash_usd)} · ${posCount} posición(es))
@@ -597,11 +620,16 @@ function renderFunds(funds){
           · PnL total <span style="color:${pnlTotal>=0?'var(--green)':'var(--red)'}">${fmtUsd(pnlTotal)} (${roiPct>=0?'+':''}${roiPct.toFixed(1)}%)</span>
           · PnL realizado ${fmtUsd(f.realized_pnl_total)}
         </div>
+        ${f.closed ? `
+        <div class="muted-sm" style="margin-top:8px">Cerrado el ${new Date(f.closed_at).toLocaleDateString()}</div>` : `
         <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
           <input type="number" id="flow-amount-${f.id}" placeholder="Monto USD" style="flex:1;min-width:0" min="0" step="100">
           <button onclick="adjustFundCapital('${f.id}', 1)" title="Aportar capital adicional a este fondo">+ Aportar</button>
           <button onclick="adjustFundCapital('${f.id}', -1)" title="Retirar capital de este fondo (no puede superar el cash disponible)">− Retirar</button>
         </div>
+        <div style="margin-top:6px">
+          <button onclick="closeFund('${f.id}')" ${canClose ? '' : 'disabled'} title="${canClose ? 'Cerrar este fondo de forma definitiva (no se puede reabrir)' : 'Para cerrar el fondo hay que retirar todo el cash y no tener posiciones abiertas'}">🔒 Cerrar fondo</button>
+        </div>`}
       </div>`;
     }).join('');
   }
@@ -1171,6 +1199,16 @@ async function toggleFundAutoTrading(fundId, enabled){
     toast('Error: ' + e.message);
     refreshFunds();
   }
+}
+
+async function closeFund(fundId){
+  const name = lastFundsById[fundId] || fundId;
+  if(!confirm(`¿Confirmás cerrar el fondo "${name}"? Es una acción definitiva: no se puede reabrir.`)) return;
+  try{
+    await api(`/api/funds/${fundId}/close`, { method:'POST', auth:true });
+    toast(`🔒 Fondo "${name}" cerrado`);
+    refreshFunds();
+  }catch(e){ toast('Error: ' + e.message); }
 }
 
 async function refreshPending(){

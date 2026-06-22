@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from app.funds import FundsStore
+from app.funds import FundsStore, FundValidationError
 from app.models import Side
 
 
@@ -221,6 +221,53 @@ def test_update_stop_loss_noop_when_no_position(store):
 
 def test_update_stop_loss_unknown_fund_returns_none(store):
     assert store.update_stop_loss("no-existe", "AAPL", 95) is None
+
+
+def test_close_succeeds_when_cash_zero_and_no_positions(store):
+    fund = store.create("Test", 5000)
+    store.apply_capital_flow(fund.id, -5000, note="Retiro total")
+    closed = store.close(fund.id)
+    assert closed.closed is True
+    assert closed.closed_at is not None
+    assert store.get(fund.id).closed is True
+
+
+def test_close_disables_auto_trading(store):
+    fund = store.create("Test", 5000, auto_trading_enabled=True)
+    store.apply_capital_flow(fund.id, -5000, note="Retiro total")
+    closed = store.close(fund.id)
+    assert closed.auto_trading_enabled is False
+
+
+def test_close_rejects_nonzero_cash(store):
+    fund = store.create("Test", 5000)
+    with pytest.raises(FundValidationError):
+        store.close(fund.id)
+    assert store.get(fund.id).closed is False
+
+
+def test_close_rejects_open_positions(store):
+    """cash_usd en 0 no alcanza si todavia hay posiciones abiertas: el cash
+    pudo haberse ido entero a comprar acciones en vez de quedar libre."""
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100)
+    store.apply_capital_flow(fund.id, -4000, note="Retiro del resto del cash")
+    fund = store.get(fund.id)
+    assert fund.cash_usd == 0
+    with pytest.raises(FundValidationError):
+        store.close(fund.id)
+
+
+def test_close_rejects_already_closed_fund(store):
+    fund = store.create("Test", 5000)
+    store.apply_capital_flow(fund.id, -5000, note="Retiro total")
+    store.close(fund.id)
+    with pytest.raises(FundValidationError):
+        store.close(fund.id)
+
+
+def test_close_unknown_fund_returns_none(store):
+    assert store.close("no-existe") is None
 
 
 def test_load_skips_corrupt_fund_entry_but_keeps_valid_ones(tmp_path):
