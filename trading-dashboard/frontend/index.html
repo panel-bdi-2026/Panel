@@ -1696,9 +1696,14 @@ async function runBacktest(){
     const hasCurve = r.equity_curve && r.equity_curve.length;
     openModal(`Backtest: ${new Date(r.start_date).toLocaleDateString()} → ${new Date(r.end_date).toLocaleDateString()}`, `
       <p class="muted-sm">
-        ${r.total_trades} operaciones · win rate ${r.win_rate_pct}% · profit factor ${r.profit_factor_is_infinite ? '∞' : (r.profit_factor ?? '—')} · Sharpe ${r.sharpe_ratio ?? '—'}<br>
-        Retorno estrategia (neto de comisión/slippage estimados): ${r.strategy_cumulative_return_pct}% vs benchmark (${r.benchmark_cumulative_return_pct}%)<br>
-        Max drawdown: ${r.max_drawdown_pct}% · Exposición promedio del capital: ${r.avg_exposure_pct ?? '—'}%
+        <span title="Cantidad total de operaciones (entrada+salida completa) simuladas en el período.">${r.total_trades} operaciones</span> ·
+        <span title="Porcentaje de esas operaciones que cerraron con ganancia.">win rate ${r.win_rate_pct}%</span> ·
+        <span title="Ganancia bruta total dividida entre pérdida bruta total. Mayor a 1 = las ganancias superan a las pérdidas. ∞ significa que no hubo ninguna operación perdedora.">profit factor ${r.profit_factor_is_infinite ? '∞' : (r.profit_factor ?? '—')}</span> ·
+        <span title="Retorno ajustado por riesgo: retorno promedio diario sobre su propio desvío estándar, anualizado. A mayor Sharpe, mejor retorno por unidad de volatilidad asumida (no es lo mismo que retorno total).">Sharpe ${r.sharpe_ratio ?? '—'}</span><br>
+        <span title="Retorno acumulado de la estrategia en todo el período del backtest, ya neto de la comisión y el slippage estimados por operación.">Retorno estrategia (neto de comisión/slippage estimados): ${r.strategy_cumulative_return_pct}%</span> vs
+        <span title="Retorno acumulado de comprar y mantener el benchmark configurado durante el mismo período, como referencia de comparación.">benchmark (${r.benchmark_cumulative_return_pct}%)</span><br>
+        <span title="Mayor caída porcentual desde un máximo de la curva de equity hasta su punto más bajo posterior dentro del período.">Max drawdown: ${r.max_drawdown_pct}%</span> ·
+        <span title="Porcentaje promedio del capital asignado que estuvo efectivamente invertido (no en cash) a lo largo del período, contando cada posición abierta ese día.">Exposición promedio del capital: ${r.avg_exposure_pct ?? '—'}%</span>
       </p>
       ${hasCurve ? '<div class="chart-wrap"><canvas id="modalBacktestChart"></canvas></div>' : ''}
       <p class="muted-sm" style="margin-top:6px">Backtest simplificado: incluye comisión/slippage estimados, stop-loss con fill realista (mínimo intradiario) y filtro de régimen de mercado. La curva de equity, el drawdown y el Sharpe se calculan día por día sobre el universo configurado HOY (sin supervivencia histórica) y aproximan el camino intradiario de cada operación con interpolación lineal entre entrada y salida. Resultados pasados no garantizan resultados futuros.</p>`);
@@ -1746,7 +1751,16 @@ async function runWalkForward(){
     openModal(`Validación out-of-sample (${r.n_folds} tramos)`, `
       <p class="muted-sm" style="margin-bottom:8px">Corre el backtest UNA sola vez con los thresholds ya configurados y lo parte en tramos consecutivos de igual duración calendario, para ver si el resultado se sostiene en distintos períodos o se concentra en uno solo. No es walk-forward optimization: no se reajusta ningún parámetro por tramo.</p>
       <table>
-        <thead><tr><th>Tramo</th><th>Período</th><th>Operaciones</th><th>Win rate</th><th>Retorno estrategia</th><th>Retorno benchmark</th><th>Max drawdown</th><th>Sharpe</th></tr></thead>
+        <thead><tr>
+          <th title="Numero de orden del tramo, en orden cronológico.">Tramo</th>
+          <th title="Rango de fechas calendario que cubre este tramo.">Período</th>
+          <th title="Cantidad de operaciones simuladas dentro de este tramo.">Operaciones</th>
+          <th title="Porcentaje de las operaciones de este tramo que cerraron con ganancia.">Win rate</th>
+          <th title="Retorno acumulado de la estrategia dentro de este tramo, neto de comisión/slippage estimados.">Retorno estrategia</th>
+          <th title="Retorno acumulado de comprar y mantener el benchmark durante este mismo tramo.">Retorno benchmark</th>
+          <th title="Mayor caída porcentual desde un máximo hasta su punto más bajo posterior, dentro de este tramo.">Max drawdown</th>
+          <th title="Retorno ajustado por riesgo dentro de este tramo (retorno promedio diario sobre su desvío estándar, anualizado).">Sharpe</th>
+        </tr></thead>
         <tbody>${rows}</tbody>
       </table>`);
   }catch(e){
