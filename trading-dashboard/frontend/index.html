@@ -474,9 +474,17 @@ function onTypeChange(){
   document.getElementById('limitPriceGroup').style.display = isLmt ? 'block' : 'none';
 }
 
+// Ultimo /api/status conocido, para que scanSignals() pueda explicar un
+// "0/50 streaming en vivo" sin pedirlo de nuevo: a diferencia de
+// /api/signals/scan, /api/status nunca espera el lock de un backtest (ver
+// comentario en el backend), asi que siempre llega fresco cada 8s via
+// refreshAll() aunque haya un escaneo pesado en curso.
+let lastStatus = {};
+
 async function refreshStatus(){
   try{
     const s = await api('/api/status', { auth:true });
+    lastStatus = s;
     document.getElementById('hdr-sub').textContent =
       `IBKR ${s.ib_host}:${s.ib_port} · modo ${s.mode}`;
     const modeBadge = document.getElementById('modeBadge');
@@ -1498,6 +1506,18 @@ setInterval(tickPriceAges, 1000);
 // la tabla ella misma).
 let scanRequestId = 0;
 
+// Explica un streaming en vivo en 0 (en vez de dejarlo sin contexto, que se
+// presta a pensar que esta roto): prioriza la causa mas probable usando el
+// ultimo /api/status conocido (ver lastStatus). Si hay simbolos en vivo no
+// hace falta explicar nada.
+function liveStreamingPausedNote(liveHotCount){
+  if(liveHotCount) return '';
+  if(lastStatus.connected === false) return ' — pausado: IBKR Gateway desconectado';
+  if(lastStatus.live_radar_enabled === false) return ' — desactivado en la configuración';
+  if(lastStatus.market_scan_busy) return ' — pausado: hay un backtest u otro escaneo pesado en curso';
+  return '';
+}
+
 async function scanSignals(force=false){
   const requestId = ++scanRequestId;
   const body = document.getElementById('signalsBody');
@@ -1518,7 +1538,7 @@ async function scanSignals(force=false){
       renderSignalsTable();
     }
     const hotInfo = data.live_hot_cap
-      ? ` · 🟢 ${data.live_hot_count || 0}/${data.live_hot_cap} símbolos con streaming en vivo (compartido entre estrategias, los de mejor score en cualquiera de ellas)`
+      ? ` · ${data.live_hot_count ? '🟢' : '⚪'} ${data.live_hot_count || 0}/${data.live_hot_cap} símbolos con streaming en vivo (compartido entre estrategias, los de mejor score en cualquiera de ellas)${liveStreamingPausedNote(data.live_hot_count)}`
       : '';
     meta.textContent = `Actualizado: ${new Date(data.as_of).toLocaleString()}${data.cached ? ' (cache)' : ''} · ${data.results.length} símbolos con datos${hotInfo}`;
     renderSignalsChart(data.results);

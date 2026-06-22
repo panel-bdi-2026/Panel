@@ -1044,6 +1044,13 @@ def status(_: None = Depends(require_api_key)):
         "halted": state["halted"],
         "ib_host": broker.host,
         "ib_port": broker.port,
+        # Sync, sin tocar el lock (solo .locked(), no lo adquiere): permite que
+        # el dashboard explique un "0/50 streaming en vivo" sin esperar a que
+        # se libere -- a diferencia de /api/signals/scan, que si la cache esta
+        # vencida se queda esperando el mismo lock que un backtest puede tener
+        # tomado por varios minutos (ver _market_scan_lock).
+        "market_scan_busy": _market_scan_lock.locked(),
+        "live_radar_enabled": screener_config.live_radar_enabled,
     }
 
 
