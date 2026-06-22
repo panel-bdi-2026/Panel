@@ -134,44 +134,40 @@ def test_backtest_skips_throttle_when_delay_is_zero(monkeypatch, patched_market_
     assert sleep_calls == []
 
 
-def test_backtest_sharpe_ratio_is_none_with_fewer_than_two_trades(monkeypatch):
-    # Un solo pico de tendencia y despues una caida plana que nunca vuelve a
-    # disparar una entrada: una sola operacion en todo el periodo.
-    n_spike, n_flat = 60, 400
-    spike = [100.0 + i for i in range(n_spike)]
-    flat = [spike[-1] - 5 - 0.001 * i for i in range(n_flat)]
-    bars = _bars(spike + flat)
-    bench_bars = _bars([100.0] * (n_spike + n_flat))
+def test_backtest_sharpe_ratio_is_none_with_fewer_than_two_trades():
+    # El gate de "minimo 2 operaciones" para el sharpe vive en
+    # _compute_summary_stats (ver ese docstring): se testea ahi directamente,
+    # con una operacion sintetica, en vez de tratar de forzar exactamente una
+    # sola operacion a traves de todo el pipeline de score cross-sectional
+    # (fragil de armar a mano: con un universo de 2 simbolos el percentil de
+    # cada componente es binario 0/100 dia por dia, asi que un empate casi
+    # exacto se puede romper por un simple corrimiento de un dia en alguna
+    # ventana movil).
+    from app.backtest import _compute_summary_stats
 
-    def fake_get_daily_bars(symbol, lookback_days):
-        if symbol == "SPY":
-            return bench_bars
-        if symbol == "ONE":
-            return bars
-        raise MarketDataError("no data")
-
-    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
-    config = ScreenerConfig(universe=["ONE"], benchmark_symbol="SPY", backtest_years=1, regime_filter_enabled=False)
-    summary = run_backtest(config)
+    trades = [_trade("A", 1, 2, return_pct=3.0)]
+    summary = _compute_summary_stats(trades, top_n=10, bench_bars=_bench_bars_for_stats())
     assert summary.total_trades == 1
     assert summary.sharpe_ratio is None
 
 
 def test_costs_reduce_returns_vs_zero_cost_baseline():
     from app.backtest import _simulate_symbol
-    from app.indicators import rate_of_change
 
     bars = FAKE_BARS["MOM"]
-    bench_bars = FAKE_BARS["SPY"]
     base_kwargs = dict(universe=["MOM"], benchmark_symbol="SPY", backtest_years=1, regime_filter_enabled=False)
     cfg_no_cost = ScreenerConfig(**base_kwargs, commission_per_trade_usd=0.0, slippage_pct=0.0)
     cfg_with_cost = ScreenerConfig(**base_kwargs, commission_per_trade_usd=1.0, slippage_pct=0.05)
 
-    benchmark_roc = rate_of_change(bench_bars["Close"], cfg_no_cost.momentum_lookback_days)
+    # Score siempre por encima de cualquier umbral razonable: aisla el efecto
+    # de la comision/slippage del mecanismo de entrada/salida por score (no es
+    # lo que testea este caso), asi que las salidas quedan determinadas solo
+    # por stop-loss o tiempo maximo.
+    score_series = pd.Series(1000.0, index=bars.index)
     regime_ok = pd.Series(True, index=bars.index)
 
-    trades_no_cost = _simulate_symbol("MOM", bars, cfg_no_cost, benchmark_roc, regime_ok)
-    trades_with_cost = _simulate_symbol("MOM", bars, cfg_with_cost, benchmark_roc, regime_ok)
+    trades_no_cost = _simulate_symbol("MOM", bars, cfg_no_cost, score_series, regime_ok)
+    trades_with_cost = _simulate_symbol("MOM", bars, cfg_with_cost, score_series, regime_ok)
 
     assert len(trades_no_cost) > 0
     assert [t.entry_date for t in trades_no_cost] == [t.entry_date for t in trades_with_cost]
@@ -199,16 +195,14 @@ def test_trade_daily_marks_uses_real_close_path_and_corrects_last_day():
 
 def test_simulate_symbol_populates_marks_when_dict_provided():
     from app.backtest import _simulate_symbol
-    from app.indicators import rate_of_change
 
     bars = FAKE_BARS["MOM"]
-    bench_bars = FAKE_BARS["SPY"]
     cfg = ScreenerConfig(universe=["MOM"], benchmark_symbol="SPY", backtest_years=1, regime_filter_enabled=False)
-    benchmark_roc = rate_of_change(bench_bars["Close"], cfg.momentum_lookback_days)
+    score_series = pd.Series(1000.0, index=bars.index)
     regime_ok = pd.Series(True, index=bars.index)
 
     marks_by_trade_id: dict = {}
-    trades = _simulate_symbol("MOM", bars, cfg, benchmark_roc, regime_ok, marks_by_trade_id)
+    trades = _simulate_symbol("MOM", bars, cfg, score_series, regime_ok, marks_by_trade_id)
 
     assert len(trades) > 0
     for t in trades:
@@ -253,13 +247,10 @@ def test_daily_equity_curve_uses_real_close_path_for_open_positions():
 
 def test_stop_loss_triggers_on_intraday_low_not_close():
     from app.backtest import _simulate_symbol
-    from app.indicators import rate_of_change
 
     closes = [100.0 + i for i in range(30)]
     bars = _bars(closes)
     bars.loc[bars.index[9], "Low"] = 50.0  # mecha intradiaria que perfora el stop sin que cierre por debajo
-
-    bench_bars = _bars([100.0] * 30)
 
     cfg = ScreenerConfig(
         universe=["MOM"],
@@ -278,10 +269,15 @@ def test_stop_loss_triggers_on_intraday_low_not_close():
         top_n=10,
     )
 
-    benchmark_roc = rate_of_change(bench_bars["Close"], cfg.momentum_lookback_days)
+    # Score siempre por encima del umbral de entrada (default 80.0): el ATR ya
+    # es valido desde el inicio del loop (atr_period=3), asi que la senal de
+    # entrada se confirma en la primera iteracion (index start_idx=6) y el
+    # fill ocurre a la apertura del dia siguiente (index 7), igual que con el
+    # viejo AND de filtros booleanos para esta misma configuracion.
+    score_series = pd.Series(1000.0, index=bars.index)
     regime_ok = pd.Series(True, index=bars.index)
 
-    trades = _simulate_symbol("MOM", bars, cfg, benchmark_roc, regime_ok)
+    trades = _simulate_symbol("MOM", bars, cfg, score_series, regime_ok)
 
     assert trades[0].exit_reason == "stop_loss"
     assert trades[0].exit_date == bars.index[9]
@@ -290,7 +286,6 @@ def test_stop_loss_triggers_on_intraday_low_not_close():
 
 def test_entry_fills_at_next_day_open_not_signal_day_close():
     from app.backtest import _simulate_symbol
-    from app.indicators import rate_of_change
 
     closes = [100.0 + i for i in range(30)]
     bars = _bars(closes)
@@ -303,7 +298,6 @@ def test_entry_fills_at_next_day_open_not_signal_day_close():
     entry_day_idx = 7
     bars.loc[bars.index[entry_day_idx], "Open"] = bars["Close"].iloc[entry_day_idx - 1] + 50.0
 
-    bench_bars = _bars([100.0] * 30)
     cfg = ScreenerConfig(
         universe=["MOM"],
         benchmark_symbol="SPY",
@@ -320,10 +314,10 @@ def test_entry_fills_at_next_day_open_not_signal_day_close():
         regime_filter_enabled=False,
         top_n=10,
     )
-    benchmark_roc = rate_of_change(bench_bars["Close"], cfg.momentum_lookback_days)
+    score_series = pd.Series(1000.0, index=bars.index)
     regime_ok = pd.Series(True, index=bars.index)
 
-    trades = _simulate_symbol("MOM", bars, cfg, benchmark_roc, regime_ok)
+    trades = _simulate_symbol("MOM", bars, cfg, score_series, regime_ok)
 
     assert trades[0].entry_date == bars.index[entry_day_idx]
     assert trades[0].entry_price == round(float(bars["Open"].iloc[entry_day_idx]), 2)
@@ -332,11 +326,20 @@ def test_entry_fills_at_next_day_open_not_signal_day_close():
 
 
 def test_regime_filter_blocks_entries_when_benchmark_below_regime_sma(monkeypatch):
+    # Universo de 2 simbolos (no 1): el score cross-sectional de Momentum es
+    # un percentil contra el resto del universo valido ese mismo dia (ver
+    # _cross_sectional_score_panel) e indefinido (NaN, nunca dispara entrada)
+    # con un solo simbolo, sin importar el regimen -- eso no es lo que testea
+    # este caso, que necesita que el score SI pudiera ser valido para poder
+    # verificar que el gate de regimen lo bloquea de todos modos.
     n = 300
     closes = [100.0 + 0.12 * i + 4 * np.sin(i / 5) for i in range(n)]
     bars = _bars(closes)
+    closes2 = [120.0 + 0.08 * i + 3 * np.sin(i / 7) for i in range(n)]
+    bars2 = _bars(closes2)
     # Benchmark en clara tendencia bajista y por debajo de su SMA de regimen
-    # durante todo el periodo: ninguna entrada larga deberia activarse.
+    # durante todo el periodo: ninguna entrada larga deberia activarse, sin
+    # importar el universo.
     bench_closes = [200.0 - 0.3 * i for i in range(n)]
     bench_bars = _bars(bench_closes)
 
@@ -345,11 +348,13 @@ def test_regime_filter_blocks_entries_when_benchmark_below_regime_sma(monkeypatc
             return bench_bars
         if symbol == "MOM":
             return bars
+        if symbol == "MOM2":
+            return bars2
         raise MarketDataError("no data")
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
     config = ScreenerConfig(
-        universe=["MOM"], benchmark_symbol="SPY", backtest_years=1,
+        universe=["MOM", "MOM2"], benchmark_symbol="SPY", backtest_years=1,
         regime_filter_enabled=True, regime_sma_period=50,
     )
     with pytest.raises(BacktestError):
@@ -509,6 +514,16 @@ def test_near_high_filter_reduces_entries_far_from_52w_high(monkeypatch):
     idx = pd.date_range("2023-01-01", periods=n_ramp + n_tail, freq="D")
     close = pd.Series(vals, index=idx)
 
+    # Segundo simbolo del universo (no 1): el score cross-sectional necesita
+    # >=2 simbolos validos por fecha para que el percentil este definido (ver
+    # _cross_sectional_score_panel). Mismo patron ramp+tail con parametros
+    # distintos (no un simple desfasaje de fase) para que FARHI no empate
+    # sistematicamente con su companero en cada componente del score.
+    ramp_target2, tail_mean2, tail_amp2, tail_period2 = 260, 180, 12, 13
+    vals2 = [100 + i * (ramp_target2 - 100) / (n_ramp - 1) for i in range(n_ramp)]
+    vals2 += [tail_mean2 + tail_amp2 * math.sin(i / tail_period2) for i in range(n_tail)]
+    close2 = pd.Series(vals2, index=idx)
+
     def _mk(c):
         return pd.DataFrame(
             {"Open": c, "High": c * 1.004, "Low": c * 0.996, "Close": c, "Volume": 5_000_000},
@@ -516,6 +531,7 @@ def test_near_high_filter_reduces_entries_far_from_52w_high(monkeypatch):
         )
 
     bars = _mk(close)
+    bars2 = _mk(close2)
     bench = _mk(pd.Series([100.0] * (n_ramp + n_tail), index=idx))
 
     def fake_get_daily_bars(symbol, lookback_days):
@@ -523,12 +539,14 @@ def test_near_high_filter_reduces_entries_far_from_52w_high(monkeypatch):
             return bench
         if symbol == "FARHI":
             return bars
+        if symbol == "FARHI2":
+            return bars2
         raise MarketDataError("no data")
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
 
     base = dict(
-        universe=["FARHI"], benchmark_symbol="SPY", backtest_years=1,
+        universe=["FARHI", "FARHI2"], benchmark_symbol="SPY", backtest_years=1,
         sma_fast=3, sma_slow=5, atr_period=3, momentum_lookback_days=5,
         momentum_short_days=3, rsi_period=3, rsi_min=0, rsi_max=100,
         regime_filter_enabled=False, top_n=5,
@@ -540,24 +558,39 @@ def test_near_high_filter_reduces_entries_far_from_52w_high(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # Oportunista (_simulate_symbol_opportunistic / run_opportunistic_backtest):
-# misma estructura de backtest que Momentum pero con la logica de entrada
-# (momentum de corto plazo + RSI en zona de recuperacion + espacio de
-# crecimiento respecto al maximo de 52 semanas) y salida (stop-loss, tiempo
-# maximo, o RSI sobrecomprado) de strategies/opportunistic.py. La funcion
-# fija "252" para la ventana de maximo de 52 semanas y para start_idx (ver
+# misma estructura de backtest que Momentum pero con la logica de entrada y
+# salida score-driven de strategies/opportunistic.py (ver _opportunistic_raw_
+# components/_cross_sectional_score_panel en backtest.py). La funcion fija
+# "252" para la ventana de maximo de 52 semanas y para start_idx (ver
 # backtest.py), por lo que toda serie de prueba necesita 253+ dias sin
 # importar que tan chicos sean los demas periodos configurados.
 # ---------------------------------------------------------------------------
 
 def _opportunistic_oscillating_bars(n=320, amplitude=2.0, period=4.0):
-    """Oscilacion pura (sin tendencia neta). Combinada con el suavizado
-    Wilder de rsi_period=14, el RSI recorre naturalmente tanto la zona de
-    recuperacion (35-60, dispara la entrada) como la de sobrecompra (>60,
-    dispara la salida trend_break) varias veces a lo largo de la serie."""
+    """Oscilacion pura (sin tendencia neta), usada como insumo de precio en
+    los tests unitarios de _simulate_symbol_opportunistic de mas abajo (que
+    le pasan un score_series sintetico armado a mano, no derivado de este
+    precio): solo necesitan suficiente historia (253+ dias) y suficiente
+    volatilidad para que el ATR del stop-loss no sea cero."""
     i = np.arange(n)
     close_vals = 100.0 + amplitude * np.sin(i / period)
     idx = pd.date_range("2021-01-01", periods=n, freq="D")
     close = pd.Series(close_vals, index=idx)
+    return pd.DataFrame(
+        {"Open": close, "High": close + 1, "Low": close - 1, "Close": close, "Volume": 5_000_000},
+        index=idx,
+    )
+
+
+def _opportunistic_buddy_bars(n=320):
+    """Segundo simbolo del universo para los tests de integracion de
+    Oportunista (run_opportunistic_backtest/_walk_forward): el score
+    cross-sectional necesita >=2 simbolos validos por fecha para que el
+    percentil este definido (ver _cross_sectional_score_panel), igual que en
+    los tests de integracion de Momentum. Tendencia bajista lenta y pareja
+    (sin pico propio): no le disputa el ranking a OPP de forma sistematica."""
+    idx = pd.date_range("2021-01-01", periods=n, freq="D")
+    close = pd.Series([100.0 - 0.05 * i for i in range(n)], index=idx)
     return pd.DataFrame(
         {"Open": close, "High": close + 1, "Low": close - 1, "Close": close, "Volume": 5_000_000},
         index=idx,
@@ -582,34 +615,53 @@ def _opportunistic_cfg(**overrides):
         max_holding_days=30,
     )
     defaults.update(overrides)
-    return ScreenerConfig(universe=["OPP"], atr_period=14, opportunistic=OpportunisticConfig(**defaults))
+    return ScreenerConfig(
+        universe=["OPP", "OPP2"], atr_period=14, opportunistic=OpportunisticConfig(**defaults)
+    )
 
 
-def test_opportunistic_trend_break_exit_on_rsi_exhaustion():
+def test_opportunistic_score_exit_when_score_drops_below_threshold():
+    # _simulate_symbol_opportunistic ya no deriva el score de un solo
+    # indicador (antes RSI sobrecomprado): score_series es ahora un insumo
+    # externo (el percentil cross-sectional, ver _cross_sectional_score_panel),
+    # asi que este test unitario lo arma a mano para verificar la mecanica de
+    # entrada/salida (no la formula de ningun componente, eso lo cubren los
+    # tests de integracion mas abajo). Senal de entrada confirmada al cierre
+    # del dia 262 (score alto), fill al abrir el dia 263; score se mantiene
+    # alto hasta el dia 277 y cae por debajo del umbral de salida el dia 278.
     from app.backtest import _simulate_symbol_opportunistic
 
     bars = _opportunistic_oscillating_bars()
     cfg = _opportunistic_cfg(max_holding_days=30)
+    opp = cfg.opportunistic
 
-    trades = _simulate_symbol_opportunistic("OPP", bars, cfg)
+    score_series = pd.Series(opp.backtest_score_exit_threshold - 1, index=bars.index)
+    score_series.iloc[262:278] = opp.backtest_score_entry_threshold + 1
 
-    assert trades[0].exit_reason == "trend_break"
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series)
+
+    assert trades[0].exit_reason == "score_exit"
     assert trades[0].entry_date == bars.index[263]
     assert trades[0].exit_date == bars.index[278]
 
 
-def test_opportunistic_max_holding_days_exit_takes_priority_over_trend_break():
-    # Mismo escenario que el test de trend_break: el RSI cruza rsi_max justo
-    # el dia en que tambien se cumplen los max_holding_days configurados aqui
-    # (15). Verifica que el timeout tiene prioridad sobre el RSI sobrecomprado
+def test_opportunistic_max_holding_days_exit_takes_priority_over_score_exit():
+    # Mismo escenario que el test anterior: el score cae por debajo del
+    # umbral de salida justo el dia en que tambien se cumplen los
+    # max_holding_days configurados aqui (15 dias desde la entrada en el dia
+    # 263). Verifica que el timeout tiene prioridad sobre la caida de score
     # cuando ambas condiciones de salida coinciden (ver el orden del ternario
     # en _simulate_symbol_opportunistic).
     from app.backtest import _simulate_symbol_opportunistic
 
     bars = _opportunistic_oscillating_bars()
     cfg = _opportunistic_cfg(max_holding_days=15)
+    opp = cfg.opportunistic
 
-    trades = _simulate_symbol_opportunistic("OPP", bars, cfg)
+    score_series = pd.Series(opp.backtest_score_exit_threshold - 1, index=bars.index)
+    score_series.iloc[262:278] = opp.backtest_score_entry_threshold + 1
+
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series)
 
     assert trades[0].exit_reason == "max_holding_days"
     assert trades[0].exit_date == bars.index[278]
@@ -621,8 +673,14 @@ def test_opportunistic_stop_loss_triggers_on_intraday_low_not_close():
     bars = _opportunistic_oscillating_bars()
     bars.loc[bars.index[264], "Low"] = 50.0  # mecha intradiaria el dia siguiente al fill, perfora el stop sin que el cierre lo refleje
     cfg = _opportunistic_cfg(max_holding_days=30)
+    opp = cfg.opportunistic
 
-    trades = _simulate_symbol_opportunistic("OPP", bars, cfg)
+    # Score alto desde el dia de la senal (262) en adelante, sin caer nunca
+    # por debajo del umbral de salida: la unica salida posible es el stop-loss.
+    score_series = pd.Series(opp.backtest_score_exit_threshold - 1, index=bars.index)
+    score_series.iloc[262:] = opp.backtest_score_entry_threshold + 1
+
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series)
 
     assert trades[0].exit_reason == "stop_loss"
     assert trades[0].exit_date == bars.index[264]
@@ -632,12 +690,15 @@ def test_opportunistic_stop_loss_triggers_on_intraday_low_not_close():
 def test_opportunistic_backtest_produces_trades_and_metrics(monkeypatch):
     bars = _opportunistic_oscillating_bars()
     bench_bars = _bars([100.0] * len(bars))
+    buddy_bars = _opportunistic_buddy_bars(len(bars))
 
     def fake_get_daily_bars(symbol, lookback_days):
         if symbol == "SPY":
             return bench_bars
         if symbol == "OPP":
             return bars
+        if symbol == "OPP2":
+            return buddy_bars
         raise MarketDataError("no data")
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
@@ -647,17 +708,20 @@ def test_opportunistic_backtest_produces_trades_and_metrics(monkeypatch):
     summary = backtest_module.run_opportunistic_backtest(config)
 
     assert summary.total_trades > 0
-    assert all(t.symbol == "OPP" for t in summary.trades)
+    assert all(t.symbol in ("OPP", "OPP2") for t in summary.trades)
     assert 0 <= summary.win_rate_pct <= 100
     assert summary.start_date < summary.end_date
 
 
 def test_opportunistic_backtest_raises_when_benchmark_unavailable(monkeypatch):
     bars = _opportunistic_oscillating_bars()
+    buddy_bars = _opportunistic_buddy_bars(len(bars))
 
     def fake_get_daily_bars(symbol, lookback_days):
         if symbol == "OPP":
             return bars
+        if symbol == "OPP2":
+            return buddy_bars
         raise MarketDataError("no data")
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
@@ -742,12 +806,15 @@ def test_run_backtest_walk_forward_partitions_all_trades_without_loss(patched_ma
 def test_opportunistic_backtest_walk_forward_partitions_all_trades_without_loss(monkeypatch):
     bars = _opportunistic_oscillating_bars()
     bench_bars = _bars([100.0] * len(bars))
+    buddy_bars = _opportunistic_buddy_bars(len(bars))
 
     def fake_get_daily_bars(symbol, lookback_days):
         if symbol == "SPY":
             return bench_bars
         if symbol == "OPP":
             return bars
+        if symbol == "OPP2":
+            return buddy_bars
         raise MarketDataError("no data")
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)

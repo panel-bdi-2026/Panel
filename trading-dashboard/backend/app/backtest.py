@@ -5,10 +5,20 @@ import time
 
 import pandas as pd
 
-from .indicators import atr, pct_from_high, rate_of_change, rsi, sma
+from .indicators import atr, bollinger_percent_b, macd, pct_from_high, rate_of_change, rsi, sma
 from .market_data import MarketDataError, get_daily_bars
 from .models import BacktestSummary, BacktestTrade, EquityCurvePoint, WalkForwardFold, WalkForwardResult
 from .screener_config import ScreenerConfig
+from .sector_strength import sector_relative_strength_series
+
+# Misma ventana fija que _CONTEXT_MOMENTUM_3M_DAYS en strategies/common.py
+# (el momentum "de contexto" que usa Oportunista para su propio
+# sector_relative_strength) y _MOMENTUM_3M_DAYS en sector_strength.py: se
+# duplica el valor en vez de importarlo porque este modulo no puede depender
+# de strategies/ sin arriesgar el mismo ciclo de import ya documentado en
+# sector_strength.py (strategies/common.py -> strategies/__init__.py ->
+# screener.py).
+_OPPORTUNISTIC_CONTEXT_MOMENTUM_DAYS = 63
 
 
 class BacktestError(RuntimeError):
@@ -30,37 +40,120 @@ def _trade_daily_marks(
     return marks
 
 
+def _cross_sectional_score_panel(raw_components: dict[str, pd.DataFrame], weights: dict[str, float]) -> pd.DataFrame:
+    """Replica, dia por dia, la misma logica de apply_cross_sectional_normalization
+    (ver scoring.py) que usa el scan en vivo: en vez de un percentil por
+    simbolo en un solo instante, calcula un percentil por simbolo en CADA
+    fecha de `raw_components`, contra el resto de simbolos que tengan un dato
+    valido ese mismo dia -- no contra el universo de HOY, que no es el
+    universo que realmente estaba "vivo" en cada momento historico.
+
+    raw_components: {nombre_de_score_component: DataFrame fecha x simbolo},
+    ya con los mismos defaults para dato faltante que aplica la version en
+    vivo (ver _momentum_raw_components / _opportunistic_raw_components). Un
+    NaN que sobrevive hasta aca significa "todavia no hay suficiente historia
+    para este simbolo en esta fecha" (excluye a ese simbolo del ranking
+    cross-sectional ese dia), no "dato faltante con default" -- igual que
+    evaluate_symbol no devuelve señal en absoluto sin esa historia minima.
+
+    Devuelve un DataFrame fecha x simbolo con el score final (suma pesada de
+    percentiles 0-100 por componente).
+    """
+    score_df = None
+    for key, weight in weights.items():
+        raw_df = raw_components[key]
+        ranks = raw_df.rank(axis=1, method="average")
+        n_valid = raw_df.notna().sum(axis=1)
+        denom = (n_valid - 1).where(n_valid > 1)  # NaN si hay <2 simbolos validos ese dia: percentil indefinido
+        pct = ranks.sub(1).div(denom, axis=0) * 100
+        contribution = weight * pct
+        score_df = contribution if score_df is None else score_df + contribution
+    return score_df
+
+
+def _momentum_raw_components(
+    bars_by_symbol: dict[str, pd.DataFrame], cfg: ScreenerConfig, bench_bars: pd.DataFrame, history_days: int
+) -> dict[str, pd.DataFrame]:
+    """Componentes crudos (sin normalizar, historia completa) del score de
+    Momentum para cada simbolo, replicando uno a uno los score_components de
+    evaluate_symbol (ver screener.py) pero como Series dia por dia en vez de
+    un solo iloc[-1]. Insumo de _cross_sectional_score_panel."""
+    benchmark_roc = rate_of_change(bench_bars["Close"], cfg.momentum_lookback_days)
+
+    keys = (
+        "relative_strength", "momentum_3m", "momentum_1m", "trend",
+        "rsi", "macd", "bollinger", "sector_relative_strength",
+    )
+    per_symbol: dict[str, dict[str, pd.Series]] = {key: {} for key in keys}
+
+    for symbol, bars in bars_by_symbol.items():
+        close = bars["Close"]
+        sma_fast_s = sma(close, cfg.sma_fast)
+        sma_slow_s = sma(close, cfg.sma_slow)
+        roc_3m = rate_of_change(close, cfg.momentum_lookback_days)
+        roc_1m = rate_of_change(close, cfg.momentum_short_days)
+        rsi_s = rsi(close, cfg.rsi_period)
+        _, _, macd_hist_s = macd(close)
+        bollinger_s = bollinger_percent_b(close)
+        macd_pct_s = (macd_hist_s / close * 100).where(close != 0)
+        aligned_bench_roc = benchmark_roc.reindex(close.index, method="ffill")
+
+        # Misma puerta que evaluate_symbol (mas atr, que no es parte del
+        # score: se chequea aparte en _simulate_symbol antes de usarlo para
+        # el stop-loss). Sin esto, un simbolo con poca historia entraria al
+        # ranking cross-sectional con momentum/tendencia indefinidos.
+        valid = ~(sma_slow_s.isna() | roc_3m.isna())
+
+        trend_ok = (close > sma_fast_s) & (sma_fast_s > sma_slow_s)
+        trend_component = pd.Series(-10.0, index=close.index)
+        trend_component[trend_ok] = 10.0
+
+        sector_rel = sector_relative_strength_series(symbol, roc_3m, history_days)
+        sector_component = sector_rel.fillna(0.0) if sector_rel is not None else pd.Series(0.0, index=close.index)
+
+        per_symbol["relative_strength"][symbol] = (roc_3m - aligned_bench_roc).where(valid)
+        per_symbol["momentum_3m"][symbol] = roc_3m.where(valid)
+        per_symbol["momentum_1m"][symbol] = roc_1m.fillna(0.0).where(valid)
+        per_symbol["trend"][symbol] = trend_component.where(valid)
+        per_symbol["rsi"][symbol] = (rsi_s - 50).where(valid)
+        per_symbol["macd"][symbol] = macd_pct_s.fillna(0.0).where(valid)
+        per_symbol["bollinger"][symbol] = bollinger_s.fillna(0.5).where(valid)
+        per_symbol["sector_relative_strength"][symbol] = sector_component.where(valid)
+
+    return {key: pd.concat(series_dict, axis=1) for key, series_dict in per_symbol.items()}
+
+
 def _simulate_symbol(
     symbol: str,
     bars: pd.DataFrame,
     cfg: ScreenerConfig,
-    benchmark_roc: pd.Series,
+    score_series: pd.Series,
     benchmark_regime_ok: pd.Series,
     marks_by_trade_id: dict | None = None,
 ) -> list[BacktestTrade]:
-    """Simula la misma logica de entrada/salida del screener sobre historia.
+    """Simula la entrada/salida de Momentum sobre historia, score-driven (ver
+    _cross_sectional_score_panel) en vez del antiguo AND booleano de filtros
+    tecnicos: entra cuando score_series supera cfg.backtest_score_entry_threshold
+    Y, ademas, el regimen de mercado y la proximidad al maximo de 52 semanas
+    lo permiten -- esos dos NO son parte del score (son gates booleanos puros
+    igual que en el scan en vivo, ver screener.py), asi que se siguen
+    chequeando aparte. Sale por stop-loss (basado en el ATR del dia de la
+    senal, igual que la sugerencia en vivo), por tiempo maximo en la
+    posicion, o porque el score cayo por debajo de
+    cfg.backtest_score_exit_threshold (reemplaza la vieja ruptura de
+    tendencia: el score ya incluye tendencia y mas). Una sola posicion por
+    simbolo a la vez.
 
-    Entra cuando se cumplen los mismos filtros que en `scan()` (tendencia,
-    momentum, RSI, fuerza relativa vs benchmark, regimen de mercado). Como
-    esos indicadores recien se conocen al cierre del dia que los confirma, el
-    fill de entrada se simula a la apertura del dia siguiente (no al cierre
-    del dia de la senal, que seria mirar al futuro). Sale por stop-loss
-    (basado en el ATR del dia de la senal, igual que la sugerencia en vivo),
-    por ruptura de tendencia, o por tiempo maximo en la posicion. Una sola
-    posicion por simbolo a la vez.
-
-    El stop-loss se chequea contra el minimo intradiario (no el cierre): si el
-    precio perfora el stop durante el dia, en la realidad se sale ahi (o peor,
-    si abre con un gap por debajo del stop), no se espera al cierre. Tambien
-    se restan comision y slippage estimados, para no inflar los retornos
-    respecto a la operatoria real.
+    Como el score recien se conoce al cierre del dia que lo confirma, el fill
+    de entrada se simula a la apertura del dia siguiente (no al cierre del
+    dia de la senal, que seria mirar al futuro). El stop-loss se chequea
+    contra el minimo intradiario (no el cierre): si el precio perfora el stop
+    durante el dia, en la realidad se sale ahi (o peor, si abre con un gap por
+    debajo del stop), no se espera al cierre. Tambien se restan comision y
+    slippage estimados, para no inflar los retornos respecto a la operatoria
+    real.
     """
     close = bars["Close"]
-    sma_fast_s = sma(close, cfg.sma_fast)
-    sma_slow_s = sma(close, cfg.sma_slow)
-    roc_3m = rate_of_change(close, cfg.momentum_lookback_days)
-    roc_1m = rate_of_change(close, cfg.momentum_short_days)
-    rsi_s = rsi(close, cfg.rsi_period)
     atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
     from_high_s = pct_from_high(close, 252)
 
@@ -82,11 +175,11 @@ def _simulate_symbol(
         open_price = float(bars["Open"].iloc[i])
 
         if pending_entry_atr is not None:
-            # La senal se detecto con el cierre del dia anterior: los
-            # indicadores (SMA, RSI, momentum) recien se conocen una vez
-            # cerrado ese dia, asi que en la realidad la orden se coloca al
-            # dia siguiente. Entrar al cierre del mismo dia de la senal seria
-            # mirar al futuro; el fill realista es la apertura de este dia.
+            # La senal se detecto con el cierre del dia anterior: el score
+            # recien se conoce una vez cerrado ese dia, asi que en la
+            # realidad la orden se coloca al dia siguiente. Entrar al cierre
+            # del mismo dia de la senal seria mirar al futuro; el fill
+            # realista es la apertura de este dia.
             in_position = True
             entry_price = open_price
             entry_idx = i
@@ -99,9 +192,10 @@ def _simulate_symbol(
             held_days = i - entry_idx
             hit_stop = low_price <= stop_price
             timed_out = held_days >= cfg.max_holding_days
-            trend_broke = price < sma_fast_s.iloc[i]
-            if hit_stop or timed_out or trend_broke:
-                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "trend_break")
+            score_today = score_series.get(date)
+            score_exit = score_today is not None and not pd.isna(score_today) and score_today <= cfg.backtest_score_exit_threshold
+            if hit_stop or timed_out or score_exit:
+                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "score_exit")
                 # Si hubo gap por debajo del stop, el fill realista es el open
                 # (peor que el stop); si no, se asume fill al precio del stop.
                 raw_exit_price = min(open_price, stop_price) if hit_stop else price
@@ -130,14 +224,13 @@ def _simulate_symbol(
                 in_position = False
             continue
 
-        if pd.isna(sma_slow_s.iloc[i]) or pd.isna(atr_s.iloc[i]) or pd.isna(roc_3m.iloc[i]):
+        if pd.isna(atr_s.iloc[i]):
             continue
 
-        trend_ok = price > sma_fast_s.iloc[i] > sma_slow_s.iloc[i]
-        rsi_ok = cfg.rsi_min <= rsi_s.iloc[i] <= cfg.rsi_max
-        bench_roc = benchmark_roc.iloc[i] if i < len(benchmark_roc) and not pd.isna(benchmark_roc.iloc[i]) else None
-        rel_strength_ok = bench_roc is None or roc_3m.iloc[i] > bench_roc
-        momentum_ok = roc_3m.iloc[i] > 0 and (pd.isna(roc_1m.iloc[i]) or roc_1m.iloc[i] > 0)
+        score_today = score_series.get(date)
+        if score_today is None or pd.isna(score_today) or score_today < cfg.backtest_score_entry_threshold:
+            continue
+
         regime_ok = bool(benchmark_regime_ok.iloc[i]) if i < len(benchmark_regime_ok) else True
         fh = from_high_s.iloc[i]
         near_high_ok = (
@@ -146,28 +239,83 @@ def _simulate_symbol(
             or fh >= -cfg.max_pct_below_52w_high
         )
 
-        if trend_ok and rsi_ok and rel_strength_ok and momentum_ok and regime_ok and near_high_ok:
+        if regime_ok and near_high_ok:
             pending_entry_atr = atr_s.iloc[i]
 
     return trades
 
 
+def _opportunistic_raw_components(
+    bars_by_symbol: dict[str, pd.DataFrame], cfg: ScreenerConfig, history_days: int
+) -> dict[str, pd.DataFrame]:
+    """Componentes crudos (sin normalizar, historia completa) del score de
+    Oportunista para cada simbolo, replicando uno a uno los score_components
+    de evaluate_symbol (ver strategies/opportunistic.py) pero como Series dia
+    por dia en vez de un solo iloc[-1]. Insumo de _cross_sectional_score_panel.
+
+    El componente sector_relative_strength usa la ventana fija de 63 dias
+    (_OPPORTUNISTIC_CONTEXT_MOMENTUM_DAYS, igual que ctx["momentum_3m_pct"] en
+    context_technicals), NO opp.momentum_lookback_days: esa ventana corta es
+    la que usa el componente "momentum" (señal de giro de corto plazo), una
+    ventana distinta con un proposito distinto en la misma estrategia."""
+    opp = cfg.opportunistic
+    keys = ("momentum", "volatility", "rsi_recovery", "room_to_grow", "macd_turn", "sector_relative_strength")
+    per_symbol: dict[str, dict[str, pd.Series]] = {key: {} for key in keys}
+
+    for symbol, bars in bars_by_symbol.items():
+        close = bars["Close"]
+        atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
+        roc_short = rate_of_change(close, opp.momentum_lookback_days)
+        rsi_s = rsi(close, opp.rsi_period)
+        from_high_s = pct_from_high(close, 252)
+        _, _, macd_hist_s = macd(close)
+        macd_pct_s = (macd_hist_s / close * 100).where(close != 0)
+        roc_3m_context = rate_of_change(close, _OPPORTUNISTIC_CONTEXT_MOMENTUM_DAYS)
+
+        # Misma puerta que "ctx is not None" (atr/momentum de contexto de 63
+        # dias) mas roc_short no-NaN en evaluate_symbol; RSI nunca es NaN (ver
+        # indicators.py).
+        valid = ~(atr_s.isna() | roc_3m_context.isna() | roc_short.isna())
+
+        volatility_pct_s = (atr_s / close * 100).where(close != 0)
+        room_to_grow_component = from_high_s.abs().fillna(0.0)
+
+        sector_rel = sector_relative_strength_series(symbol, roc_3m_context, history_days)
+        sector_component = sector_rel.fillna(0.0) if sector_rel is not None else pd.Series(0.0, index=close.index)
+
+        per_symbol["momentum"][symbol] = roc_short.where(valid)
+        per_symbol["volatility"][symbol] = volatility_pct_s.where(valid)
+        per_symbol["rsi_recovery"][symbol] = (rsi_s - opp.rsi_min).where(valid)
+        per_symbol["room_to_grow"][symbol] = room_to_grow_component.where(valid)
+        per_symbol["macd_turn"][symbol] = macd_pct_s.fillna(0.0).where(valid)
+        per_symbol["sector_relative_strength"][symbol] = sector_component.where(valid)
+
+    return {key: pd.concat(series_dict, axis=1) for key, series_dict in per_symbol.items()}
+
+
 def _simulate_symbol_opportunistic(
-    symbol: str, bars: pd.DataFrame, cfg: ScreenerConfig, marks_by_trade_id: dict | None = None
+    symbol: str,
+    bars: pd.DataFrame,
+    cfg: ScreenerConfig,
+    score_series: pd.Series,
+    marks_by_trade_id: dict | None = None,
 ) -> list[BacktestTrade]:
-    """Misma logica de _simulate_symbol pero con los filtros de entrada/salida
-    de la estrategia Oportunista (ver strategies/opportunistic.py): momentum
-    de corto plazo positivo, RSI en zona de recuperacion (no de tendencia
-    establecida como Momentum) y precio bien por debajo del maximo de 52
-    semanas (espacio de crecimiento, lo opuesto al filtro de Momentum).
-    Sale por stop-loss, tiempo maximo en la posicion, o RSI sobrecomprado
-    (señal de que el rebote de corto plazo ya se jugo)."""
+    """Misma logica score-driven que _simulate_symbol (ver ese docstring para
+    el detalle de fills/stop-loss/comision/slippage), aplicada a Oportunista:
+    a diferencia de Momentum, las 4 condiciones booleanas originales
+    (momentum corto positivo, RSI en zona de recuperacion, volatilidad
+    minima, espacio de crecimiento) ya son, cada una, un componente del score
+    (ver _opportunistic_raw_components) -- no quedan gates booleanos aparte
+    del umbral de score, a diferencia de Momentum (regimen/52 semanas, que no
+    son parte de su score).
+
+    Entra cuando score_series supera opp.backtest_score_entry_threshold; sale
+    por stop-loss, tiempo maximo en la posicion, o porque el score cayo por
+    debajo de opp.backtest_score_exit_threshold (reemplaza la vieja salida
+    por RSI sobrecomprado: el score ya incluye RSI y mas)."""
     opp = cfg.opportunistic
     close = bars["Close"]
-    roc_short = rate_of_change(close, opp.momentum_lookback_days)
-    rsi_s = rsi(close, opp.rsi_period)
     atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
-    from_high_s = pct_from_high(close, 252)
 
     notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
 
@@ -199,9 +347,12 @@ def _simulate_symbol_opportunistic(
             held_days = i - entry_idx
             hit_stop = low_price <= stop_price
             timed_out = held_days >= opp.max_holding_days
-            rsi_exhausted = rsi_s.iloc[i] > opp.rsi_max
-            if hit_stop or timed_out or rsi_exhausted:
-                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "trend_break")
+            score_today = score_series.get(date)
+            score_exit = (
+                score_today is not None and not pd.isna(score_today) and score_today <= opp.backtest_score_exit_threshold
+            )
+            if hit_stop or timed_out or score_exit:
+                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "score_exit")
                 raw_exit_price = min(open_price, stop_price) if hit_stop else price
 
                 entry_fill = entry_price * (1 + cfg.slippage_pct / 100)
@@ -228,20 +379,14 @@ def _simulate_symbol_opportunistic(
                 in_position = False
             continue
 
-        if pd.isna(atr_s.iloc[i]) or pd.isna(roc_short.iloc[i]):
+        if pd.isna(atr_s.iloc[i]):
             continue
 
-        last_atr = atr_s.iloc[i]
-        volatility_pct = (last_atr / price * 100) if price else 0.0
-        fh = from_high_s.iloc[i]
+        score_today = score_series.get(date)
+        if score_today is None or pd.isna(score_today) or score_today < opp.backtest_score_entry_threshold:
+            continue
 
-        momentum_ok = roc_short.iloc[i] > 0
-        rsi_ok = opp.rsi_min <= rsi_s.iloc[i] <= opp.rsi_max
-        volatility_ok = volatility_pct >= opp.min_volatility_pct
-        room_to_grow_ok = pd.isna(fh) or fh <= -opp.min_pct_below_52w_high
-
-        if momentum_ok and rsi_ok and volatility_ok and room_to_grow_ok:
-            pending_entry_atr = last_atr
+        pending_entry_atr = atr_s.iloc[i]
 
     return trades
 
@@ -252,11 +397,19 @@ def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTra
     concurrentes), el dict de marcas diarias por operacion (ver
     _trade_daily_marks) y la historia del benchmark. Separado de
     run_opportunistic_backtest para que run_opportunistic_backtest_walk_forward
-    pueda reusar la misma simulacion sin volver a pedir datos de mercado."""
-    history_days = int(cfg.backtest_years * 365)
+    pueda reusar la misma simulacion sin volver a pedir datos de mercado.
 
-    all_trades: list[BacktestTrade] = []
-    marks_by_trade_id: dict = {}
+    Dos pasadas, igual que _collect_momentum_trades: primero se piden las
+    barras de TODO el universo (con la misma pausa anti-rate-limit que antes),
+    despues se calcula el panel de score cross-sectional dia por dia sobre ese
+    universo ya descargado (ver _cross_sectional_score_panel), y recien
+    despues se simula cada simbolo -- no se puede saber el percentil de un
+    simbolo en una fecha dada sin tener primero la historia de todos los
+    demas para esa misma fecha."""
+    history_days = int(cfg.backtest_years * 365)
+    opp = cfg.opportunistic
+
+    bars_by_symbol: dict[str, pd.DataFrame] = {}
     delay = cfg.scan_request_delay_seconds
     for i, symbol in enumerate(cfg.universe):
         if i > 0 and delay > 0:
@@ -265,9 +418,30 @@ def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTra
             bars = get_daily_bars(symbol, history_days)
         except MarketDataError:
             continue
-        if len(bars) < cfg.opportunistic.momentum_lookback_days + 252:
+        if len(bars) < opp.momentum_lookback_days + 252:
             continue
-        all_trades.extend(_simulate_symbol_opportunistic(symbol, bars, cfg, marks_by_trade_id))
+        bars_by_symbol[symbol] = bars
+
+    # Mismo guard que _collect_momentum_trades: pd.concat sobre un dict vacio
+    # en _opportunistic_raw_components rompe con ValueError en vez de la
+    # BacktestError de "sin operaciones" que ya se usa mas abajo.
+    if not bars_by_symbol:
+        raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
+
+    raw_components = _opportunistic_raw_components(bars_by_symbol, cfg, history_days)
+    score_panel = _cross_sectional_score_panel(raw_components, {
+        "momentum": opp.score_weight_momentum,
+        "volatility": opp.score_weight_volatility,
+        "rsi_recovery": opp.score_weight_rsi_recovery,
+        "room_to_grow": opp.score_weight_room_to_grow,
+        "macd_turn": opp.score_weight_macd_turn,
+        "sector_relative_strength": opp.score_weight_sector_relative_strength,
+    })
+
+    all_trades: list[BacktestTrade] = []
+    marks_by_trade_id: dict = {}
+    for symbol, bars in bars_by_symbol.items():
+        all_trades.extend(_simulate_symbol_opportunistic(symbol, bars, cfg, score_panel[symbol], marks_by_trade_id))
 
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
@@ -529,7 +703,16 @@ def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], 
     concurrentes), el dict de marcas diarias por operacion (ver
     _trade_daily_marks) y la historia del benchmark. Separado de run_backtest
     para que run_backtest_walk_forward pueda reusar la misma simulacion sin
-    volver a pedir datos de mercado."""
+    volver a pedir datos de mercado.
+
+    Dos pasadas: primero se piden las barras de TODO el universo (con la
+    misma pausa anti-rate-limit que antes, ver scan_request_delay_seconds),
+    despues se calcula el panel de score cross-sectional dia por dia sobre
+    ese universo ya descargado (ver _cross_sectional_score_panel), y recien
+    despues se simula cada simbolo -- no se puede saber el percentil de un
+    simbolo en una fecha dada sin tener primero la historia de todos los
+    demas para esa misma fecha (a diferencia del scan en vivo, que solo
+    necesita el ranking de HOY)."""
     history_days = int(cfg.backtest_years * 365)
 
     try:
@@ -537,16 +720,13 @@ def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], 
     except MarketDataError as exc:
         raise BacktestError(str(exc)) from exc
 
-    benchmark_roc = rate_of_change(bench_bars["Close"], cfg.momentum_lookback_days)
-
     if cfg.regime_filter_enabled:
         bench_regime_sma = sma(bench_bars["Close"], cfg.regime_sma_period)
         benchmark_regime_ok = (bench_bars["Close"] > bench_regime_sma) | bench_regime_sma.isna()
     else:
         benchmark_regime_ok = pd.Series(True, index=bench_bars.index)
 
-    all_trades: list[BacktestTrade] = []
-    marks_by_trade_id: dict = {}
+    bars_by_symbol: dict[str, pd.DataFrame] = {}
     delay = cfg.scan_request_delay_seconds
     for i, symbol in enumerate(cfg.universe):
         # Misma pausa anti-rate-limit que el scan en vivo (ver
@@ -561,9 +741,32 @@ def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], 
             continue
         if len(bars) < cfg.sma_slow + cfg.momentum_lookback_days:
             continue
-        aligned_bench_roc = benchmark_roc.reindex(bars.index, method="ffill")
+        bars_by_symbol[symbol] = bars
+
+    # Sin esto, pd.concat sobre un dict vacio en _momentum_raw_components
+    # rompe con ValueError en vez de la misma BacktestError de "sin
+    # operaciones" que ya se usa mas abajo cuando ningun simbolo paso el
+    # filtro de entrada (caso equivalente: ningun simbolo tiene historia).
+    if not bars_by_symbol:
+        raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
+
+    raw_components = _momentum_raw_components(bars_by_symbol, cfg, bench_bars, history_days)
+    score_panel = _cross_sectional_score_panel(raw_components, {
+        "relative_strength": cfg.score_weight_relative_strength,
+        "momentum_3m": cfg.score_weight_momentum_3m,
+        "momentum_1m": cfg.score_weight_momentum_1m,
+        "trend": cfg.score_weight_trend,
+        "rsi": cfg.score_weight_rsi,
+        "macd": cfg.score_weight_macd,
+        "bollinger": cfg.score_weight_bollinger,
+        "sector_relative_strength": cfg.score_weight_sector_relative_strength,
+    })
+
+    all_trades: list[BacktestTrade] = []
+    marks_by_trade_id: dict = {}
+    for symbol, bars in bars_by_symbol.items():
         aligned_regime_ok = benchmark_regime_ok.reindex(bars.index, method="ffill").fillna(True)
-        all_trades.extend(_simulate_symbol(symbol, bars, cfg, aligned_bench_roc, aligned_regime_ok, marks_by_trade_id))
+        all_trades.extend(_simulate_symbol(symbol, bars, cfg, score_panel[symbol], aligned_regime_ok, marks_by_trade_id))
 
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")

@@ -176,7 +176,7 @@ class BacktestTrade(BaseModel):
     entry_price: float
     exit_price: float
     return_pct: float
-    exit_reason: str  # stop_loss | max_holding_days | trend_break
+    exit_reason: str  # stop_loss | max_holding_days | score_exit
 
 
 class EquityCurvePoint(BaseModel):

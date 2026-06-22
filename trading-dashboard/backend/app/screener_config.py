@@ -134,6 +134,18 @@ class OpportunisticConfig(BaseModel):
     score_weight_macd_turn: float = 0.15
     score_weight_sector_relative_strength: float = 0.15
 
+    # Backtest score-driven (ver backtest.py): reemplaza el AND booleano de
+    # filtros tecnicos por el mismo score percentil cross-sectional que usa
+    # el scan en vivo (contra el resto del universo, ese mismo dia). Entra
+    # cuando el score supera backtest_score_entry_threshold y sale cuando cae
+    # por debajo de backtest_score_exit_threshold (o por stop-loss/tiempo
+    # maximo, lo que ocurra primero). Los pesos de score de esta estrategia
+    # suman 1.3: con percentiles 0-100 por componente, el score promedio de un
+    # simbolo "del monton" es ~65 (1.3 x 50), no 50 -- los defaults son
+    # relativos a eso.
+    backtest_score_entry_threshold: float = 75.0
+    backtest_score_exit_threshold: float = 50.0
+
 
 class LongTermConfig(BaseModel):
     """Estrategia de largo plazo (meses/1 año): fundamentales fuertes
@@ -244,6 +256,16 @@ class ScreenerConfig(BaseModel):
     score_weight_macd: float = 0.10
     score_weight_bollinger: float = 0.10
     score_weight_sector_relative_strength: float = 0.20
+
+    # Backtest score-driven (ver backtest.py): mismo mecanismo que el de
+    # OpportunisticConfig.backtest_score_entry_threshold/_exit_threshold, solo
+    # que para Momentum (cuyos pesos de score suman 1.40, ver score_weight_*
+    # arriba: el score promedio "del monton" es ~70, no 50). regime_filter y
+    # near_high_filter NO son parte del score (son gates booleanos puros, ver
+    # screener.py) y siguen aplicandose ademas del umbral de score, igual que
+    # en el scan en vivo.
+    backtest_score_entry_threshold: float = 80.0
+    backtest_score_exit_threshold: float = 55.0
 
     # Volumen promedio en DOLARES (precio x acciones), no en cantidad de
     # acciones: una accion barata puede superar un umbral de acciones y
