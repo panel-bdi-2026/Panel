@@ -1630,10 +1630,20 @@ function signalDetailHtml(r){
     r.dividend_yield_pct != null ? `<tr><td><b>Dividend yield</b></td><td>${fmtPct(r.dividend_yield_pct, 2)}</td></tr>` : '',
     r.payout_ratio_pct != null ? `<tr><td><b>Payout ratio</b></td><td>${fmtPct(r.payout_ratio_pct)}</td></tr>` : '',
   ].join('');
+  // Señales tecnicas adicionales (ver app/strategies/common.py): se muestran
+  // para las 4 estrategias a modo informativo, aunque solo entran al score
+  // de Momentum/Oportunista (las dos basadas en precio, no en fundamentals).
+  const technicalScoreStrategies = ['momentum', 'opportunistic'];
+  const technicalRows = [
+    r.macd_histogram_pct != null ? `<tr><td><b title="Histograma del MACD (diferencia entre la linea MACD y su señal), como % del precio. Positivo = momentum alcista; negativo = bajista.">MACD (histograma)</b></td><td style="color:${r.macd_histogram_pct>=0?'var(--green)':'var(--red)'}">${r.macd_histogram_pct.toFixed(2)}%${technicalScoreStrategies.includes(effectiveStrategyId) ? '' : ' <span class="muted-sm">(informativo)</span>'}</td></tr>` : '',
+    r.bollinger_pct_b != null ? `<tr><td><b title="Posicion del precio dentro de las Bandas de Bollinger (20 dias, 2 desvios). 0 = banda inferior, 1 = banda superior; fuera de ese rango el precio rompio una banda.">Bandas de Bollinger (%B)</b></td><td>${r.bollinger_pct_b.toFixed(2)}${effectiveStrategyId === 'momentum' ? '' : ' <span class="muted-sm">(informativo)</span>'}</td></tr>` : '',
+    r.sector_relative_strength_pct != null ? `<tr><td><b title="Retorno a 3 meses del simbolo menos el retorno a 3 meses del ETF de su propio sector (distinto de la fuerza relativa vs. el benchmark general). Positivo = le gana a su sector.">Fuerza relativa vs. sector</b></td><td style="color:${r.sector_relative_strength_pct>=0?'var(--green)':'var(--red)'}">${r.sector_relative_strength_pct.toFixed(2)}%${technicalScoreStrategies.includes(effectiveStrategyId) ? '' : ' <span class="muted-sm">(informativo)</span>'}</td></tr>` : '',
+  ].join('');
   return `
     <table>
       <tbody>
         ${fundamentalRows}
+        ${technicalRows}
         <tr><td><b>Distancia al máximo de 52 semanas</b></td><td>${fmtPct(r.pct_from_52w_high)}</td></tr>
         <tr><td><b>Volumen promedio (USD/día)</b></td><td>${fmtUsd(r.avg_volume)}</td></tr>
         <tr><td><b>Tendencia OK</b></td><td>${r.trend_ok ? 'Sí' : 'No'}${trendGates ? '' : ' <span class="muted-sm">(informativo: no es criterio de esta estrategia)</span>'}</td></tr>

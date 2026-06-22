@@ -8,7 +8,13 @@ from ..models import SignalResult
 from ..scoring import apply_cross_sectional_normalization
 from ..screener_config import ScreenerConfig
 from ..sectors import get_sector
-from .common import avg_dollar_volume, avg_volume, context_technicals, earnings_blackout_ok
+from .common import (
+    avg_dollar_volume,
+    avg_volume,
+    context_technicals,
+    earnings_blackout_ok,
+    sector_relative_strength,
+)
 
 
 class LongTermStrategy:
@@ -71,6 +77,11 @@ class LongTermStrategy:
         last_price = ctx["last_price"]
         last_avg_dollar_vol = avg_dollar_volume(bars)
         last_avg_vol = avg_volume(bars)
+        # Informativo solamente (no entra a `score`, ver docstring de la
+        # clase): esta estrategia es deliberadamente fundamentals-first, no
+        # tecnica, asi que mezclar señales de precio en su ranking diluiria
+        # la tesis que el usuario explicitamente pidio para esta estrategia.
+        last_sector_rel_strength = sector_relative_strength(symbol, ctx["momentum_3m_pct"], cfg.lookback_days, force=force)
 
         # Valoracion y crecimiento son los dos pilares explicitamente
         # pedidos ("fundamentales fuertes" + "bajo su valoracion"): si faltan,
@@ -156,6 +167,9 @@ class LongTermStrategy:
             strategy_id=self.id,
             sector=get_sector(symbol),
             pe_ratio=round(pe, 2) if pe is not None else None,
+            macd_histogram_pct=round(ctx["macd_histogram_pct"], 2) if ctx["macd_histogram_pct"] is not None else None,
+            bollinger_pct_b=round(ctx["bollinger_pct_b"], 2) if ctx["bollinger_pct_b"] is not None else None,
+            sector_relative_strength_pct=round(last_sector_rel_strength, 2) if last_sector_rel_strength is not None else None,
             score_components=components,
         )
 

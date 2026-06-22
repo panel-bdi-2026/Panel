@@ -127,6 +127,12 @@ class OpportunisticConfig(BaseModel):
     score_weight_volatility: float = 0.2
     score_weight_rsi_recovery: float = 0.2
     score_weight_room_to_grow: float = 0.2
+    # MACD recien cruzando a alcista es, literalmente, la señal de "giro al
+    # alza" que esta estrategia busca: encaja con su tesis mejor que las
+    # Bandas de Bollinger (que premiarian estar cerca de la banda superior,
+    # lo opuesto al "espacio de crecimiento" que room_to_grow ya valora).
+    score_weight_macd_turn: float = 0.15
+    score_weight_sector_relative_strength: float = 0.15
 
 
 class LongTermConfig(BaseModel):
@@ -210,6 +216,14 @@ class ScreenerConfig(BaseModel):
     score_weight_momentum_1m: float = 0.15
     score_weight_trend: float = 0.15
     score_weight_rsi: float = 0.10
+    # Señales tecnicas adicionales (confirmacion de tendencia, no gating):
+    # MACD e indice %B de Bollinger refuerzan la misma tesis de momentum ya
+    # confirmado (cerca/sobre la banda superior, histograma positivo), y la
+    # fuerza relativa contra el ETF del propio sector (distinta de
+    # score_weight_relative_strength, que es contra el benchmark general).
+    score_weight_macd: float = 0.10
+    score_weight_bollinger: float = 0.10
+    score_weight_sector_relative_strength: float = 0.20
 
     # Volumen promedio en DOLARES (precio x acciones), no en cantidad de
     # acciones: una accion barata puede superar un umbral de acciones y

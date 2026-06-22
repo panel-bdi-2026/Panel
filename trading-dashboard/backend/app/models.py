@@ -140,6 +140,12 @@ class SignalResult(BaseModel):
     pe_ratio: Optional[float] = None
     dividend_yield_pct: Optional[float] = None
     payout_ratio_pct: Optional[float] = None
+    # Contexto tecnico adicional (ver strategies/common.py), informativo para
+    # las 4 estrategias; solo entra en `score` (via score_components) para
+    # Momentum/Oportunista, que son las dos basadas en señales de precio.
+    macd_histogram_pct: Optional[float] = None
+    bollinger_pct_b: Optional[float] = None
+    sector_relative_strength_pct: Optional[float] = None
     # Componentes crudos (sin ponderar) que entraron en `score`, indexados por
     # nombre (ver app/scoring.py). Vacio si la estrategia no los expone. Le
     # permite a scan() recalcular `score` con normalizacion cross-sectional

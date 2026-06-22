@@ -39,6 +39,30 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> 
     return true_range.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
 
 
+def macd(
+    close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """MACD estandar: linea (EMA rapida - EMA lenta), señal (EMA de la linea)
+    e histograma (linea - señal). Histograma > 0 indica momentum alcista."""
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
+def bollinger_percent_b(close: pd.Series, period: int = 20, num_std: float = 2.0) -> pd.Series:
+    """%B: posicion del precio dentro de las bandas de Bollinger (SMA +/- N
+    desvios). 0 = banda inferior, 1 = banda superior; valores fuera de
+    [0, 1] indican que el precio rompio una banda."""
+    mid = close.rolling(period).mean()
+    std = close.rolling(period).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    return (close - lower) / (upper - lower)
+
+
 def pct_from_high(close: pd.Series, window: int) -> pd.Series:
     """Pct. de distancia (<=0) del cierre actual respecto del maximo de los
     ultimos `window` dias. Exige la ventana completa (min_periods=window):

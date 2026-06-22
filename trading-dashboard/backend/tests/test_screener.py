@@ -170,6 +170,7 @@ def test_evaluate_symbol_exposes_score_components(screener):
     result = screener.evaluate_symbol("MOM", benchmark_roc_3m=5.0, regime_ok=True)
     assert set(result.score_components.keys()) == {
         "relative_strength", "momentum_3m", "momentum_1m", "trend", "rsi",
+        "macd", "bollinger", "sector_relative_strength",
     }
 
 

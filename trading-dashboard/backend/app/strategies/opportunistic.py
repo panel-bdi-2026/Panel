@@ -9,7 +9,13 @@ from ..models import SignalResult
 from ..scoring import apply_cross_sectional_normalization
 from ..screener_config import ScreenerConfig
 from ..sectors import get_sector
-from .common import avg_dollar_volume, avg_volume, context_technicals, earnings_blackout_ok
+from .common import (
+    avg_dollar_volume,
+    avg_volume,
+    context_technicals,
+    earnings_blackout_ok,
+    sector_relative_strength,
+)
 
 
 class OpportunisticStrategy:
@@ -61,6 +67,7 @@ class OpportunisticStrategy:
         last_from_high = ctx["pct_from_52w_high"]
         last_avg_dollar_vol = avg_dollar_volume(bars)
         last_avg_vol = avg_volume(bars)
+        last_sector_rel_strength = sector_relative_strength(symbol, ctx["momentum_3m_pct"], cfg.lookback_days, force=force)
 
         # ATR como % del precio: piso de volatilidad para diferenciarse de
         # Momentum, que no exige ningun minimo.
@@ -96,12 +103,16 @@ class OpportunisticStrategy:
             "volatility": volatility_pct,
             "rsi_recovery": last_rsi - opp.rsi_min,
             "room_to_grow": abs(last_from_high or 0.0),
+            "macd_turn": ctx["macd_histogram_pct"] if ctx["macd_histogram_pct"] is not None else 0.0,
+            "sector_relative_strength": last_sector_rel_strength if last_sector_rel_strength is not None else 0.0,
         }
         score = (
             opp.score_weight_momentum * components["momentum"]
             + opp.score_weight_volatility * components["volatility"]
             + opp.score_weight_rsi_recovery * components["rsi_recovery"]
             + opp.score_weight_room_to_grow * components["room_to_grow"]
+            + opp.score_weight_macd_turn * components["macd_turn"]
+            + opp.score_weight_sector_relative_strength * components["sector_relative_strength"]
         )
 
         stop_loss_price = max(0.0, last_price - opp.stop_loss_atr_multiplier * last_atr)
@@ -124,6 +135,9 @@ class OpportunisticStrategy:
             notes=notes,
             strategy_id=self.id,
             sector=get_sector(symbol),
+            macd_histogram_pct=round(ctx["macd_histogram_pct"], 2) if ctx["macd_histogram_pct"] is not None else None,
+            bollinger_pct_b=round(ctx["bollinger_pct_b"], 2) if ctx["bollinger_pct_b"] is not None else None,
+            sector_relative_strength_pct=round(last_sector_rel_strength, 2) if last_sector_rel_strength is not None else None,
             score_components=components,
         )
 
@@ -151,6 +165,8 @@ class OpportunisticStrategy:
             "volatility": opp.score_weight_volatility,
             "rsi_recovery": opp.score_weight_rsi_recovery,
             "room_to_grow": opp.score_weight_room_to_grow,
+            "macd_turn": opp.score_weight_macd_turn,
+            "sector_relative_strength": opp.score_weight_sector_relative_strength,
         })
         results.sort(key=lambda r: r.score, reverse=True)
         return results

@@ -623,6 +623,24 @@ _VALID_SECTORS = frozenset({
     "Materials",
 })
 
+# ETF sectorial SPDR de cada sector GICS: permite medir la fuerza relativa de
+# un simbolo contra su propio sector (en vez de solo contra el benchmark
+# general, ej. SPY), reusando get_daily_bars (ya cacheado) en lugar de pedir
+# una canasta de pares por simbolo.
+SECTOR_ETF: dict[str, str] = {
+    "Information Technology": "XLK",
+    "Health Care": "XLV",
+    "Financials": "XLF",
+    "Consumer Discretionary": "XLY",
+    "Consumer Staples": "XLP",
+    "Communication Services": "XLC",
+    "Industrials": "XLI",
+    "Energy": "XLE",
+    "Utilities": "XLU",
+    "Real Estate": "XLRE",
+    "Materials": "XLB",
+}
+
 
 def get_sector(symbol: str) -> Optional[str]:
     """Sector GICS de `symbol`, o None si no esta clasificado todavia.

@@ -5,11 +5,12 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from .indicators import atr, pct_from_high, rate_of_change, rsi, sma
+from .indicators import atr, bollinger_percent_b, macd, pct_from_high, rate_of_change, rsi, sma
 from .market_data import MarketDataError, get_daily_bars, get_next_earnings_date, is_bars_cached
 from .models import SignalResult
 from .scoring import apply_cross_sectional_normalization
 from .screener_config import ScreenerConfig
+from .sector_strength import sector_relative_strength
 from .sectors import get_sector
 
 
@@ -90,6 +91,8 @@ class MomentumScreener:
         avg_volume_s = bars["Volume"].rolling(20, min_periods=1).mean()
         avg_dollar_volume_s = avg_volume_s * close
         from_high_s = pct_from_high(close, 252)
+        _, _, macd_hist_s = macd(close)
+        bollinger_pct_b_s = bollinger_percent_b(close)
 
         if pd.isna(sma_slow_s.iloc[-1]) or pd.isna(roc_3m.iloc[-1]) or pd.isna(atr_s.iloc[-1]):
             return None
@@ -102,6 +105,13 @@ class MomentumScreener:
         last_avg_dollar_vol = float(avg_dollar_volume_s.iloc[-1])
         last_atr = float(atr_s.iloc[-1])
         last_from_high = float(from_high_s.iloc[-1]) if not pd.isna(from_high_s.iloc[-1]) else None
+        last_macd_hist_pct = (
+            float(macd_hist_s.iloc[-1]) / last_price * 100
+            if not pd.isna(macd_hist_s.iloc[-1]) and last_price
+            else None
+        )
+        last_bollinger_pct_b = float(bollinger_pct_b_s.iloc[-1]) if not pd.isna(bollinger_pct_b_s.iloc[-1]) else None
+        last_sector_rel_strength = sector_relative_strength(symbol, last_roc_3m, cfg.lookback_days, force=force)
 
         trend_ok = bool(last_price > sma_fast_s.iloc[-1] > sma_slow_s.iloc[-1])
         # Filtro en volumen en dolares, no en cantidad de acciones: una accion de
@@ -157,6 +167,9 @@ class MomentumScreener:
             "momentum_1m": last_roc_1m,
             "trend": 10.0 if trend_ok else -10.0,
             "rsi": last_rsi - 50,
+            "macd": last_macd_hist_pct if last_macd_hist_pct is not None else 0.0,
+            "bollinger": last_bollinger_pct_b if last_bollinger_pct_b is not None else 0.5,
+            "sector_relative_strength": last_sector_rel_strength if last_sector_rel_strength is not None else 0.0,
         }
         score = (
             cfg.score_weight_relative_strength * components["relative_strength"]
@@ -164,6 +177,9 @@ class MomentumScreener:
             + cfg.score_weight_momentum_1m * components["momentum_1m"]
             + cfg.score_weight_trend * components["trend"]
             + cfg.score_weight_rsi * components["rsi"]
+            + cfg.score_weight_macd * components["macd"]
+            + cfg.score_weight_bollinger * components["bollinger"]
+            + cfg.score_weight_sector_relative_strength * components["sector_relative_strength"]
         )
 
         stop_loss_price = max(0.0, last_price - cfg.stop_loss_atr_multiplier * last_atr)
@@ -186,6 +202,9 @@ class MomentumScreener:
             notes=notes,
             strategy_id=self.id,
             sector=get_sector(symbol),
+            macd_histogram_pct=round(last_macd_hist_pct, 2) if last_macd_hist_pct is not None else None,
+            bollinger_pct_b=round(last_bollinger_pct_b, 2) if last_bollinger_pct_b is not None else None,
+            sector_relative_strength_pct=round(last_sector_rel_strength, 2) if last_sector_rel_strength is not None else None,
             score_components=components,
         )
 
@@ -216,6 +235,9 @@ class MomentumScreener:
             "momentum_1m": self.config.score_weight_momentum_1m,
             "trend": self.config.score_weight_trend,
             "rsi": self.config.score_weight_rsi,
+            "macd": self.config.score_weight_macd,
+            "bollinger": self.config.score_weight_bollinger,
+            "sector_relative_strength": self.config.score_weight_sector_relative_strength,
         })
         results.sort(key=lambda r: r.score, reverse=True)
         return results
