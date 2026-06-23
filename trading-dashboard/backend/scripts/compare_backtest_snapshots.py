@@ -68,8 +68,9 @@ def _compare_strategy(name: str, before: dict, after: dict) -> None:
 def _compare_exit_reasons(before: dict | None, after: dict | None) -> None:
     """Por que se cerro cada operacion (ver BacktestTrade.exit_reason):
     distingue stop_loss (stop demasiado ajustado/ancho) de max_holding_days
-    (el limite de tiempo corta antes de que el score confirme la salida) de
-    score_exit (la salida 'normal', dirigida por el umbral de score)."""
+    (el limite de tiempo corta antes de que la tendencia se rompa) de
+    trend_break (la salida 'normal', el cierre cae por debajo de la SMA
+    rapida -- la misma que ejecuta el monitor de salida en vivo)."""
     if not before and not after:
         return
     before, after = before or {}, after or {}

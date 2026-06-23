@@ -164,15 +164,20 @@ def _simulate_symbol(
     """Simula la entrada/salida de Momentum sobre historia, score-driven (ver
     _cross_sectional_score_panel) en vez del antiguo AND booleano de filtros
     tecnicos: entra cuando score_series supera cfg.backtest_score_entry_threshold
-    Y, ademas, el regimen de mercado y la proximidad al maximo de 52 semanas
-    lo permiten -- esos dos NO son parte del score (son gates booleanos puros
-    igual que en el scan en vivo, ver screener.py), asi que se siguen
-    chequeando aparte. Sale por stop-loss (basado en el ATR del dia de la
-    senal, igual que la sugerencia en vivo), por tiempo maximo en la
-    posicion, o porque el score cayo por debajo de
-    cfg.backtest_score_exit_threshold (reemplaza la vieja ruptura de
-    tendencia: el score ya incluye tendencia y mas). Una sola posicion por
-    simbolo a la vez.
+    Y, ademas, el regimen de mercado, la proximidad al maximo de 52 semanas y
+    la liquidez minima lo permiten -- esos tres NO son parte del score (son
+    gates booleanos puros igual que en el scan en vivo, ver screener.py), asi
+    que se siguen chequeando aparte. Sale por stop-loss (basado en el ATR del
+    dia de la senal, igual que la sugerencia en vivo), por tiempo maximo en la
+    posicion, o por ruptura de tendencia (el cierre cae por debajo de la SMA
+    rapida) -- igual que _check_fund_exit en main.py, que es la UNICA salida
+    que el motor de auto-trading en vivo ejecuta hoy. No se modela una salida
+    por score porque en vivo no existe: haria falta un rescan cross-sectional
+    de todo el universo en cada chequeo de salida (caro, y ademas el monitor
+    de salida corre independiente del scan periodico, ver
+    _run_auto_exit_monitor_cycle en main.py), asi que modelarla aca solo
+    inflaria el backtest con una mecanica que la cuenta en vivo nunca
+    ejecuta. Una sola posicion por simbolo a la vez.
 
     Como el score recien se conoce al cierre del dia que lo confirma, el fill
     de entrada se simula a la apertura del dia siguiente (no al cierre del
@@ -186,6 +191,10 @@ def _simulate_symbol(
     close = bars["Close"]
     atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
     from_high_s = pct_from_high(close, 252)
+    sma_fast_s = sma(close, cfg.sma_fast)
+    # Mismo criterio de liquidez que el scan en vivo (ver screener.py): volumen
+    # promedio en DOLARES de los ultimos 20 dias, no en cantidad de acciones.
+    dollar_volume_s = bars["Volume"].rolling(20, min_periods=1).mean() * close
 
     notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
 
@@ -197,7 +206,16 @@ def _simulate_symbol(
     stop_price = 0.0
     pending_entry_atr = None  # ATR del dia en que se detecto la senal (ver mas abajo)
 
-    start_idx = max(cfg.sma_slow, cfg.momentum_lookback_days, cfg.atr_period) + 1
+    # Si el filtro de cercania al maximo de 52 semanas esta activo, incluye
+    # 252 (igual que from_high_s, ver pct_from_high): sin esto, el primer
+    # tramo del backtest podia evaluar near_high_ok con fh todavia NaN (no
+    # hay 252 dias previos), y un NaN se trata como "sin dato, no bloquea" --
+    # dejaba pasar entradas en ese tramo inicial sin que el filtro las
+    # hubiera evaluado de verdad. Con el filtro apagado (near_high_ok siempre
+    # True) no hace falta esperar esos 252 dias: nada en la entrada depende
+    # de fh.
+    near_high_min_days = 252 if cfg.near_high_filter_enabled else 0
+    start_idx = max(cfg.sma_slow, cfg.momentum_lookback_days, cfg.atr_period, near_high_min_days) + 1
     for i in range(start_idx, len(bars)):
         date = bars.index[i]
         price = float(close.iloc[i])
@@ -222,10 +240,10 @@ def _simulate_symbol(
             held_days = i - entry_idx
             hit_stop = low_price <= stop_price
             timed_out = held_days >= cfg.max_holding_days
-            score_today = score_series.get(date)
-            score_exit = score_today is not None and not pd.isna(score_today) and score_today <= cfg.backtest_score_exit_threshold
-            if hit_stop or timed_out or score_exit:
-                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "score_exit")
+            sma_fast_today = sma_fast_s.iloc[i]
+            trend_broke = not pd.isna(sma_fast_today) and price < sma_fast_today
+            if hit_stop or timed_out or trend_broke:
+                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "trend_break")
                 # Si hubo gap por debajo del stop, el fill realista es el open
                 # (peor que el stop); si no, se asume fill al precio del stop.
                 raw_exit_price = min(open_price, stop_price) if hit_stop else price
@@ -268,8 +286,9 @@ def _simulate_symbol(
             or pd.isna(fh)
             or fh >= -cfg.max_pct_below_52w_high
         )
+        liquidity_ok = dollar_volume_s.iloc[i] >= cfg.min_avg_dollar_volume
 
-        if regime_ok and near_high_ok:
+        if regime_ok and near_high_ok and liquidity_ok:
             pending_entry_atr = atr_s.iloc[i]
 
     return trades
@@ -341,21 +360,25 @@ def _simulate_symbol_opportunistic(
     marks_by_trade_id: dict | None = None,
 ) -> list[BacktestTrade]:
     """Misma logica score-driven que _simulate_symbol (ver ese docstring para
-    el detalle de fills/stop-loss/comision/slippage), aplicada a Oportunista:
-    a diferencia de Momentum, las 4 condiciones booleanas originales
-    (momentum corto positivo, RSI en zona de recuperacion, volatilidad
-    minima, espacio de crecimiento) ya son, cada una, un componente del score
-    (ver _opportunistic_raw_components) -- no quedan gates booleanos aparte
-    del umbral de score, a diferencia de Momentum (regimen/52 semanas, que no
-    son parte de su score).
+    el detalle de fills/stop-loss/comision/slippage/salida), aplicada a
+    Oportunista: a diferencia de Momentum, las 4 condiciones booleanas
+    originales (momentum corto positivo, RSI en zona de recuperacion,
+    volatilidad minima, espacio de crecimiento) ya son, cada una, un
+    componente del score (ver _opportunistic_raw_components) -- el unico gate
+    booleano aparte del umbral de score es la liquidez minima (igual que
+    Momentum, que tampoco la incluye en su score).
 
-    Entra cuando score_series supera opp.backtest_score_entry_threshold; sale
-    por stop-loss, tiempo maximo en la posicion, o porque el score cayo por
-    debajo de opp.backtest_score_exit_threshold (reemplaza la vieja salida
-    por RSI sobrecomprado: el score ya incluye RSI y mas)."""
+    Entra cuando score_series supera opp.backtest_score_entry_threshold y la
+    liquidez minima lo permite; sale por stop-loss, tiempo maximo en la
+    posicion, o ruptura de tendencia (el cierre cae por debajo de
+    cfg.sma_fast, la MISMA SMA global que usa _check_fund_exit en main.py
+    para TODAS las estrategias, Oportunista incluida: el monitor de salida en
+    vivo no es especifico por estrategia)."""
     opp = cfg.opportunistic
     close = bars["Close"]
     atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
+    sma_fast_s = sma(close, cfg.sma_fast)
+    dollar_volume_s = bars["Volume"].rolling(20, min_periods=1).mean() * close
 
     notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
 
@@ -387,12 +410,10 @@ def _simulate_symbol_opportunistic(
             held_days = i - entry_idx
             hit_stop = low_price <= stop_price
             timed_out = held_days >= opp.max_holding_days
-            score_today = score_series.get(date)
-            score_exit = (
-                score_today is not None and not pd.isna(score_today) and score_today <= opp.backtest_score_exit_threshold
-            )
-            if hit_stop or timed_out or score_exit:
-                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "score_exit")
+            sma_fast_today = sma_fast_s.iloc[i]
+            trend_broke = not pd.isna(sma_fast_today) and price < sma_fast_today
+            if hit_stop or timed_out or trend_broke:
+                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "trend_break")
                 raw_exit_price = min(open_price, stop_price) if hit_stop else price
 
                 entry_fill = entry_price * (1 + cfg.slippage_pct / 100)
@@ -424,6 +445,9 @@ def _simulate_symbol_opportunistic(
 
         score_today = score_series.get(date)
         if score_today is None or pd.isna(score_today) or score_today < opp.backtest_score_entry_threshold:
+            continue
+
+        if dollar_volume_s.iloc[i] < cfg.min_avg_dollar_volume:
             continue
 
         pending_entry_atr = atr_s.iloc[i]

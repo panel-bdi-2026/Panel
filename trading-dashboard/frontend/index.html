@@ -822,9 +822,7 @@ const OPPORTUNISTIC_FIELDS = [
   { key:'score_weight_macd_turn', label:'Peso: giro de MACD', type:'number', min:0, group:'opportunistic' },
   { key:'score_weight_sector_relative_strength', label:'Peso: fuerza relativa vs. sector', type:'number', min:0, group:'opportunistic' },
   { key:'backtest_score_entry_threshold', label:'Umbral de score de entrada (backtest y auto-trading en vivo)', type:'number', min:0, max:100, group:'opportunistic',
-    hint:'Score (0-100 percentil) a partir del cual el backtest simula una entrada. También dispara el auto-trading en el escaneo en vivo si está activo.' },
-  { key:'backtest_score_exit_threshold', label:'Umbral de score de salida (backtest)', type:'number', min:0, max:100, group:'opportunistic',
-    hint:'Score (0-100 percentil) por debajo del cual el backtest simula una salida (además de stop-loss o tiempo máximo, lo que ocurra primero).' },
+    hint:'Score (0-100 percentil) a partir del cual el backtest simula una entrada. También dispara el auto-trading en el escaneo en vivo si está activo. La salida no usa score: sale por stop-loss, tiempo máximo o ruptura de tendencia, igual que la cuenta en vivo.' },
 ];
 
 const LONG_TERM_FIELDS = [

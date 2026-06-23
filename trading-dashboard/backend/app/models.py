@@ -213,7 +213,7 @@ class BacktestTrade(BaseModel):
     entry_price: float
     exit_price: float
     return_pct: float
-    exit_reason: str  # stop_loss | max_holding_days | score_exit
+    exit_reason: str  # stop_loss | max_holding_days | trend_break
     # Alpha de ESTA operacion vs el benchmark (cfg.benchmark_symbol): return_pct
     # menos lo que hizo el benchmark close-a-close en la misma ventana exacta
     # entry_date->exit_date (no el periodo completo del backtest, que es lo

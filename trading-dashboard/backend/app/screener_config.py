@@ -161,15 +161,15 @@ class OpportunisticConfig(BaseModel):
 
     # Backtest score-driven (ver backtest.py): reemplaza el AND booleano de
     # filtros tecnicos por el mismo score percentil cross-sectional que usa
-    # el scan en vivo (contra el resto del universo, ese mismo dia). Entra
-    # cuando el score supera backtest_score_entry_threshold y sale cuando cae
-    # por debajo de backtest_score_exit_threshold (o por stop-loss/tiempo
-    # maximo, lo que ocurra primero). Mismo umbral se usa como gatillo de
-    # auto-trading en el scan en vivo (ver _live_score_entry_threshold en
-    # main.py): una sola fuente de verdad para "que tan bueno es lo bastante
-    # bueno" en esta estrategia, en vez de duplicar el numero.
+    # el scan en vivo (contra el resto del universo, ese mismo dia) para
+    # decidir la ENTRADA. La salida no usa score (sale por stop-loss, tiempo
+    # maximo o ruptura de tendencia, igual que _check_fund_exit en main.py:
+    # no existe una salida por score en la cuenta en vivo). Mismo umbral se
+    # usa como gatillo de auto-trading en el scan en vivo (ver
+    # _live_score_entry_threshold en main.py): una sola fuente de verdad para
+    # "que tan bueno es lo bastante bueno" en esta estrategia, en vez de
+    # duplicar el numero.
     backtest_score_entry_threshold: float = 57.7
-    backtest_score_exit_threshold: float = 38.5
 
 
 class LongTermConfig(BaseModel):
@@ -318,15 +318,15 @@ class ScreenerConfig(BaseModel):
     score_weight_bollinger: float = 0.0714
     score_weight_sector_relative_strength: float = 0.1429
 
-    # Backtest score-driven (ver backtest.py): mismo mecanismo que el de
-    # OpportunisticConfig.backtest_score_entry_threshold/_exit_threshold.
-    # regime_filter y near_high_filter NO son parte del score (son gates
-    # booleanos puros, ver screener.py) y siguen aplicandose ademas del
-    # umbral de score, igual que en el scan en vivo. Mismo umbral se usa
-    # como gatillo de auto-trading en el scan en vivo (ver
+    # Backtest score-driven (ver backtest.py): mismo mecanismo que
+    # OpportunisticConfig.backtest_score_entry_threshold, solo para la
+    # ENTRADA. regime_filter, near_high_filter y la liquidez minima NO son
+    # parte del score (son gates booleanos puros, ver screener.py) y siguen
+    # aplicandose ademas del umbral de score, igual que en el scan en vivo.
+    # La salida no usa score (ver _simulate_symbol en backtest.py). Mismo
+    # umbral se usa como gatillo de auto-trading en el scan en vivo (ver
     # _live_score_entry_threshold en main.py).
     backtest_score_entry_threshold: float = 57.1
-    backtest_score_exit_threshold: float = 39.3
 
     # Volumen promedio en DOLARES (precio x acciones), no en cantidad de
     # acciones: una accion barata puede superar un umbral de acciones y

@@ -65,9 +65,9 @@ def _summary_to_dict(summary) -> dict:
         "sharpe_ratio": summary.sharpe_ratio,
         "avg_exposure_pct": summary.avg_exposure_pct,
         # Desglose por que cerro cada operacion (stop_loss/max_holding_days/
-        # score_exit, ver BacktestTrade.exit_reason): diagnostico para saber
-        # que tocar a continuacion (ATR del stop, max_holding_days, o el
-        # umbral de salida por score) en vez de ajustar a ciegas. Viene de
+        # trend_break, ver BacktestTrade.exit_reason): diagnostico para saber
+        # que tocar a continuacion (ATR del stop, max_holding_days, o la SMA
+        # rapida de la ruptura de tendencia) en vez de ajustar a ciegas. Viene de
         # summary.exit_reason_counts (calculado en backtest.py sobre TODAS las
         # operaciones), no de summary.trades (que se trunca a las ultimas 50).
         "exit_reason_counts": dict(summary.exit_reason_counts),
