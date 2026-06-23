@@ -20,6 +20,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+PYTHON=".venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+    echo "No se encontro $PYTHON (venv del backend) -- crealo con 'python3 -m venv .venv && .venv/bin/pip install -r requirements.txt' (ver trading-dashboard/deploy/README.md, Paso 5)." >&2
+    exit 1
+fi
+
 if [ "$#" -lt 2 ]; then
     echo "Uso: run_experiment.sh <etiqueta_despues> <ruta_screener_despues.yaml> [etiqueta_antes] [ruta_screener_antes.yaml]"
     exit 1
@@ -31,12 +37,12 @@ LABEL_BEFORE="${3:-baseline}"
 YAML_BEFORE="${4:-screener.yaml}"
 
 echo "=== ANTES: corriendo backtest ($LABEL_BEFORE, $YAML_BEFORE) ==="
-python scripts/backtest_snapshot.py "$LABEL_BEFORE" "$YAML_BEFORE"
+"$PYTHON" scripts/backtest_snapshot.py "$LABEL_BEFORE" "$YAML_BEFORE"
 
 echo
 echo "=== DESPUES: corriendo backtest ($LABEL_AFTER, $YAML_AFTER) ==="
-python scripts/backtest_snapshot.py "$LABEL_AFTER" "$YAML_AFTER"
+"$PYTHON" scripts/backtest_snapshot.py "$LABEL_AFTER" "$YAML_AFTER"
 
 echo
 echo "=== COMPARACION ==="
-python scripts/compare_backtest_snapshots.py "/tmp/backtest_${LABEL_BEFORE}.json" "/tmp/backtest_${LABEL_AFTER}.json"
+"$PYTHON" scripts/compare_backtest_snapshots.py "/tmp/backtest_${LABEL_BEFORE}.json" "/tmp/backtest_${LABEL_AFTER}.json"

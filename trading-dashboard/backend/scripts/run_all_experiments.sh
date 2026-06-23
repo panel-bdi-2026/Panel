@@ -23,6 +23,12 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+PYTHON=".venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+    echo "No se encontro $PYTHON (venv del backend) -- crealo con 'python3 -m venv .venv && .venv/bin/pip install -r requirements.txt' (ver trading-dashboard/deploy/README.md, Paso 5)." >&2
+    exit 1
+fi
+
 SUMMARY="/tmp/experiments_summary.txt"
 : > "$SUMMARY"
 
@@ -33,7 +39,7 @@ run_step() {
 }
 
 echo "=== BASELINE: corriendo backtest (screener.yaml) ===" | tee -a "$SUMMARY"
-run_step python scripts/backtest_snapshot.py baseline screener.yaml
+run_step "$PYTHON" scripts/backtest_snapshot.py baseline screener.yaml
 
 shopt -s nullglob
 experiments=(scripts/experiments/*.yaml)
@@ -47,14 +53,14 @@ for path in "${experiments[@]}"; do
     label="$(basename "$path" .yaml)"
     echo | tee -a "$SUMMARY"
     echo "=== ESCENARIO '$label' ($path): corriendo backtest ===" | tee -a "$SUMMARY"
-    run_step python scripts/backtest_snapshot.py "$label" "$path"
+    run_step "$PYTHON" scripts/backtest_snapshot.py "$label" "$path"
 done
 
 for path in "${experiments[@]}"; do
     label="$(basename "$path" .yaml)"
     echo | tee -a "$SUMMARY"
     echo "=== COMPARACION: baseline vs '$label' ===" | tee -a "$SUMMARY"
-    run_step python scripts/compare_backtest_snapshots.py /tmp/backtest_baseline.json "/tmp/backtest_${label}.json"
+    run_step "$PYTHON" scripts/compare_backtest_snapshots.py /tmp/backtest_baseline.json "/tmp/backtest_${label}.json"
 done
 
 echo | tee -a "$SUMMARY"
