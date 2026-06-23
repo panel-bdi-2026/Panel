@@ -312,7 +312,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
           <label class="fl">Stop-loss (obligatorio en compras según reglas)</label>
           <input id="f-stop" class="fi" type="number" min="0" step="any">
         </div>
-        <button class="btn-submit" onclick="submitOrder()">Enviar orden</button>
+        <button class="btn-submit" id="submitOrderBtn" onclick="submitOrder()">Enviar orden</button>
         <div class="violations" id="violationsBox"></div>
         <p class="muted-sm" style="margin-top:10px">
           Toda orden pasa primero por el motor de reglas (<code>rules.yaml</code>). Si la
@@ -1373,6 +1373,9 @@ async function submitOrder(){
   if(!order.symbol || !order.quantity){ toast('Completa símbolo y cantidad'); return; }
   if(!confirmLiveAction(`¿Confirmás enviar ${order.side} ${order.quantity} ${order.symbol}?`)) return;
 
+  const submitBtn = document.getElementById('submitOrderBtn');
+  if(submitBtn.disabled) return;  // ya hay un envío en curso: evita duplicar por doble click
+  submitBtn.disabled = true;
   try{
     const result = await api('/api/orders', { method:'POST', body: order, auth:true });
     if(result.status === 'pending_approval'){
@@ -1391,6 +1394,8 @@ async function submitOrder(){
     } else {
       toast('Error: ' + e.message);
     }
+  }finally{
+    submitBtn.disabled = false;
   }
 }
 

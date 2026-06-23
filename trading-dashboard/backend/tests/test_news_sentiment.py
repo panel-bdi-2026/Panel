@@ -159,9 +159,9 @@ def test_get_news_sentiment_ttl_expired_refetches(with_api_key, monkeypatch):
     )
 
     get_news_sentiment("AAPL")
-    timestamp, cached = news_sentiment_module._cache["AAPL"]
+    timestamp, cached, ok = news_sentiment_module._cache["AAPL"]
     expired = timestamp - news_sentiment_module._CACHE_TTL_SECONDS - 1
-    news_sentiment_module._cache["AAPL"] = (expired, cached)
+    news_sentiment_module._cache["AAPL"] = (expired, cached, ok)
 
     call_count = {"n": 0}
 
@@ -188,6 +188,56 @@ def test_get_news_sentiment_caches_none_result_too(with_api_key, monkeypatch):
     get_news_sentiment("GHOST")
     get_news_sentiment("GHOST")
     assert calls["n"] == 1
+
+
+def test_get_news_sentiment_genuine_none_uses_full_ttl(with_api_key, monkeypatch):
+    """Sin titulares (sin excepcion, dato real): el None cacheado debe seguir
+    valiendo por las 6hs completas, no por el TTL corto de falla."""
+    monkeypatch.setattr(news_sentiment_module, "_fetch_headlines", lambda symbol: [])
+    get_news_sentiment("GHOST")
+    cached_at, value, ok = news_sentiment_module._cache["GHOST"]
+    assert ok is True
+
+    news_sentiment_module._cache["GHOST"] = (
+        cached_at - news_sentiment_module._FAILURE_CACHE_TTL_SECONDS - 1, value, ok,
+    )
+
+    calls = {"n": 0}
+    monkeypatch.setattr(news_sentiment_module, "_fetch_headlines", lambda symbol: calls.update(n=calls["n"] + 1) or [])
+    get_news_sentiment("GHOST")
+    assert calls["n"] == 0
+
+
+def test_get_news_sentiment_failure_uses_short_ttl_for_retry(with_api_key, monkeypatch):
+    """Una excepcion transitoria de la API de Claude (rate limit, timeout) no
+    debe quedar pegada en cache por las 6hs completas: pasado el TTL corto de
+    falla (pero todavia dentro del TTL largo de exito), una nueva llamada
+    debe reintentar en vez de devolver el None cacheado."""
+    monkeypatch.setattr(news_sentiment_module, "_fetch_headlines", lambda symbol: ["algo"])
+
+    def boom(symbol, headlines):
+        raise RuntimeError("rate limited")
+
+    monkeypatch.setattr(news_sentiment_module, "_call_claude", boom)
+    assert get_news_sentiment("AAPL") is None
+
+    cached_at, value, ok = news_sentiment_module._cache["AAPL"]
+    assert ok is False
+
+    news_sentiment_module._cache["AAPL"] = (
+        cached_at - news_sentiment_module._FAILURE_CACHE_TTL_SECONDS - 1, value, ok,
+    )
+
+    call_count = {"n": 0}
+
+    def fake_call(symbol, headlines):
+        call_count["n"] += 1
+        return NewsSentiment(sentiment="neutral", summary="Recupero tras la falla.")
+
+    monkeypatch.setattr(news_sentiment_module, "_call_claude", fake_call)
+    result = get_news_sentiment("AAPL")
+    assert call_count["n"] == 1
+    assert result.sentiment == "neutral"
 
 
 # --- apply_news_sentiment_adjustment ----------------------------------------

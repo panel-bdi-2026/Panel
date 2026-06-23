@@ -15,7 +15,13 @@ from .models import SignalResult
 # cache mas agresivo que el de fundamentals (24hs) no haria falta, pero uno
 # mas corto que ese tampoco se justifica solo para "noticias mas frescas".
 _CACHE_TTL_SECONDS = 6 * 3600
-_cache: dict[str, tuple[float, "NewsSentiment | None"]] = {}
+# Si _call_claude fallo (rate limit, timeout, API key invalida transitoriamente),
+# el motivo mas probable es pasajero, no "sin sentimiento": cachear ese None
+# por las 6hs completas lo deja sin reintentar toda esa ventana por un fallo
+# puntual. TTL corto solo para esa rama; "sin titulares" (sin excepcion) sigue
+# usando el TTL largo, igual que get_fundamentals/get_next_earnings_date.
+_FAILURE_CACHE_TTL_SECONDS = 15 * 60
+_cache: dict[str, tuple[float, "NewsSentiment | None", bool]] = {}  # (timestamp, value, ok)
 
 _MODEL = "claude-haiku-4-5"
 # Mas alla de unos pocos titulares no suma precision a la clasificacion y
@@ -74,16 +80,19 @@ def _call_claude(symbol: str, headlines: list[str]) -> NewsSentiment:
     return response.parsed_output
 
 
-def _classify(symbol: str, headlines: list[str]) -> Optional[NewsSentiment]:
+def _classify(symbol: str, headlines: list[str]) -> tuple[Optional[NewsSentiment], bool]:
+    """Devuelve (resultado, ok). ok=False marca que _call_claude exploto (API
+    key invalida, rate limit, timeout, respuesta que no matchea el schema,
+    etc.), para que get_news_sentiment lo cachee con el TTL corto de falla en
+    vez del largo: ninguno de esos motivos amerita que un scan completo falle
+    por una feature opcional de costo extra, pero tampoco que un fallo
+    pasajero quede pegado en cache por 6hs."""
     if not headlines:
-        return None
+        return None, True
     try:
-        return _call_claude(symbol, headlines)
+        return _call_claude(symbol, headlines), True
     except Exception:
-        # Fail-safe: API key invalida, rate limit, timeout, respuesta que no
-        # matchea el schema, etc. -- ninguno de estos motivos amerita que un
-        # scan completo falle por una feature opcional de costo extra.
-        return None
+        return None, False
 
 
 def get_news_sentiment(symbol: str, force: bool = False) -> Optional[NewsSentiment]:
@@ -102,12 +111,14 @@ def get_news_sentiment(symbol: str, force: bool = False) -> Optional[NewsSentime
     key = symbol.upper()
     now = time.time()
     cached = _cache.get(key)
-    if not force and cached and now - cached[0] < _CACHE_TTL_SECONDS:
-        return cached[1]
+    if not force and cached:
+        ttl = _CACHE_TTL_SECONDS if cached[2] else _FAILURE_CACHE_TTL_SECONDS
+        if now - cached[0] < ttl:
+            return cached[1]
 
     headlines = _fetch_headlines(key)
-    result = _classify(key, headlines)
-    _cache[key] = (now, result)
+    result, ok = _classify(key, headlines)
+    _cache[key] = (now, result, ok)
     return result
 
 

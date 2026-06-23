@@ -2,7 +2,13 @@ import pandas as pd
 import pytest
 
 from app import market_data as market_data_module
-from app.market_data import MarketDataError, get_daily_bars, is_bars_cached
+from app.market_data import (
+    MarketDataError,
+    get_daily_bars,
+    get_fundamentals,
+    get_next_earnings_date,
+    is_bars_cached,
+)
 
 
 def _bars(n=5):
@@ -28,8 +34,12 @@ class _FakeTicker:
 @pytest.fixture(autouse=True)
 def _clear_cache():
     market_data_module._cache.clear()
+    market_data_module._earnings_cache.clear()
+    market_data_module._fundamentals_cache.clear()
     yield
     market_data_module._cache.clear()
+    market_data_module._earnings_cache.clear()
+    market_data_module._fundamentals_cache.clear()
 
 
 def test_get_daily_bars_returns_data_on_first_success(monkeypatch):
@@ -163,3 +173,130 @@ def test_is_bars_cached_false_after_ttl_expires(monkeypatch):
     expired = timestamp - market_data_module._CACHE_TTL_SECONDS - 1
     market_data_module._cache[("AAPL", 100)] = (expired, df)
     assert is_bars_cached("AAPL", 100) is False
+
+
+# ---------------------------------------------------------------------------
+# get_next_earnings_date / get_fundamentals: TTL corto para fallos
+# transitorios vs TTL largo (24hs) para "sin dato" genuino.
+# ---------------------------------------------------------------------------
+
+class _FakeEarningsTicker:
+    def __init__(self, symbol, dates=None, error=None):
+        self._dates = dates
+        self._error = error
+
+    def get_earnings_dates(self, limit=12):
+        if self._error is not None:
+            raise self._error
+        return self._dates
+
+
+class _FakeInfoTicker:
+    def __init__(self, symbol, info=None, error=None):
+        self._info = info
+        self._error = error
+
+    def get_info(self):
+        if self._error is not None:
+            raise self._error
+        return self._info
+
+
+def test_get_next_earnings_date_caches_genuine_none_for_full_ttl(monkeypatch):
+    """Sin earnings futuros (pero el fetch funciono): el None es un dato
+    real, amerita el cache largo de 24hs."""
+    call_count = {"n": 0}
+
+    def fake_ticker(symbol):
+        call_count["n"] += 1
+        return _FakeEarningsTicker(symbol, dates=None)
+
+    monkeypatch.setattr(market_data_module.yf, "Ticker", fake_ticker)
+
+    assert get_next_earnings_date("AAPL") is None
+    cached_at, value, ok = market_data_module._earnings_cache["AAPL"]
+    assert ok is True
+
+    # Paso el TTL corto de falla, pero todavia dentro del TTL largo de exito:
+    # no debe reintentar porque el resultado anterior fue exitoso (ok=True).
+    market_data_module._earnings_cache["AAPL"] = (
+        cached_at - market_data_module._EARNINGS_FAILURE_CACHE_TTL_SECONDS - 1, value, ok,
+    )
+    get_next_earnings_date("AAPL")
+    assert call_count["n"] == 1
+
+
+def test_get_next_earnings_date_retries_after_short_ttl_on_failure(monkeypatch):
+    """Una excepcion transitoria (rate limit, timeout) no debe quedar
+    cacheada por las 24hs completas: pasado el TTL corto de falla, una nueva
+    llamada debe reintentar en vez de devolver el None cacheado indefinido."""
+    monkeypatch.setattr(
+        market_data_module.yf, "Ticker",
+        lambda symbol: _FakeEarningsTicker(symbol, error=RuntimeError("rate limited")),
+    )
+
+    assert get_next_earnings_date("AAPL") is None
+    cached_at, value, ok = market_data_module._earnings_cache["AAPL"]
+    assert ok is False
+
+    market_data_module._earnings_cache["AAPL"] = (
+        cached_at - market_data_module._EARNINGS_FAILURE_CACHE_TTL_SECONDS - 1, value, ok,
+    )
+
+    call_count = {"n": 0}
+
+    def recovered_ticker(symbol):
+        call_count["n"] += 1
+        return _FakeEarningsTicker(symbol, dates=None)
+
+    monkeypatch.setattr(market_data_module.yf, "Ticker", recovered_ticker)
+    get_next_earnings_date("AAPL")
+    assert call_count["n"] == 1
+
+
+def test_get_fundamentals_caches_genuine_empty_info_for_full_ttl(monkeypatch):
+    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeInfoTicker(symbol, info={}))
+
+    get_fundamentals("AAPL")
+    cached_at, value, ok = market_data_module._fundamentals_cache["AAPL"]
+    assert ok is True
+
+    market_data_module._fundamentals_cache["AAPL"] = (
+        cached_at - market_data_module._FUNDAMENTALS_FAILURE_CACHE_TTL_SECONDS - 1, value, ok,
+    )
+
+    call_count = {"n": 0}
+
+    def fake_ticker(symbol):
+        call_count["n"] += 1
+        return _FakeInfoTicker(symbol, info={})
+
+    monkeypatch.setattr(market_data_module.yf, "Ticker", fake_ticker)
+    get_fundamentals("AAPL")
+    assert call_count["n"] == 0
+
+
+def test_get_fundamentals_retries_after_short_ttl_on_failure(monkeypatch):
+    monkeypatch.setattr(
+        market_data_module.yf, "Ticker",
+        lambda symbol: _FakeInfoTicker(symbol, error=RuntimeError("rate limited")),
+    )
+
+    get_fundamentals("AAPL")
+    cached_at, value, ok = market_data_module._fundamentals_cache["AAPL"]
+    assert ok is False
+
+    market_data_module._fundamentals_cache["AAPL"] = (
+        cached_at - market_data_module._FUNDAMENTALS_FAILURE_CACHE_TTL_SECONDS - 1, value, ok,
+    )
+
+    call_count = {"n": 0}
+
+    def recovered_ticker(symbol):
+        call_count["n"] += 1
+        return _FakeInfoTicker(symbol, info={"trailingPE": 20.0})
+
+    monkeypatch.setattr(market_data_module.yf, "Ticker", recovered_ticker)
+    result = get_fundamentals("AAPL")
+    assert call_count["n"] == 1
+    assert result["trailing_pe"] == 20.0

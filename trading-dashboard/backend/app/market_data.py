@@ -15,14 +15,23 @@ _cache: dict[tuple[str, int], tuple[float, pd.DataFrame]] = {}
 # La fecha de earnings no cambia de un minuto a otro: cache mas largo que el
 # de las barras de precio para no consumir cuota de la API en cada scan.
 _EARNINGS_CACHE_TTL_SECONDS = 24 * 3600
-_earnings_cache: dict[str, tuple[float, "date | None"]] = {}
+# Si el fetch fallo (excepcion: rate limit, timeout, hiccup de red), el motivo
+# mas probable es transitorio, no "este simbolo no tiene earnings" -- cachear
+# ese None por las mismas 24hs que un resultado realmente vacio lo deja sin
+# reintentar todo un dia por un fallo pasajero. Mismo TTL corto que el cache
+# de barras (15 min) para ese caso puntual.
+_EARNINGS_FAILURE_CACHE_TTL_SECONDS = _CACHE_TTL_SECONDS
+_earnings_cache: dict[str, tuple[float, "date | None", bool]] = {}  # (timestamp, value, ok)
 
 # Los fundamentals (PE, ROE, crecimiento, dividend yield, etc.) cambian a lo
 # sumo trimestralmente: mismo cache largo que earnings, por la misma razon
 # (no vale la pena pagar la cuota de la API en cada scan por un dato que casi
 # nunca cambia de un dia a otro).
 _FUNDAMENTALS_CACHE_TTL_SECONDS = 24 * 3600
-_fundamentals_cache: dict[str, tuple[float, dict]] = {}
+# Mismo motivo que _EARNINGS_FAILURE_CACHE_TTL_SECONDS: una excepcion en
+# get_info() no amerita el cache largo de 24hs.
+_FUNDAMENTALS_FAILURE_CACHE_TTL_SECONDS = _CACHE_TTL_SECONDS
+_fundamentals_cache: dict[str, tuple[float, dict, bool]] = {}  # (timestamp, value, ok)
 
 
 class _KeyedLocks:
@@ -139,6 +148,10 @@ def is_bars_cached(symbol: str, lookback_days: int) -> bool:
     return cached is not None and time.time() - cached[0] < _CACHE_TTL_SECONDS
 
 
+def _earnings_cache_ttl(ok: bool) -> float:
+    return _EARNINGS_CACHE_TTL_SECONDS if ok else _EARNINGS_FAILURE_CACHE_TTL_SECONDS
+
+
 def get_next_earnings_date(symbol: str, force: bool = False) -> "date | None":
     """Proxima fecha de earnings estimada para `symbol`, o None si no se pudo
     determinar (simbolo sin cobertura, limite de la API gratuita, etc.). El
@@ -147,15 +160,16 @@ def get_next_earnings_date(symbol: str, force: bool = False) -> "date | None":
     key = symbol.upper()
     now = time.time()
     cached = _earnings_cache.get(key)
-    if not force and cached and now - cached[0] < _EARNINGS_CACHE_TTL_SECONDS:
+    if not force and cached and now - cached[0] < _earnings_cache_ttl(cached[2]):
         return cached[1]
 
     with _earnings_locks.get(key):
         now = time.time()
         cached = _earnings_cache.get(key)
-        if not force and cached and now - cached[0] < _EARNINGS_CACHE_TTL_SECONDS:
+        if not force and cached and now - cached[0] < _earnings_cache_ttl(cached[2]):
             return cached[1]
 
+        ok = True
         try:
             # get_earnings_dates devuelve fechas pasadas y futuras mezcladas, sin
             # garantia de orden; con limit=1 se podia terminar tomando una fecha
@@ -170,8 +184,9 @@ def get_next_earnings_date(symbol: str, force: bool = False) -> "date | None":
                 next_date = min(future_dates) if future_dates else None
         except Exception:
             next_date = None
+            ok = False
 
-        _earnings_cache[key] = (now, next_date)
+        _earnings_cache[key] = (now, next_date, ok)
         return next_date
 
 
@@ -220,25 +235,34 @@ def get_fundamentals(symbol: str, force: bool = False) -> dict:
     Igual que get_next_earnings_date: si yfinance falla o no devuelve nada
     util, se cachea un dict de Nones en vez de reintentar en cada llamada
     (la causa mas comun es falta de cobertura para ese simbolo, no un fallo
-    transitorio, a diferencia de las barras de precio).
+    transitorio, a diferencia de las barras de precio). Una excepcion si
+    recibe un TTL corto en vez del de 24hs, ya que esa rama si es mas
+    probablemente un fallo transitorio (rate limit, timeout) que falta de
+    cobertura real.
     """
     key = symbol.upper()
     now = time.time()
     cached = _fundamentals_cache.get(key)
-    if not force and cached and now - cached[0] < _FUNDAMENTALS_CACHE_TTL_SECONDS:
-        return cached[1]
+    if not force and cached:
+        ttl = _FUNDAMENTALS_CACHE_TTL_SECONDS if cached[2] else _FUNDAMENTALS_FAILURE_CACHE_TTL_SECONDS
+        if now - cached[0] < ttl:
+            return cached[1]
 
     with _fundamentals_locks.get(key):
         now = time.time()
         cached = _fundamentals_cache.get(key)
-        if not force and cached and now - cached[0] < _FUNDAMENTALS_CACHE_TTL_SECONDS:
-            return cached[1]
+        if not force and cached:
+            ttl = _FUNDAMENTALS_CACHE_TTL_SECONDS if cached[2] else _FUNDAMENTALS_FAILURE_CACHE_TTL_SECONDS
+            if now - cached[0] < ttl:
+                return cached[1]
 
+        ok = True
         try:
             info = yf.Ticker(symbol).get_info() or {}
         except Exception:
             info = {}
+            ok = False
 
         result = {name: info.get(raw_key) for name, raw_key in _INFO_FIELD_MAP.items()}
-        _fundamentals_cache[key] = (now, result)
+        _fundamentals_cache[key] = (now, result, ok)
         return result

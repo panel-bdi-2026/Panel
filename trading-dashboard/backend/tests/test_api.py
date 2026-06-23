@@ -1147,3 +1147,57 @@ def test_scan_signals_general_view_includes_live_overlay(monkeypatch):
     assert result["winning_strategy_id"] == "momentum"
     assert result["is_hot"] is True
     assert result["last_price"] == 200.0
+
+
+# ---------------------------------------------------------------------------
+# lifespan: shutdown debe esperar a que las tareas de background terminen
+# ---------------------------------------------------------------------------
+
+
+def test_lifespan_shutdown_awaits_background_tasks_cancellation(monkeypatch):
+    """cancel() solo pide la cancelacion, no la espera: el shutdown debia
+    hacer gather() de las 7 tareas de background para garantizar que ya
+    terminaron de cancelarse antes de desconectar del broker y salir, en vez
+    de dejarlas 'pending' (cleanup propio sin correr, CancelledError nunca
+    recuperada). Se verifica espiando asyncio.create_task para capturar las
+    tareas reales que crea lifespan y comprobando que estan 'done' apenas
+    termina el `async with`."""
+    async def fake_connect():
+        pass
+
+    monkeypatch.setattr(main_module.broker, "connect", fake_connect)
+    monkeypatch.setattr(main_module.broker, "disconnect", lambda: None)
+
+    async def fake_restore():
+        pass
+
+    monkeypatch.setattr(main_module, "_restore_persisted_mode", fake_restore)
+
+    async def long_running():
+        await asyncio.sleep(100)
+
+    for loop_name in (
+        "_broadcast_loop", "_risk_monitor_loop", "_signal_scan_loop",
+        "_auto_exit_monitor_loop", "_trailing_stop_loop", "_hot_set_loop",
+        "_price_rotation_loop",
+    ):
+        monkeypatch.setattr(main_module, loop_name, long_running)
+
+    created_tasks = []
+    original_create_task = asyncio.create_task
+
+    def spy_create_task(coro, *args, **kwargs):
+        new_task = original_create_task(coro, *args, **kwargs)
+        created_tasks.append(new_task)
+        return new_task
+
+    monkeypatch.setattr(main_module.asyncio, "create_task", spy_create_task)
+
+    async def scenario():
+        async with main_module.lifespan(main_module.app):
+            await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+    assert len(created_tasks) == 7
+    assert all(t.done() for t in created_tasks)

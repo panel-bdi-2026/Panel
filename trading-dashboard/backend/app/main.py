@@ -1036,13 +1036,17 @@ async def lifespan(app: FastAPI):
     hot_set_task = asyncio.create_task(_hot_set_loop())
     price_rotation_task = asyncio.create_task(_price_rotation_loop())
     yield
-    task.cancel()
-    risk_task.cancel()
-    signal_task.cancel()
-    exit_monitor_task.cancel()
-    trailing_stop_task.cancel()
-    hot_set_task.cancel()
-    price_rotation_task.cancel()
+    background_tasks = [
+        task, risk_task, signal_task, exit_monitor_task,
+        trailing_stop_task, hot_set_task, price_rotation_task,
+    ]
+    for background_task in background_tasks:
+        background_task.cancel()
+    # cancel() solo pide la cancelacion; sin esperar a que de verdad terminen,
+    # el proceso puede salir con las tareas todavia pendientes (cleanup propio
+    # de cada loop sin correr, y la CancelledError resultante nunca recuperada
+    # -- asyncio la reporta como "exception was never retrieved").
+    await asyncio.gather(*background_tasks, return_exceptions=True)
     broker.disconnect()
 
 
