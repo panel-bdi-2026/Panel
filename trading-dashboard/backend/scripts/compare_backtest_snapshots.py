@@ -61,6 +61,37 @@ def _compare_strategy(name: str, before: dict, after: dict) -> None:
     if before.get("profit_factor_is_infinite") or after.get("profit_factor_is_infinite"):
         print("  (profit_factor 'infinito' = no hubo operaciones perdedoras en ese periodo)")
 
+    _compare_walk_forward(before.get("walk_forward"), after.get("walk_forward"))
+
+
+def _compare_walk_forward(before: dict | None, after: dict | None) -> None:
+    """Folds consecutivos (misma duracion calendario cada uno, ver
+    run_backtest_walk_forward): si la mejora del periodo completo no se
+    sostiene en folds individuales, es probable que dependa de un tramo
+    puntual favorable en vez de ser una mejora real y consistente."""
+    if not before or not after:
+        return
+    b_folds = before.get("folds", [])
+    a_folds = after.get("folds", [])
+    if not b_folds or not a_folds:
+        return
+    print(f"\n  -- Walk-forward ({before.get('n_folds')} folds) --")
+    for i in range(min(len(b_folds), len(a_folds))):
+        bf, af = b_folds[i], a_folds[i]
+        b_start, b_end = str(bf.get("start_date", ""))[:10], str(bf.get("end_date", ""))[:10]
+        b_ret, a_ret = bf.get("strategy_cumulative_return_pct"), af.get("strategy_cumulative_return_pct")
+        b_ret_str = f"{b_ret:.1f}%" if isinstance(b_ret, (int, float)) else "N/A"
+        a_ret_str = f"{a_ret:.1f}%" if isinstance(a_ret, (int, float)) else "N/A"
+        b_sharpe, a_sharpe = bf.get("sharpe_ratio"), af.get("sharpe_ratio")
+        b_sharpe_str = f"{b_sharpe:.2f}" if isinstance(b_sharpe, (int, float)) else "N/A"
+        a_sharpe_str = f"{a_sharpe:.2f}" if isinstance(a_sharpe, (int, float)) else "N/A"
+        print(
+            f"  Fold {i + 1} ({b_start}..{b_end}): "
+            f"antes {bf.get('total_trades')} ops / ret {b_ret_str} / sharpe {b_sharpe_str}"
+            "   ->   "
+            f"despues {af.get('total_trades')} ops / ret {a_ret_str} / sharpe {a_sharpe_str}"
+        )
+
 
 def main() -> None:
     if len(sys.argv) != 3:

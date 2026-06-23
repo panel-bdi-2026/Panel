@@ -28,7 +28,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.backtest import BacktestError, run_backtest, run_opportunistic_backtest  # noqa: E402
+from app.backtest import (  # noqa: E402
+    BacktestError,
+    run_backtest,
+    run_backtest_walk_forward,
+    run_opportunistic_backtest,
+    run_opportunistic_backtest_walk_forward,
+)
 from app.screener_config import ScreenerConfig  # noqa: E402
 
 
@@ -61,6 +67,13 @@ def _summary_to_dict(summary) -> dict:
     }
 
 
+def _walk_forward_to_dict(result) -> dict:
+    return {
+        "n_folds": result.n_folds,
+        "folds": [fold.model_dump(mode="json") for fold in result.folds],
+    }
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print("Uso: python scripts/backtest_snapshot.py <etiqueta> [ruta_screener.yaml]")
@@ -84,6 +97,13 @@ def main() -> None:
         momentum_summary = run_backtest(cfg)
         results["strategies"]["momentum"] = _summary_to_dict(momentum_summary)
         print(f"[{label}] Momentum: {momentum_summary.total_trades} operaciones.")
+        # Walk-forward reusa los datos de mercado ya cacheados por run_backtest
+        # (mismo cfg.lookback_days): no pega de nuevo a la red, solo resimula.
+        try:
+            momentum_wf = run_backtest_walk_forward(cfg)
+            results["strategies"]["momentum"]["walk_forward"] = _walk_forward_to_dict(momentum_wf)
+        except BacktestError as exc:
+            print(f"[{label}] Momentum walk-forward fallo: {exc}")
     except BacktestError as exc:
         results["strategies"]["momentum"] = {"error": str(exc)}
         print(f"[{label}] Momentum fallo: {exc}")
@@ -93,6 +113,11 @@ def main() -> None:
         opportunistic_summary = run_opportunistic_backtest(cfg)
         results["strategies"]["opportunistic"] = _summary_to_dict(opportunistic_summary)
         print(f"[{label}] Oportunista: {opportunistic_summary.total_trades} operaciones.")
+        try:
+            opportunistic_wf = run_opportunistic_backtest_walk_forward(cfg)
+            results["strategies"]["opportunistic"]["walk_forward"] = _walk_forward_to_dict(opportunistic_wf)
+        except BacktestError as exc:
+            print(f"[{label}] Oportunista walk-forward fallo: {exc}")
     except BacktestError as exc:
         results["strategies"]["opportunistic"] = {"error": str(exc)}
         print(f"[{label}] Oportunista fallo: {exc}")

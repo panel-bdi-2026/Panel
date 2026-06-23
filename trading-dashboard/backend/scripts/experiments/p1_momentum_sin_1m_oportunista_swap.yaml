@@ -1,0 +1,712 @@
+# Configuracion del radar de oportunidades (screener momentum/tecnico).
+# Esto NO ejecuta ordenes: solo rankea candidatos. Cualquier orden que decidas
+# enviar a partir de un candidato pasa igual por rules.yaml / RulesEngine.
+# Ver README.md para el detalle de cada parametro.
+
+# Universo de simbolos a escanear: S&P 500 completo (503 simbolos, incluye las
+# dos clases de algunas compañias) para que el screener identifique
+# oportunidades de forma autonoma en todo el indice, en vez de depender de que
+# vos cargues a mano cuales simbolos seguir. Cortalo o ampliarlo segun tu
+# criterio; uno mas largo tarda mas y consume mas cuota de la API gratuita de
+# datos (ver scan_request_delay_seconds mas abajo). La whitelist de ordenes en
+# rules.yaml se sincroniza automaticamente con esta lista: no hace falta (ni
+# conviene) mantenerla a mano por separado.
+universe:
+  - A
+  - AAPL
+  - ABBV
+  - ABNB
+  - ABT
+  - ACGL
+  - ACN
+  - ADBE
+  - ADI
+  - ADM
+  - ADP
+  - ADSK
+  - AEE
+  - AEP
+  - AES
+  - AFL
+  - AIG
+  - AIZ
+  - AJG
+  - AKAM
+  - ALB
+  - ALGN
+  - ALL
+  - ALLE
+  - AMAT
+  - AMCR
+  - AMD
+  - AME
+  - AMGN
+  - AMP
+  - AMT
+  - AMZN
+  - ANET
+  - AON
+  - AOS
+  - APA
+  - APD
+  - APH
+  - APO
+  - APP
+  - APTV
+  - ARE
+  - ARES
+  - ATO
+  - AVB
+  - AVGO
+  - AVY
+  - AWK
+  - AXON
+  - AXP
+  - AZO
+  - BA
+  - BAC
+  - BALL
+  - BAX
+  - BBY
+  - BDX
+  - BEN
+  - BF-B
+  - BG
+  - BIIB
+  - BKNG
+  - BKR
+  - BLDR
+  - BLK
+  - BMY
+  - BNY
+  - BR
+  - BRK-B
+  - BRO
+  - BSX
+  - BX
+  - BXP
+  - C
+  - CAG
+  - CAH
+  - CARR
+  - CASY
+  - CAT
+  - CB
+  - CBOE
+  - CBRE
+  - CCI
+  - CCL
+  - CDNS
+  - CDW
+  - CEG
+  - CF
+  - CFG
+  - CHD
+  - CHRW
+  - CHTR
+  - CI
+  - CIEN
+  - CINF
+  - CL
+  - CLX
+  - CMCSA
+  - CME
+  - CMG
+  - CMI
+  - CMS
+  - CNC
+  - CNP
+  - COF
+  - COHR
+  - COIN
+  - COO
+  - COP
+  - COR
+  - COST
+  - CPAY
+  - CPB
+  - CPRT
+  - CPT
+  - CRH
+  - CRL
+  - CRM
+  - CRWD
+  - CSCO
+  - CSGP
+  - CSX
+  - CTAS
+  - CTSH
+  - CTVA
+  - CVNA
+  - CVS
+  - CVX
+  - D
+  - DAL
+  - DASH
+  - DD
+  - DDOG
+  - DE
+  - DECK
+  - DELL
+  - DG
+  - DGX
+  - DHI
+  - DHR
+  - DIS
+  - DLR
+  - DLTR
+  - DOC
+  - DOV
+  - DOW
+  - DPZ
+  - DRI
+  - DTE
+  - DUK
+  - DVA
+  - DVN
+  - DXCM
+  - EA
+  - EBAY
+  - ECL
+  - ED
+  - EFX
+  - EG
+  - EIX
+  - EL
+  - ELV
+  - EME
+  - EMR
+  - EOG
+  - EQIX
+  - EQR
+  - EQT
+  - ERIE
+  - ES
+  - ESS
+  - ETN
+  - ETR
+  - EVRG
+  - EW
+  - EXC
+  - EXE
+  - EXPD
+  - EXPE
+  - EXR
+  - F
+  - FANG
+  - FAST
+  - FCX
+  - FDS
+  - FDX
+  - FDXF
+  - FE
+  - FFIV
+  - FICO
+  - FIS
+  - FISV
+  - FITB
+  - FIX
+  - FOX
+  - FOXA
+  - FRT
+  - FSLR
+  - FTNT
+  - FTV
+  - GD
+  - GDDY
+  - GE
+  - GEHC
+  - GEN
+  - GEV
+  - GILD
+  - GIS
+  - GL
+  - GLW
+  - GM
+  - GNRC
+  - GOOG
+  - GOOGL
+  - GPC
+  - GPN
+  - GRMN
+  - GS
+  - GWW
+  - HAL
+  - HAS
+  - HBAN
+  - HCA
+  - HD
+  - HIG
+  - HII
+  - HLT
+  - HON
+  - HOOD
+  - HPE
+  - HPQ
+  - HRL
+  - HSIC
+  - HST
+  - HSY
+  - HUBB
+  - HUM
+  - HWM
+  - IBKR
+  - IBM
+  - ICE
+  - IDXX
+  - IEX
+  - IFF
+  - INCY
+  - INTC
+  - INTU
+  - INVH
+  - IP
+  - IQV
+  - IR
+  - IRM
+  - ISRG
+  - IT
+  - ITW
+  - IVZ
+  - J
+  - JBHT
+  - JBL
+  - JCI
+  - JKHY
+  - JNJ
+  - JPM
+  - KDP
+  - KEY
+  - KEYS
+  - KHC
+  - KIM
+  - KKR
+  - KLAC
+  - KMB
+  - KMI
+  - KO
+  - KR
+  - KVUE
+  - L
+  - LDOS
+  - LEN
+  - LH
+  - LHX
+  - LII
+  - LIN
+  - LITE
+  - LLY
+  - LMT
+  - LNT
+  - LOW
+  - LRCX
+  - LULU
+  - LUV
+  - LVS
+  - LYB
+  - LYV
+  - MA
+  - MAA
+  - MAR
+  - MAS
+  - MCD
+  - MCHP
+  - MCK
+  - MCO
+  - MDLZ
+  - MDT
+  - MET
+  - META
+  - MGM
+  - MKC
+  - MLM
+  - MMM
+  - MNST
+  - MO
+  - MOS
+  - MPC
+  - MPWR
+  - MRK
+  - MRNA
+  - MRSH
+  - MS
+  - MSCI
+  - MSFT
+  - MSI
+  - MTB
+  - MTD
+  - MU
+  - NCLH
+  - NDAQ
+  - NDSN
+  - NEE
+  - NEM
+  - NFLX
+  - NI
+  - NKE
+  - NOC
+  - NOW
+  - NRG
+  - NSC
+  - NTAP
+  - NTRS
+  - NUE
+  - NVDA
+  - NVR
+  - NWS
+  - NWSA
+  - NXPI
+  - O
+  - ODFL
+  - OKE
+  - OMC
+  - "ON"
+  - ORCL
+  - ORLY
+  - OTIS
+  - OXY
+  - PANW
+  - PAYX
+  - PCAR
+  - PCG
+  - PEG
+  - PEP
+  - PFE
+  - PFG
+  - PG
+  - PGR
+  - PH
+  - PHM
+  - PKG
+  - PLD
+  - PLTR
+  - PM
+  - PNC
+  - PNR
+  - PNW
+  - PODD
+  - POOL
+  - PPG
+  - PPL
+  - PRU
+  - PSA
+  - PSKY
+  - PSX
+  - PTC
+  - PWR
+  - PYPL
+  - Q
+  - QCOM
+  - RCL
+  - REG
+  - REGN
+  - RF
+  - RJF
+  - RL
+  - RMD
+  - ROK
+  - ROL
+  - ROP
+  - ROST
+  - RSG
+  - RTX
+  - RVTY
+  - SATS
+  - SBAC
+  - SBUX
+  - SCHW
+  - SHW
+  - SJM
+  - SLB
+  - SMCI
+  - SNA
+  - SNDK
+  - SNPS
+  - SO
+  - SOLV
+  - SPG
+  - SPGI
+  - SRE
+  - STE
+  - STLD
+  - STT
+  - STX
+  - STZ
+  - SW
+  - SWK
+  - SWKS
+  - SYF
+  - SYK
+  - SYY
+  - T
+  - TAP
+  - TDG
+  - TDY
+  - TECH
+  - TEL
+  - TER
+  - TFC
+  - TGT
+  - TJX
+  - TKO
+  - TMO
+  - TMUS
+  - TPL
+  - TPR
+  - TRGP
+  - TRMB
+  - TROW
+  - TRV
+  - TSCO
+  - TSLA
+  - TSN
+  - TT
+  - TTD
+  - TTWO
+  - TXN
+  - TXT
+  - TYL
+  - UAL
+  - UBER
+  - UDR
+  - UHS
+  - ULTA
+  - UNH
+  - UNP
+  - UPS
+  - URI
+  - USB
+  - V
+  - VEEV
+  - VICI
+  - VLO
+  - VLTO
+  - VMC
+  - VRSK
+  - VRSN
+  - VRT
+  - VRTX
+  - VST
+  - VTR
+  - VTRS
+  - VZ
+  - WAB
+  - WAT
+  - WBD
+  - WDAY
+  - WDC
+  - WEC
+  - WELL
+  - WFC
+  - WM
+  - WMB
+  - WMT
+  - WRB
+  - WSM
+  - WST
+  - WTW
+  - WY
+  - WYNN
+  - XEL
+  - XOM
+  - XYL
+  - XYZ
+  - YUM
+  - ZBH
+  - ZBRA
+  - ZTS
+  # Complemento al S&P 500: empresas mas chicas/jovenes de alto potencial de
+  # crecimiento (small/mid-cap), confirmadas individualmente via busqueda web
+  # contra al menos una fuente financiera real para evitar tickers inventados
+  # o deslistados. Ver comentario de _GROWTH_TICKERS en screener_config.py.
+  - ABAT
+  - ACHR
+  - ACMR
+  - ADMA
+  - AEHR
+  - ALRM
+  - AMBA
+  - AMPX
+  - AMRC
+  - AOSL
+  - ASYS
+  - ATLX
+  - AVAV
+  - BB
+  - BKSY
+  - CAMT
+  - CEVA
+  - CHYM
+  - COHU
+  - CRBU
+  - CRCL
+  - CRML
+  - CRNX
+  - CRWV
+  - CURO
+  - ELVA
+  - EOSE
+  - FIVN
+  - FLNC
+  - GDOT
+  - GRC
+  - GWH
+  - ICHR
+  - INO
+  - INOD
+  - IONQ
+  - JOBY
+  - KLIC
+  - KRMD
+  - KTOS
+  - LC
+  - LUNR
+  - MAMA
+  - MDXH
+  - MP
+  - MUX
+  - MWA
+  - NAK
+  - NG
+  - OKLO
+  - OMCL
+  - ONDS
+  - OTLY
+  - OUST
+  - PATH
+  - PVLA
+  - QBTS
+  - QFIN
+  - QLYS
+  - QS
+  - QUBT
+  - RDW
+  - RDWR
+  - RGTI
+  - RKLB
+  - RPAY
+  - RR
+  - RUN
+  - S
+  - SCWX
+  - SERV
+  - SEZL
+  - SGMO
+  - SIDU
+  - SLDP
+  - SOFI
+  - SOUN
+  - STEM
+  - TDC
+  - TERN
+  - TMC
+  - USAR
+  - VKTX
+  - VRNS
+  - WTTR
+  - ZS
+
+# Simbolo contra el que se mide la fuerza relativa (momentum vs el mercado).
+benchmark_symbol: SPY
+
+# Dias de historia (calendario aprox.) que se piden para el scan en vivo.
+lookback_days: 400
+
+# Pausa entre cada simbolo del universo durante un scan (segundos). Con un
+# universo grande (ej. S&P 500 completo) escanear sin pausa manda cientos de
+# pedidos seguidos a la API gratuita de Yahoo Finance, lo que puede gatillar
+# un bloqueo temporal. Subila si ves errores de datos frecuentes en scans
+# completos; bajala (0 esta permitido) si tu universo es chico.
+scan_request_delay_seconds: 0.15
+
+# Filtro de tendencia: solo se considera "en tendencia" si precio > SMA rapida > SMA lenta.
+sma_fast: 20
+sma_slow: 50
+
+# Momentum: retorno (%) en cada ventana, en dias de trading.
+momentum_lookback_days: 63   # ~3 meses
+momentum_short_days: 21      # ~1 mes
+
+# RSI(periodo) y rango "saludable" para considerar continuacion de tendencia
+# (evita comprar sobrecompra extrema o nombres ya rompiendo a la baja).
+rsi_period: 14
+rsi_min: 40
+rsi_max: 75
+
+# Liquidez minima en DOLARES (volumen promedio 20 dias x precio) para no
+# proponer nombres iliquidos en terminos de dinero realmente operado.
+min_avg_dollar_volume: 1000000
+
+# Cuantos candidatos como maximo se consideran "top" en cada scan/backtest.
+top_n: 10
+
+# ATR (Average True Range) usado para sugerir el stop-loss de cada candidato.
+atr_period: 14
+stop_loss_atr_multiplier: 1.5
+
+# Maximo de dias en una posicion antes de cerrarla por tiempo (swing trading:
+# dias a semanas, no mantiene posiciones indefinidamente).
+max_holding_days: 20
+
+# Filtro de regimen: no se sugieren entradas largas si el benchmark esta por
+# debajo de su propia SMA de regimen (mercado en tendencia bajista de fondo).
+regime_filter_enabled: true
+regime_sma_period: 200
+
+# Dias antes de earnings estimados en los que no se sugieren nuevas entradas
+# (gap risk que el stop-loss basado en ATR no cubre).
+earnings_blackout_days: 5
+
+# Filtro de proximidad al maximo de 52 semanas: solo se consideran entradas en
+# simbolos a no mas de max_pct_below_52w_high (%) por debajo de su maximo de 52
+# semanas. Favorece lideres cerca de maximos (breakouts) en vez de nombres ya
+# extendidos a la baja (efecto momentum del "52-week high").
+near_high_filter_enabled: true
+max_pct_below_52w_high: 15.0
+
+# Anos de historia usados al correr un backtest de la estrategia.
+backtest_years: 3
+
+# Costos de transaccion asumidos en el backtest. backtest_assumed_capital_usd
+# es solo una referencia para convertir la comision en % por operacion.
+backtest_assumed_capital_usd: 100000
+commission_per_trade_usd: 1.0
+slippage_pct: 0.05
+
+# Escaneo proactivo en background: si esta habilitado, el backend corre el
+# screener solo cada auto_scan_interval_minutes y arma ordenes de compra en
+# borrador para simbolos que recien empiezan a pasar los filtros. Esas
+# ordenes quedan pendientes de aprobacion manual, nunca se ejecutan solas.
+auto_scan_enabled: false
+auto_scan_interval_minutes: 30
+
+# Tope de ordenes en borrador que el escaneo proactivo puede crear por ciclo
+# (ademas no draftea mas alla de los cupos libres respecto a top_n contando lo
+# que ya esta pendiente). Evita inundar la cola si muchos simbolos pasan a la vez.
+max_auto_drafts_per_cycle: 3
+
+# --- Experimento P1 (analisis momentum/oportunista 2026-06-23) ---
+# No tocar screener.yaml: este archivo es una copia + overrides, pensado para
+# correr scripts/run_experiment.sh contra el mismo codigo y comparar contra
+# la config base sin afectar el deploy en vivo.
+
+# Momentum: se saca el componente de 1 mes (momentum_1m) del score -- ese
+# horizonte choca con la reversion de corto plazo documentada en la
+# literatura de momentum (1-3-12 meses es la ventana robusta, no 1 mes) -- y
+# se renormaliza el resto proporcionalmente para que la suma siga en 1.0.
+score_weight_relative_strength: 0.28
+score_weight_momentum_3m: 0.20
+score_weight_momentum_1m: 0.0
+score_weight_trend: 0.12
+score_weight_rsi: 0.08
+score_weight_macd: 0.08
+score_weight_bollinger: 0.08
+score_weight_sector_relative_strength: 0.16
+
+# Oportunista: se invierten los pesos de "momentum" (ROC de 10 dias, premia
+# lo que ya subio) y "room_to_grow" (distancia al maximo de 52 semanas, la
+# tesis declarada de "todavia lejos del maximo"), para que domine el
+# componente alineado con la estrategia en vez del que la contradice.
+opportunistic:
+  score_weight_momentum: 0.1538
+  score_weight_room_to_grow: 0.3077
