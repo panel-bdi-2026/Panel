@@ -24,6 +24,17 @@ class AuditLog:
         # trades del dia inconsistente justo cuando RulesEngine.evaluate() lo
         # usa para el cap de ordenes diarias.
         self._lock = threading.Lock()
+        # WAL en vez del journal_mode "DELETE" por default: este ultimo toma
+        # un lock exclusivo de TODO el archivo durante cada commit, lo que
+        # bloquea a cualquier lector externo (ej. abrir audit.db a mano con
+        # el cliente sqlite3 para auditar, o un backup en caliente) mientras
+        # el backend esta escribiendo -- con la frecuencia de record() en
+        # produccion (cada orden, cada cambio de reglas/halt), esa ventana de
+        # bloqueo es practicamente constante. WAL permite lectores
+        # concurrentes mientras se escribe, y persiste en el archivo (no es
+        # un PRAGMA por-conexion que haya que repetir en cada conexion nueva
+        # una vez seteado en el archivo .db).
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_log (

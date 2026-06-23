@@ -17,6 +17,16 @@ def _insert_at(audit: AuditLog, action: str, ts: datetime) -> None:
     audit._conn.commit()
 
 
+def test_uses_wal_journal_mode(tmp_path):
+    """Sin WAL, el journal_mode "DELETE" por default toma un lock exclusivo
+    de todo el archivo en cada commit, bloqueando a cualquier lector externo
+    (ej. abrir audit.db a mano, o un backup en caliente) durante cada
+    record(). WAL permite lectores concurrentes mientras se escribe."""
+    audit = make_audit(tmp_path)
+    mode = audit._conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode.lower() == "wal"
+
+
 def test_counts_trade_executed_earlier_today_ny(tmp_path):
     audit = make_audit(tmp_path)
     # Se ancla a mediodia de NY de HOY (no a "now - 5 min"): si el test corre en
