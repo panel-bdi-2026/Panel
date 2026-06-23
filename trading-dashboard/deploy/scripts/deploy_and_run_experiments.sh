@@ -13,6 +13,12 @@
 #   4. Cuando termina, trae el resumen consolidado por scp y lo imprime y
 #      guarda localmente.
 #
+# Si la conexion se corta mientras espera (paso 3), podes volver a correr
+# este mismo script: detecta por PID si ya hay un batch corriendo en el
+# droplet y, en ese caso, NO lanza uno nuevo (evitaria dos corridas pisandose
+# los mismos archivos /tmp/backtest_*.json) -- simplemente se une a esperar
+# el que ya esta corriendo.
+#
 # Uso (desde tu maquina):
 #   bash trading-dashboard/deploy/scripts/deploy_and_run_experiments.sh
 set -uo pipefail
@@ -22,6 +28,7 @@ BRANCH="${BRANCH:-claude/investment-dashboard-trades-x2vkn8}"
 REMOTE_REPO="${REMOTE_REPO:-/opt/panel}"
 REMOTE_BACKEND="$REMOTE_REPO/trading-dashboard/backend"
 REMOTE_DONE_MARKER="/tmp/experiments.done"
+REMOTE_PID_FILE="/tmp/experiments.pid"
 REMOTE_SUMMARY="/tmp/experiments_summary.txt"
 LOCAL_OUT="experiments_summary_$(date +%Y%m%d_%H%M%S).txt"
 POLL_SECONDS="${POLL_SECONDS:-30}"
@@ -37,15 +44,26 @@ ssh "${ssh_opts[@]}" "$HOST" "cd '$REMOTE_REPO' && git fetch origin && git pull 
 
 echo
 echo "== 2/4 Lanzando el batch de experimentos en background =="
-ssh "${ssh_opts[@]}" "$HOST" "
-    rm -f '$REMOTE_DONE_MARKER'
+launch_status="$(ssh "${ssh_opts[@]}" "$HOST" "
     cd '$REMOTE_BACKEND'
-    nohup bash -c 'bash scripts/run_all_experiments.sh; touch $REMOTE_DONE_MARKER' > /tmp/experiments.log 2>&1 &
-    disown
-" || {
-    echo "No se pudo lanzar el batch en el droplet." >&2
+    if [ -f '$REMOTE_PID_FILE' ] && kill -0 \"\$(cat '$REMOTE_PID_FILE' 2>/dev/null)\" 2>/dev/null; then
+        echo YA_CORRIENDO
+    else
+        rm -f '$REMOTE_DONE_MARKER'
+        nohup bash -c 'bash scripts/run_all_experiments.sh; touch $REMOTE_DONE_MARKER; rm -f $REMOTE_PID_FILE' > /tmp/experiments.log 2>&1 &
+        echo \$! > '$REMOTE_PID_FILE'
+        disown
+        echo LANZADO
+    fi
+")" || {
+    echo "No se pudo lanzar/verificar el batch en el droplet." >&2
     exit 1
 }
+if [ "$launch_status" = "YA_CORRIENDO" ]; then
+    echo "Ya habia un batch corriendo desde antes -- me uno a esperar que termine (no lance uno nuevo)."
+else
+    echo "Batch lanzado."
+fi
 
 echo
 echo "== 3/4 Esperando a que termine (puede tardar bastante; no hace falta que hagas nada) =="
