@@ -243,6 +243,40 @@ def test_signal_scan_cycle_handles_scan_failure_gracefully(monkeypatch):
     assert main_module._signal_state["previously_passing"] == set()
 
 
+def test_signal_scan_cycle_holds_screener_config_lock_around_signal_state_update(monkeypatch):
+    """update_screener_config corre en un thread del pool (es un endpoint sync,
+    no async) y resetea _signal_state bajo _screener_config_lock (ver M8 del
+    audit); este ciclo, que corre en el event loop, debe tomar el MISMO lock
+    al leer y escribir previously_passing -- si no, un reset de config en
+    pleno vuelo de un ciclo se podia perder (el ciclo leia el valor previo al
+    reset y lo pisaba de nuevo al escribir, devolviendo intacta la base vieja
+    que el reset queria descartar). Se verifica espiando los accesos al dict
+    en vez de con una raza real entre threads (no deterministica): el lock
+    debe estar tomado en cada get/set de 'previously_passing'."""
+    main_module.screener_config.auto_scan_enabled = True
+    monkeypatch.setattr(main_module.screener, "scan", lambda: [make_signal(passes=True)])
+
+    lock_held_on_access = []
+
+    class _SpyDict(dict):
+        def __getitem__(self, key):
+            if key == "previously_passing":
+                lock_held_on_access.append(main_module._screener_config_lock.locked())
+            return super().__getitem__(key)
+
+        def __setitem__(self, key, value):
+            if key == "previously_passing":
+                lock_held_on_access.append(main_module._screener_config_lock.locked())
+            return super().__setitem__(key, value)
+
+    monkeypatch.setattr(main_module, "_signal_state", _SpyDict(main_module._signal_state))
+
+    asyncio.run(main_module._run_signal_scan_cycle())
+
+    assert lock_held_on_access  # se accedio al menos una vez (get + set)
+    assert all(lock_held_on_access)
+
+
 def test_update_screener_config_resets_signal_baseline():
     main_module._signal_state["previously_passing"] = {"AAPL"}
     body = main_module.ScreenerUpdate(config=main_module.screener_config.model_dump())

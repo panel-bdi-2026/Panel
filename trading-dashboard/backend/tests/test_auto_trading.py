@@ -1083,6 +1083,33 @@ def test_run_fund_strategy_auto_trade_scan_executes_auto_trade_for_matching_fund
     assert fund.owned_quantity("AAPL") > 0
 
 
+def test_run_fund_strategy_auto_trade_scan_holds_screener_config_lock_around_signal_state(monkeypatch):
+    """Mismo motivo que el test analogo en test_signal_engine.py para
+    _run_signal_scan_cycle (ver M8 del audit): update_screener_config
+    REEMPLAZA _signal_state["previously_passing_by_strategy"] por un dict
+    nuevo (no lo muta in place), asi que sin compartir _screener_config_lock
+    este ciclo podia guardarse una referencia al dict VIEJO antes del
+    reemplazo y escribir ahi, perdiendo la escritura sin que _signal_state la
+    vea nunca."""
+    signal = make_signal(symbol="DIV1", score=90.0)
+    monkeypatch.setattr(main_module.strategy_registry["dividend"], "scan", lambda: [signal])
+
+    lock_held_on_access = []
+
+    class _SpyDict(dict):
+        def __getitem__(self, key):
+            if key == "previously_passing_by_strategy":
+                lock_held_on_access.append(main_module._screener_config_lock.locked())
+            return super().__getitem__(key)
+
+    monkeypatch.setattr(main_module, "_signal_state", _SpyDict(main_module._signal_state))
+
+    asyncio.run(main_module._run_fund_strategy_auto_trade_scan("dividend"))
+
+    assert lock_held_on_access
+    assert all(lock_held_on_access)
+
+
 def test_run_fund_strategy_auto_trade_scan_ignores_fund_with_other_strategy(monkeypatch):
     fund = main_module.funds_store.create(
         "Fondo momentum", 10_000, auto_trading_enabled=True, strategy_id="momentum"

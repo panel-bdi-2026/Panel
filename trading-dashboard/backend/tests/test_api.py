@@ -145,6 +145,15 @@ def test_login_sets_httponly_session_cookie_on_correct_password():
     assert "HttpOnly" in set_cookie_header  # JS del frontend no debe poder leerla
 
 
+def test_session_ttl_is_one_week_not_a_month():
+    """M9 del audit: 30 dias era una ventana de exposicion innecesariamente
+    larga para un token que viaja sin el flag Secure (ver comentario junto a
+    SESSION_TTL_SECONDS en main.py: el deploy real es HTTP plano sobre
+    Tailscale, asi que Secure no es viable hoy). 7 dias acota el riesgo de un
+    token filtrado sin forzar un re-login diario."""
+    assert main_module.SESSION_TTL_SECONDS == 7 * 24 * 60 * 60
+
+
 def test_session_cookie_grants_access_to_protected_endpoint_without_api_key_header():
     login_resp = client.post("/api/login", json={"password": "test-key"})
     token = login_resp.cookies["session"]

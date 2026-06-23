@@ -184,7 +184,12 @@ def _persist_state() -> None:
 
 
 SESSION_COOKIE_NAME = "session"
-SESSION_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 dias
+# 7 dias, no 30: la cookie es httponly pero NO Secure (ver comentario abajo),
+# asi que viaja en claro sobre la red Tailscale; un TTL de 30 dias dejaba una
+# ventana innecesariamente larga para cualquier token que se filtrara (ej. un
+# log, un dispositivo de la tailnet comprometido). 7 dias sigue evitando tener
+# que loguearse a diario sin sostener un token valido casi un mes.
+SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 # Sesiones de login (ver /api/login, /api/logout). Viven en memoria de
 # proceso (misma limitacion de un-solo-worker que el resto del estado de
@@ -517,17 +522,25 @@ async def _run_signal_scan_cycle() -> None:
     # operational_gates_ok en models.py).
     threshold = _live_score_entry_threshold(screener_config.strategy_id)
     passing_now = {r.symbol for r in top_results if r.score >= threshold and r.operational_gates_ok}
-    previously_passing = _signal_state["previously_passing"]
+    # El lock es el mismo que toma update_screener_config (corre en un thread
+    # del pool, no en el event loop, por ser un endpoint sync): sin compartirlo,
+    # un reset de _signal_state tras un cambio de config en pleno vuelo de este
+    # ciclo se podia perder -- este ciclo leia el valor previo al reset y lo
+    # pisaba de nuevo con passing_now al escribir, devolviendo intacta la base
+    # vieja que el reset queria descartar.
+    with _screener_config_lock:
+        previously_passing = _signal_state["previously_passing"]
+        _signal_state["previously_passing"] = passing_now
 
     if previously_passing is None:
-        # Primer ciclo: solo establece la base. Sin esto, cada simbolo que ya
+        # Primer ciclo (o el primero tras un reset de config): solo establece
+        # la base, sin generar borradores. Sin esto, cada simbolo que ya
         # viniera pasando los filtros desde antes de que arrancara el backend
         # (o desde el ultimo cambio de config) se draftearia de una al primer
         # ciclo, en vez de solo los que cambian de estado.
-        _signal_state["previously_passing"] = passing_now
+        pass
     else:
         new_symbols = passing_now - previously_passing
-        _signal_state["previously_passing"] = passing_now
         if new_symbols:
             # new_signals queda ordenado por score (top_results ya viene
             # ordenado), asi que al recortar por el cap se conservan las
@@ -605,9 +618,16 @@ async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
     threshold = _live_score_entry_threshold(strategy_id)
     passing_now = {r.symbol for r in top_results if r.score >= threshold and r.operational_gates_ok}
 
-    by_strategy = _signal_state["previously_passing_by_strategy"]
-    previously_passing = by_strategy.get(strategy_id)
-    by_strategy[strategy_id] = passing_now
+    # Mismo lock que _run_signal_scan_cycle y update_screener_config: ademas de
+    # la razon de ahi, update_screener_config REEMPLAZA el dict completo
+    # (_signal_state["previously_passing_by_strategy"] = {}), no lo muta in
+    # place -- sin el lock, este ciclo podia guardarse una referencia al dict
+    # VIEJO antes del reemplazo y escribir ahi, perdiendo la escritura sin que
+    # _signal_state la vea nunca.
+    with _screener_config_lock:
+        by_strategy = _signal_state["previously_passing_by_strategy"]
+        previously_passing = by_strategy.get(strategy_id)
+        by_strategy[strategy_id] = passing_now
     if previously_passing is None:
         return
 
