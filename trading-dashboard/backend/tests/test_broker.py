@@ -2,7 +2,8 @@ import asyncio
 
 import pytest
 
-from app.broker import IBKRBroker, _from_ib_symbol, _to_ib_symbol
+from app.broker import IBKRBroker, StopLossRejectedError, _from_ib_symbol, _to_ib_symbol
+from app.models import OrderRequest, Side
 
 
 class FakeContract:
@@ -122,20 +123,34 @@ def test_get_position_qty_returns_zero_when_no_match(broker, monkeypatch):
 
 
 class FakeOrder:
-    def __init__(self, order_id, aux_price):
+    def __init__(self, order_id, aux_price, total_quantity=0.0):
         self.orderId = order_id
         self.auxPrice = aux_price
+        self.totalQuantity = total_quantity
 
 
 class FakeOrderStatus:
-    def __init__(self, status):
+    def __init__(self, status, filled=0.0, remaining=0.0, avg_fill_price=0.0):
         self.status = status
+        self.filled = filled
+        self.remaining = remaining
+        self.avgFillPrice = avg_fill_price
 
 
 class FakeTrade:
-    def __init__(self, order_id, status, aux_price=90.0, contract="AAPL contract"):
-        self.order = FakeOrder(order_id, aux_price)
-        self.orderStatus = FakeOrderStatus(status)
+    def __init__(
+        self,
+        order_id,
+        status,
+        aux_price=90.0,
+        contract="AAPL contract",
+        filled=0.0,
+        remaining=0.0,
+        avg_fill_price=0.0,
+        total_quantity=0.0,
+    ):
+        self.order = FakeOrder(order_id, aux_price, total_quantity)
+        self.orderStatus = FakeOrderStatus(status, filled, remaining, avg_fill_price)
         self.contract = contract
 
 
@@ -379,3 +394,152 @@ def test_disconnect_clears_live_tickers(broker, monkeypatch):
     broker.disconnect()
 
     assert broker._live_tickers == {}
+
+
+def test_get_trade_fill_returns_status_filled_price_and_remaining(broker, monkeypatch):
+    trade = FakeTrade(order_id=42, status="Submitted", filled=4.0, remaining=6.0, avg_fill_price=101.5)
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+
+    assert broker.get_trade_fill(42) == ("Submitted", 4.0, 101.5, 6.0)
+
+
+def test_get_trade_fill_returns_none_when_order_not_found(broker, monkeypatch):
+    monkeypatch.setattr(broker.ib, "trades", lambda: [])
+    assert broker.get_trade_fill(42) is None
+
+
+class _StubOrderStatus:
+    def __init__(self, status, filled=0.0, remaining=0.0, avg_fill_price=0.0):
+        self.status = status
+        self.filled = filled
+        self.remaining = remaining
+        self.avgFillPrice = avg_fill_price
+
+
+class _StubTrade:
+    def __init__(self, order, status):
+        self.order = order
+        self.orderStatus = status
+
+
+class _StubIB:
+    """Fake minimal de self.ib para tests de place_order: asigna un orderId
+    nuevo la primera vez que ve una orden (orderId == 0, como un Order recien
+    creado de ib_async) y reusa el Trade existente en llamadas posteriores
+    con el mismo orderId, igual que IBKR trata un placeOrder sobre un orderId
+    vivo como una modificacion in-place (mismo patron que modify_stop_price).
+    El status de la orden colocada PRIMERO (la orden padre, en place_order)
+    se puede preseedear via `next_status` antes de llamar a place_order."""
+
+    def __init__(self):
+        self._next_id = 1000
+        self.statuses: dict[int, _StubOrderStatus] = {}
+        self.placed: list = []
+        self.cancelled: list = []
+        self.next_status: _StubOrderStatus | None = None
+
+    async def qualifyContractsAsync(self, *contracts, **kwargs):
+        return list(contracts)
+
+    def placeOrder(self, contract, order):
+        self.placed.append(order)
+        if order.orderId == 0:
+            order.orderId = self._next_id
+            self._next_id += 1
+            if self.next_status is not None:
+                self.statuses[order.orderId] = self.next_status
+                self.next_status = None
+        status = self.statuses.get(order.orderId)
+        if status is None:
+            status = _StubOrderStatus("Submitted", filled=0.0, remaining=order.totalQuantity)
+            self.statuses[order.orderId] = status
+        return _StubTrade(order, status)
+
+    def trades(self):
+        seen: dict[int, object] = {}
+        for order in self.placed:
+            seen[order.orderId] = order
+        return [_StubTrade(o, self.statuses[o.orderId]) for o in seen.values()]
+
+    def cancelOrder(self, order):
+        self.cancelled.append(order)
+
+
+def _install_stub_ib(broker, monkeypatch, parent_status: _StubOrderStatus) -> _StubIB:
+    stub = _StubIB()
+    stub.next_status = parent_status
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", stub.qualifyContractsAsync)
+    monkeypatch.setattr(broker.ib, "placeOrder", stub.placeOrder)
+    monkeypatch.setattr(broker.ib, "trades", stub.trades)
+    monkeypatch.setattr(broker.ib, "cancelOrder", stub.cancelOrder)
+    return stub
+
+
+def test_place_order_resizes_stop_when_parent_partially_fills(broker, monkeypatch):
+    """El stop se crea con la cantidad PEDIDA (order.quantity) antes de saber
+    cuanto llena realmente el padre. Si el padre solo llena una parte, el
+    stop tiene que resizearse a la cantidad real: un stop sobredimensionado
+    que se dispara puede vender mas de lo que efectivamente se compro."""
+    parent_status = _StubOrderStatus("Filled", filled=5.0, remaining=0.0, avg_fill_price=99.5)
+    stub = _install_stub_ib(broker, monkeypatch, parent_status)
+
+    order = OrderRequest(symbol="AAPL", side=Side.BUY, quantity=10, stop_loss_price=90.0)
+    result = asyncio.run(broker.place_order(order))
+
+    assert result["filled_qty"] == 5.0
+    stop_order_id = result["stop_order_id"]
+    stop_order = next(o for o in stub.placed if o.orderId == stop_order_id)
+    assert stop_order.totalQuantity == 5.0
+    # La orden de stop se reenvio (mismo orderId) para aplicar el resize.
+    assert sum(1 for o in stub.placed if o.orderId == stop_order_id) >= 2
+    assert stub.cancelled == []
+
+
+def test_place_order_cancels_stop_when_parent_does_not_fill_at_all(broker, monkeypatch):
+    parent_status = _StubOrderStatus("Cancelled", filled=0.0, remaining=10.0, avg_fill_price=0.0)
+    stub = _install_stub_ib(broker, monkeypatch, parent_status)
+
+    order = OrderRequest(symbol="AAPL", side=Side.BUY, quantity=10, stop_loss_price=90.0)
+    result = asyncio.run(broker.place_order(order))
+
+    assert result["filled_qty"] == 0.0
+    stop_order_id = result["stop_order_id"]
+    assert len(stub.cancelled) == 1
+    assert stub.cancelled[0].orderId == stop_order_id
+
+
+def test_place_order_does_not_resize_stop_on_full_fill(broker, monkeypatch):
+    parent_status = _StubOrderStatus("Filled", filled=10.0, remaining=0.0, avg_fill_price=101.0)
+    stub = _install_stub_ib(broker, monkeypatch, parent_status)
+
+    order = OrderRequest(symbol="AAPL", side=Side.BUY, quantity=10, stop_loss_price=90.0)
+    result = asyncio.run(broker.place_order(order))
+
+    assert result["filled_qty"] == 10.0
+    stop_order_id = result["stop_order_id"]
+    assert sum(1 for o in stub.placed if o.orderId == stop_order_id) == 1  # sin resize
+    assert stub.cancelled == []
+
+
+def test_place_order_raises_before_resizing_when_stop_is_rejected(broker, monkeypatch):
+    parent_status = _StubOrderStatus("Filled", filled=3.0, remaining=0.0, avg_fill_price=99.0)
+    stub = _install_stub_ib(broker, monkeypatch, parent_status)
+
+    # Fuerza el rechazo del stop: la siguiente orden que reciba un orderId
+    # (la del stop) queda con status "Cancelled" desde el arranque.
+    real_place_order = stub.placeOrder
+
+    def place_order_then_reject_stop(contract, order):
+        trade = real_place_order(contract, order)
+        if order.parentId:  # es la orden hija (stop)
+            trade.orderStatus.status = "Cancelled"
+        return trade
+
+    monkeypatch.setattr(broker.ib, "placeOrder", place_order_then_reject_stop)
+
+    order = OrderRequest(symbol="AAPL", side=Side.BUY, quantity=10, stop_loss_price=90.0)
+    with pytest.raises(StopLossRejectedError):
+        asyncio.run(broker.place_order(order))
+
+    # No se intenta resizear/cancelar un stop que ya esta rechazado.
+    assert stub.cancelled == []

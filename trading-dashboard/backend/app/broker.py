@@ -295,14 +295,17 @@ class IBKRBroker:
                 return True
         return False
 
-    def get_trade_fill(self, order_id: int) -> tuple[str, float, float | None] | None:
+    def get_trade_fill(self, order_id: int) -> tuple[str, float, float | None, float] | None:
         """Estado y fill de una orden colocada esta sesion, por order_id.
 
         self.ib.trades() solo cubre la sesion actual del proceso (se pierde en
         un reconnect): limitacion aceptada, el seguimiento de fills es
         best-effort dentro de la misma sesion en la que se coloco la orden.
-        Devuelve (status, filled_qty, avg_fill_price) o None si no se
-        encuentra la orden.
+        Devuelve (status, filled_qty, avg_fill_price, remaining) o None si no
+        se encuentra la orden. `remaining` (OrderStatus.remaining: lo que le
+        falta llenar a ESTA orden puntual) es lo que permite reconciliar un
+        stop-loss por fondo en vez de por el agregado de toda la cuenta -- ver
+        _check_fund_exit en main.py.
         """
         for trade in self.ib.trades():
             if trade.order.orderId == order_id:
@@ -311,12 +314,13 @@ class IBKRBroker:
                     trade.orderStatus.status,
                     trade.orderStatus.filled,
                     avg_price if avg_price else None,
+                    trade.orderStatus.remaining,
                 )
         return None
 
     async def _wait_for_fill(
         self, order_id: int, timeout: float = 5.0, interval: float = 0.25
-    ) -> tuple[str, float, float | None] | None:
+    ) -> tuple[str, float, float | None, float] | None:
         """Polea get_trade_fill(order_id) hasta que llegue a un estado
         terminal (OrderStatus.DoneStates) o venza `timeout`.
 
@@ -380,11 +384,25 @@ class IBKRBroker:
                     f"proteccion. Revisa la posicion manualmente en TWS antes de seguir operando."
                 )
 
-            status, filled_qty, avg_fill_price = fill if fill is not None else (
+            status, filled_qty, avg_fill_price, _remaining = fill if fill is not None else (
                 parent_trade.orderStatus.status,
                 parent_trade.orderStatus.filled,
                 parent_trade.orderStatus.avgFillPrice or None,
+                parent_trade.orderStatus.remaining,
             )
+
+            # El stop se creo con order.quantity (lo pedido) antes de conocer
+            # el fill real del padre. Si el padre lleno menos (o nada),
+            # resize/cancela el stop para que nunca proteja mas cantidad de
+            # la que efectivamente se compro: un stop sobredimensionado que
+            # se dispara puede vender de mas (posicion fantasma negativa).
+            if filled_qty != order.quantity:
+                if filled_qty <= 0:
+                    self.ib.cancelOrder(stop_trade.order)
+                else:
+                    stop_trade.order.totalQuantity = filled_qty
+                    self.ib.placeOrder(contract, stop_trade.order)
+
             return {
                 "order_id": parent.orderId,
                 "stop_order_id": stop.orderId,
@@ -396,10 +414,11 @@ class IBKRBroker:
 
         trade = self.ib.placeOrder(contract, parent)
         fill = await self._wait_for_fill(parent.orderId)
-        status, filled_qty, avg_fill_price = fill if fill is not None else (
+        status, filled_qty, avg_fill_price, _remaining = fill if fill is not None else (
             trade.orderStatus.status,
             trade.orderStatus.filled,
             trade.orderStatus.avgFillPrice or None,
+            trade.orderStatus.remaining,
         )
         return {
             "order_id": parent.orderId,

@@ -328,6 +328,93 @@ def test_check_fund_exit_reconciles_partial_stop_loss_fill_and_keeps_remainder(m
     assert fund.owned_quantity("AAPL") == 4
 
 
+def test_check_fund_exit_reconciles_via_specific_stop_order_even_if_broker_aggregate_unchanged(monkeypatch):
+    """Si otro fondo tiene posicion en el mismo simbolo, el agregado de toda
+    la cuenta (broker.get_position_qty) puede no reflejar que ESTE fondo ya
+    vendio por stop-loss (bug de reconciliacion por agregado en vez de por
+    fondo). La reconciliacion por la orden especifica de este fondo
+    (get_trade_fill(stop_order_id)) tiene que detectarlo igual, sin mirar el
+    agregado de cuenta para nada."""
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=95, stop_order_id=501
+    )
+
+    def fail_if_called(symbol):
+        raise AssertionError(
+            "no deberia consultar el agregado de cuenta: la orden especifica ya responde"
+        )
+
+    monkeypatch.setattr(main_module.broker, "get_position_qty", fail_if_called)
+    monkeypatch.setattr(
+        main_module.broker,
+        "get_trade_fill",
+        lambda order_id: ("Filled", 10.0, 94.5, 0.0) if order_id == 501 else None,
+    )
+
+    async def fail_if_called_order(order):
+        raise AssertionError("no deberia intentar vender: ya se reconcilio todo via la orden")
+
+    monkeypatch.setattr(main_module.broker, "place_order", fail_if_called_order)
+
+    asyncio.run(main_module._check_fund_exit(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.owned_quantity("AAPL") == 0
+    assert fund.cash_usd == 9_945  # 10000 - 10*100 (compra) + 10*94.5 (stop reconciliado)
+
+
+def test_check_fund_exit_reconciles_partial_fill_via_specific_stop_order(monkeypatch):
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=95, stop_order_id=501
+    )
+
+    def fail_if_called(symbol):
+        raise AssertionError("no deberia consultar el agregado de cuenta")
+
+    monkeypatch.setattr(main_module.broker, "get_position_qty", fail_if_called)
+    monkeypatch.setattr(
+        main_module.broker,
+        "get_trade_fill",
+        lambda order_id: ("Submitted", 6.0, 95.0, 4.0) if order_id == 501 else None,
+    )
+
+    def fail_bars(symbol, days):
+        raise main_module.MarketDataError("sin datos")
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fail_bars)
+
+    asyncio.run(main_module._check_fund_exit(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.owned_quantity("AAPL") == 4
+
+
+def test_check_fund_exit_falls_back_to_aggregate_when_specific_order_not_found(monkeypatch):
+    """Si la orden del stop ya no esta en self.ib.trades() de esta sesion
+    (reconexion entre sesiones, o posicion abierta antes de que existiera
+    stop_order_id), get_trade_fill devuelve None: cae al agregado de toda la
+    cuenta como unico dato disponible, igual que el camino legado."""
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=95, stop_order_id=501
+    )
+    monkeypatch.setattr(main_module.broker, "get_trade_fill", lambda order_id: None)
+    monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 0)
+
+    async def fail_if_called(order):
+        raise AssertionError("no deberia intentar vender: ya se reconcilio todo")
+
+    monkeypatch.setattr(main_module.broker, "place_order", fail_if_called)
+
+    asyncio.run(main_module._check_fund_exit(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.owned_quantity("AAPL") == 0
+    assert fund.cash_usd == 9_950  # fallback usa stop_loss_price (95) como aproximacion
+
+
 def test_check_fund_exit_closes_on_max_holding_days(monkeypatch):
     main_module.screener_config.max_holding_days = 5
     fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)

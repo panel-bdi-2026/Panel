@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import secrets
 import threading
@@ -38,6 +39,8 @@ from .state_store import load_state, save_state
 from .strategies import STRATEGY_CLASSES, reload_strategy_registry
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+
+logger = logging.getLogger(__name__)
 
 # Este modulo asume UN SOLO proceso worker. screener_config, state, clients,
 # signal_cache y los asyncio.Lock de mas abajo viven en memoria de proceso: si
@@ -165,11 +168,19 @@ _rotation_cursor = 0
 
 
 def _persist_state() -> None:
-    save_state(settings.state_path, {
-        "mode": state["mode"],
-        "halted": state["halted"],
-        "pending_orders": {pid: p.model_dump() for pid, p in state["pending_orders"].items()},
-    })
+    # No deja propagar la excepcion: save_state puede fallar (disco lleno,
+    # permisos) y esta funcion se llama desde loops de fondo recurrentes
+    # (ej. _risk_monitor_loop, el kill switch). Si una excepcion sin atrapar
+    # mata esa tarea de asyncio, el kill switch deja de correr en silencio --
+    # mucho peor que perder una persistencia puntual del estado en disco.
+    try:
+        save_state(settings.state_path, {
+            "mode": state["mode"],
+            "halted": state["halted"],
+            "pending_orders": {pid: p.model_dump() for pid, p in state["pending_orders"].items()},
+        })
+    except OSError:
+        logger.exception("no se pudo persistir el estado en %s", settings.state_path)
 
 
 SESSION_COOKIE_NAME = "session"
@@ -218,14 +229,20 @@ def require_api_key(
 
 
 async def _broadcast(payload: dict) -> None:
+    # Itera sobre una copia: cada await ws.send_json cede el control del loop
+    # de eventos, y en esa ventana otra corutina puede conectar/desconectar
+    # un cliente y mutar `clients` (list.append/remove) mientras este for
+    # todavia la recorre -- iterar la lista en vivo arriesga un
+    # RuntimeError: list changed size during iteration.
     dead = []
-    for ws in clients:
+    for ws in list(clients):
         try:
             await ws.send_json(payload)
         except Exception:
             dead.append(ws)
     for ws in dead:
-        clients.remove(ws)
+        if ws in clients:
+            clients.remove(ws)
 
 
 async def _broadcast_loop() -> None:
@@ -639,16 +656,18 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
     cerrarse, y si corresponde la vende entera (siempre atada a ese fund_id).
 
     Tres motivos posibles, en este orden:
-    1. Reconciliacion: si la cantidad real en el broker es menor a la que
-       registra el ledger del fondo, el stop-loss que se coloco como orden
-       bracket al abrir la posicion (ver broker.place_order) ya se ejecuto
-       del lado de IBKR sin pasar por record_fill. Se reconcilia la
-       diferencia para que el fondo no quede con una posicion fantasma. El
-       precio de fill real se busca via broker.get_trade_fill(stop_order_id)
-       (orden de esta misma sesion); si no esta disponible (reconexion entre
-       sesiones, u orden de antes de este cambio sin stop_order_id guardado),
-       se aproxima con el stop_loss_price registrado al abrir la posicion
-       (misma simplificacion ya documentada en el resto del ledger de fondos).
+    1. Reconciliacion: si el stop-loss que se coloco como orden bracket al
+       abrir la posicion (ver broker.place_order) ya se ejecuto del lado de
+       IBKR sin pasar por record_fill, hay que reconciliar la diferencia para
+       que el fondo no quede con una posicion fantasma. Se prefiere
+       broker.get_trade_fill(stop_order_id), que da el `remaining` de ESA
+       orden puntual: a diferencia de broker.get_position_qty (agregado de
+       TODA la cuenta, sin nocion de fondos), no se confunde si otro fondo
+       tiene una posicion abierta en el mismo simbolo. Solo si esa orden no
+       se encuentra (reconexion entre sesiones, o posicion abierta antes de
+       este cambio sin stop_order_id guardado) se cae al agregado de cuenta
+       como antes -- aceptando el riesgo de colision entre fondos que ya
+       tenia ese camino, documentado donde se usa abajo.
     2. max_holding_days: misma regla que ya se simula en backtest.py, ahora
        aplicada en vivo sobre la fecha real de apertura.
     3. trend_break: el precio cierra por debajo de la SMA rapida del
@@ -662,24 +681,49 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
         if position is None or position.quantity <= 0:
             return
 
-        broker_qty = broker.get_position_qty(symbol)
-        if broker_qty < position.quantity:
-            closed_qty = position.quantity - max(broker_qty, 0.0)
-            fill_price = position.stop_loss_price or position.avg_cost
-            if position.stop_order_id is not None:
-                fill = broker.get_trade_fill(position.stop_order_id)
-                if fill is not None and fill[2] is not None:
-                    fill_price = fill[2]
-            funds_store.record_fill(fund_id, symbol, Side.SELL, closed_qty, fill_price)
-            audit.record(
-                "auto_trade_stop_loss_reconciled",
-                {"fund_id": fund_id, "symbol": symbol},
-                {"quantity": closed_qty, "price": fill_price},
-            )
-            fund = funds_store.get(fund_id)
-            position = fund.positions.get(symbol) if fund else None
-            if position is None or position.quantity <= 0:
-                return
+        reconciled_via_order = False
+        if position.stop_order_id is not None:
+            fill = broker.get_trade_fill(position.stop_order_id)
+            if fill is not None:
+                _status, _filled, avg_fill_price, remaining = fill
+                order_remaining = max(remaining, 0.0)
+                if order_remaining < position.quantity:
+                    closed_qty = position.quantity - order_remaining
+                    fill_price = (
+                        avg_fill_price if avg_fill_price is not None
+                        else (position.stop_loss_price or position.avg_cost)
+                    )
+                    funds_store.record_fill(fund_id, symbol, Side.SELL, closed_qty, fill_price)
+                    audit.record(
+                        "auto_trade_stop_loss_reconciled",
+                        {"fund_id": fund_id, "symbol": symbol},
+                        {"quantity": closed_qty, "price": fill_price},
+                    )
+                    fund = funds_store.get(fund_id)
+                    position = fund.positions.get(symbol) if fund else None
+                    if position is None or position.quantity <= 0:
+                        return
+                reconciled_via_order = True
+
+        # Sin stop_order_id, o la orden ya no esta en self.ib.trades() de esta
+        # sesion (ver get_trade_fill): unico caso donde se cae al agregado de
+        # TODA la cuenta, que puede confundir posiciones de otros fondos en el
+        # mismo simbolo -- mejor que no reconciliar nada.
+        if not reconciled_via_order:
+            broker_qty = broker.get_position_qty(symbol)
+            if broker_qty < position.quantity:
+                closed_qty = position.quantity - max(broker_qty, 0.0)
+                fill_price = position.stop_loss_price or position.avg_cost
+                funds_store.record_fill(fund_id, symbol, Side.SELL, closed_qty, fill_price)
+                audit.record(
+                    "auto_trade_stop_loss_reconciled",
+                    {"fund_id": fund_id, "symbol": symbol},
+                    {"quantity": closed_qty, "price": fill_price},
+                )
+                fund = funds_store.get(fund_id)
+                position = fund.positions.get(symbol) if fund else None
+                if position is None or position.quantity <= 0:
+                    return
 
         held_days = (datetime.now(timezone.utc) - position.opened_at).days if position.opened_at else 0
         timed_out = held_days >= screener_config.max_holding_days

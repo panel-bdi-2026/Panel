@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 
@@ -22,6 +23,35 @@ _earnings_cache: dict[str, tuple[float, "date | None"]] = {}
 # nunca cambia de un dia a otro).
 _FUNDAMENTALS_CACHE_TTL_SECONDS = 24 * 3600
 _fundamentals_cache: dict[str, tuple[float, dict]] = {}
+
+
+class _KeyedLocks:
+    """Un threading.Lock por clave, creado on-demand. get_daily_bars y
+    compania se llaman concurrentemente desde threads de verdad (via
+    asyncio.to_thread en main.py, no solo corutinas intercaladas): sin esto,
+    dos threads que piden el mismo simbolo a la vez (ej. dos estrategias
+    escaneando el mismo ticker en el mismo ciclo) pueden pasar juntos el
+    check de cache-vacio y disparar dos fetches redundantes a la API gratuita
+    en vez de que el segundo espere y reuse el resultado del primero. Un lock
+    por clave (no uno global) evita serializar fetches de simbolos distintos
+    entre si."""
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._locks: dict = {}
+
+    def get(self, key) -> threading.Lock:
+        with self._guard:
+            lock = self._locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[key] = lock
+            return lock
+
+
+_bars_locks = _KeyedLocks()
+_earnings_locks = _KeyedLocks()
+_fundamentals_locks = _KeyedLocks()
 
 
 class MarketDataError(RuntimeError):
@@ -58,35 +88,44 @@ def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.D
     if not force and cached and now - cached[0] < _CACHE_TTL_SECONDS:
         return cached[1]
 
-    end = datetime.now(timezone.utc)
-    # *1.6 para convertir dias de trading aproximados a dias calendario (fines de
-    # semana/feriados) mas un margen.
-    start = end - timedelta(days=int(lookback_days * 1.6) + 10)
+    with _bars_locks.get(key):
+        # Re-chequea el cache bajo el lock: mientras se esperaba para entrar
+        # aca, otro thread puede haber completado el fetch para esta misma
+        # clave (mismo symbol+lookback_days).
+        now = time.time()
+        cached = _cache.get(key)
+        if not force and cached and now - cached[0] < _CACHE_TTL_SECONDS:
+            return cached[1]
 
-    df = None
-    last_error: Exception | None = None
-    for attempt in range(_MAX_FETCH_RETRIES):
-        try:
-            df = yf.Ticker(symbol).history(start=start.date(), end=end.date(), interval="1d", auto_adjust=True)
-            last_error = None
-            if df is not None and not df.empty:
-                break
-        except Exception as exc:
-            df = None
-            last_error = exc
-        if attempt < _MAX_FETCH_RETRIES - 1:
-            time.sleep(_RETRY_BACKOFF_BASE_SECONDS * (2 ** attempt))
+        end = datetime.now(timezone.utc)
+        # *1.6 para convertir dias de trading aproximados a dias calendario (fines de
+        # semana/feriados) mas un margen.
+        start = end - timedelta(days=int(lookback_days * 1.6) + 10)
 
-    if df is None or df.empty:
-        detail = f" ({last_error})" if last_error else ""
-        raise MarketDataError(
-            f"Sin datos para {symbol} tras {_MAX_FETCH_RETRIES} intentos{detail}: "
-            f"simbolo invalido o limite de la API gratuita alcanzado."
-        )
+        df = None
+        last_error: Exception | None = None
+        for attempt in range(_MAX_FETCH_RETRIES):
+            try:
+                df = yf.Ticker(symbol).history(start=start.date(), end=end.date(), interval="1d", auto_adjust=True)
+                last_error = None
+                if df is not None and not df.empty:
+                    break
+            except Exception as exc:
+                df = None
+                last_error = exc
+            if attempt < _MAX_FETCH_RETRIES - 1:
+                time.sleep(_RETRY_BACKOFF_BASE_SECONDS * (2 ** attempt))
 
-    df = df.rename(columns=str.title)
-    _cache[key] = (now, df)
-    return df
+        if df is None or df.empty:
+            detail = f" ({last_error})" if last_error else ""
+            raise MarketDataError(
+                f"Sin datos para {symbol} tras {_MAX_FETCH_RETRIES} intentos{detail}: "
+                f"simbolo invalido o limite de la API gratuita alcanzado."
+            )
+
+        df = df.rename(columns=str.title)
+        _cache[key] = (now, df)
+        return df
 
 
 def is_bars_cached(symbol: str, lookback_days: int) -> bool:
@@ -111,23 +150,29 @@ def get_next_earnings_date(symbol: str, force: bool = False) -> "date | None":
     if not force and cached and now - cached[0] < _EARNINGS_CACHE_TTL_SECONDS:
         return cached[1]
 
-    try:
-        # get_earnings_dates devuelve fechas pasadas y futuras mezcladas, sin
-        # garantia de orden; con limit=1 se podia terminar tomando una fecha
-        # YA PASADA y el blackout nunca se activaba (days_to_earnings quedaba
-        # negativo). Se pide un lote mas grande y se filtra explicitamente por
-        # la mas próxima que sea hoy o futura.
-        dates = yf.Ticker(symbol).get_earnings_dates(limit=12)
-        next_date = None
-        if dates is not None and len(dates):
-            today = datetime.now(timezone.utc).date()
-            future_dates = [ts.date() for ts in dates.index if ts.date() >= today]
-            next_date = min(future_dates) if future_dates else None
-    except Exception:
-        next_date = None
+    with _earnings_locks.get(key):
+        now = time.time()
+        cached = _earnings_cache.get(key)
+        if not force and cached and now - cached[0] < _EARNINGS_CACHE_TTL_SECONDS:
+            return cached[1]
 
-    _earnings_cache[key] = (now, next_date)
-    return next_date
+        try:
+            # get_earnings_dates devuelve fechas pasadas y futuras mezcladas, sin
+            # garantia de orden; con limit=1 se podia terminar tomando una fecha
+            # YA PASADA y el blackout nunca se activaba (days_to_earnings quedaba
+            # negativo). Se pide un lote mas grande y se filtra explicitamente por
+            # la mas próxima que sea hoy o futura.
+            dates = yf.Ticker(symbol).get_earnings_dates(limit=12)
+            next_date = None
+            if dates is not None and len(dates):
+                today = datetime.now(timezone.utc).date()
+                future_dates = [ts.date() for ts in dates.index if ts.date() >= today]
+                next_date = min(future_dates) if future_dates else None
+        except Exception:
+            next_date = None
+
+        _earnings_cache[key] = (now, next_date)
+        return next_date
 
 
 # Mapeo de las claves crudas de yfinance (Ticker.get_info(), un dict de
@@ -183,11 +228,17 @@ def get_fundamentals(symbol: str, force: bool = False) -> dict:
     if not force and cached and now - cached[0] < _FUNDAMENTALS_CACHE_TTL_SECONDS:
         return cached[1]
 
-    try:
-        info = yf.Ticker(symbol).get_info() or {}
-    except Exception:
-        info = {}
+    with _fundamentals_locks.get(key):
+        now = time.time()
+        cached = _fundamentals_cache.get(key)
+        if not force and cached and now - cached[0] < _FUNDAMENTALS_CACHE_TTL_SECONDS:
+            return cached[1]
 
-    result = {name: info.get(raw_key) for name, raw_key in _INFO_FIELD_MAP.items()}
-    _fundamentals_cache[key] = (now, result)
-    return result
+        try:
+            info = yf.Ticker(symbol).get_info() or {}
+        except Exception:
+            info = {}
+
+        result = {name: info.get(raw_key) for name, raw_key in _INFO_FIELD_MAP.items()}
+        _fundamentals_cache[key] = (now, result)
+        return result
