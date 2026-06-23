@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import calendar
 import math
-from datetime import datetime, time as dtime
+from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -78,6 +79,84 @@ def _parse_hhmm(value: str) -> dtime:
     return dtime(int(h), int(m))
 
 
+def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> date:
+    """weekday: lunes=0 ... domingo=6. Fecha de la n-esima ocurrencia de ese
+    dia de la semana en el mes (n=1 es la primera)."""
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (n - 1))
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> date:
+    last_day = calendar.monthrange(year, month)[1]
+    last = date(year, month, last_day)
+    offset = (last.weekday() - weekday) % 7
+    return last - timedelta(days=offset)
+
+
+def _easter_sunday(year: int) -> date:
+    """Algoritmo gregoriano anonimo. Hace falta para Good Friday (el NYSE
+    cierra ese dia), que no sigue una regla de "n-esimo lunes del mes"."""
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = (h + l - 7 * m + 114) % 31 + 1
+    return date(year, month, day)
+
+
+def _observed(d: date) -> date:
+    """Regla federal de EEUU: un feriado de fecha fija que cae sabado se
+    observa el viernes anterior, y si cae domingo se observa el lunes
+    siguiente."""
+    if d.weekday() == 5:
+        return d - timedelta(days=1)
+    if d.weekday() == 6:
+        return d + timedelta(days=1)
+    return d
+
+
+def _nyse_holidays(year: int) -> set[date]:
+    """Feriados de mercado CERRADO TODO EL DIA del NYSE, calculados por regla
+    en vez de copiados de una tabla fija que se desactualiza cada anio. No
+    incluye los dias de cierre anticipado (ej. el viernes despues de
+    Thanksgiving): esos siguen operando dentro del horario configurado, solo
+    con menos liquidez, y requieren una tabla propia que cambia mas seguido
+    que estos feriados de dia completo."""
+    holidays = {
+        _observed(date(year, 1, 1)),  # Ano Nuevo
+        _nth_weekday_of_month(year, 1, 0, 3),  # Dia de Martin Luther King Jr.
+        _nth_weekday_of_month(year, 2, 0, 3),  # Dia de los Presidentes
+        _easter_sunday(year) - timedelta(days=2),  # Good Friday
+        _last_weekday_of_month(year, 5, 0),  # Memorial Day
+        _observed(date(year, 7, 4)),  # Dia de la Independencia
+        _nth_weekday_of_month(year, 9, 0, 1),  # Labor Day
+        _nth_weekday_of_month(year, 11, 3, 4),  # Thanksgiving
+        _observed(date(year, 12, 25)),  # Navidad
+    }
+    if year >= 2022:  # feriado federal desde 2021, primer anio bursatil 2022
+        holidays.add(_observed(date(year, 6, 19)))  # Juneteenth
+    return holidays
+
+
+def _is_nyse_holiday(d: date) -> bool:
+    # Se incluye el anio SIGUIENTE porque el unico feriado que puede
+    # "correrse" a un anio distinto del suyo es Ano Nuevo de ese anio
+    # siguiente observado el 31 de diciembre de este anio (cuando el 1/1 cae
+    # sabado): _nyse_holidays(d.year + 1) es quien genera esa fecha de 31 de
+    # diciembre, no _nyse_holidays(d.year).
+    return d in _nyse_holidays(d.year) or d in _nyse_holidays(d.year + 1)
+
+
 class RulesEngine:
     """Evalua una orden contra las reglas de riesgo configuradas.
 
@@ -96,7 +175,17 @@ class RulesEngine:
         if self.config.allow_extended_hours:
             return True
         tz = ZoneInfo(self.config.trading_hours_timezone)
-        current = (now or datetime.now(tz)).astimezone(tz)
+        current = now or datetime.now(tz)
+        # Un `now` sin tzinfo se interpreta como ya expresado en `tz` (ej. la
+        # hora de pared de Nueva York que pasaria un test o un futuro
+        # caller), en vez de con .astimezone(tz), que a un datetime naive lo
+        # asume erroneamente en la hora LOCAL DEL SISTEMA (en un contenedor
+        # productivo, casi siempre UTC, no la zona configurada aca).
+        current = current.replace(tzinfo=tz) if current.tzinfo is None else current.astimezone(tz)
+        if current.weekday() >= 5:  # sabado=5, domingo=6: mercado cerrado
+            return False
+        if _is_nyse_holiday(current.date()):
+            return False
         start = _parse_hhmm(self.config.trading_hours_start)
         end = _parse_hhmm(self.config.trading_hours_end)
         return start <= current.time() <= end

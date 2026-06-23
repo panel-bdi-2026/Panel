@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 from pydantic import ValidationError
 
@@ -292,3 +294,76 @@ def test_sector_concentration_defaults_to_zero_exposure_when_not_provided(engine
     )
     assert decision.approved
     assert not any(v.rule == "max_sector_concentration_pct" for v in decision.violations)
+
+
+# ---------------------------------------------------------------------------
+# _within_trading_hours: fin de semana, feriados, limites y datetime naive
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def hours_engine() -> RulesEngine:
+    return RulesEngine(RulesConfig(allow_extended_hours=False))
+
+
+def test_within_trading_hours_true_on_a_normal_weekday(hours_engine):
+    # martes 23/6/2026, 10:00 -- ni fin de semana ni feriado
+    assert hours_engine._within_trading_hours(datetime(2026, 6, 23, 10, 0))
+
+
+def test_within_trading_hours_false_on_saturday(hours_engine):
+    assert not hours_engine._within_trading_hours(datetime(2026, 6, 20, 10, 0))
+
+
+def test_within_trading_hours_false_on_sunday(hours_engine):
+    assert not hours_engine._within_trading_hours(datetime(2026, 6, 21, 10, 0))
+
+
+def test_within_trading_hours_false_on_observed_holiday(hours_engine):
+    # Juneteenth 2026 cae viernes 19/6: feriado de mercado, no solo de fin de semana.
+    assert not hours_engine._within_trading_hours(datetime(2026, 6, 19, 10, 0))
+
+
+def test_within_trading_hours_false_on_holiday_observed_in_previous_calendar_year(hours_engine):
+    # Ano Nuevo 2022 (1/1, sabado) se observa el 31/12/2021 (viernes): el
+    # feriado de un anio puede "correrse" al anio calendario anterior.
+    assert not hours_engine._within_trading_hours(datetime(2021, 12, 31, 10, 0))
+
+
+def test_within_trading_hours_includes_start_and_end_boundary(hours_engine):
+    assert hours_engine._within_trading_hours(datetime(2026, 6, 23, 9, 30))
+    assert hours_engine._within_trading_hours(datetime(2026, 6, 23, 16, 0))
+
+
+def test_within_trading_hours_false_just_before_open_and_just_after_close(hours_engine):
+    assert not hours_engine._within_trading_hours(datetime(2026, 6, 23, 9, 29, 59))
+    assert not hours_engine._within_trading_hours(datetime(2026, 6, 23, 16, 0, 1))
+
+
+def test_within_trading_hours_treats_naive_datetime_as_configured_timezone(hours_engine):
+    """Un `now` sin tzinfo debe interpretarse como ya expresado en
+    trading_hours_timezone (hora de pared de NY), NO reinterpretado via
+    astimezone() asumiendolo en la zona horaria del SISTEMA -- ese bug hacia
+    que el resultado dependiera de en que TZ corriera el proceso (en un
+    contenedor productivo, casi siempre UTC) en vez de la zona configurada."""
+    naive_within_hours = datetime(2026, 6, 23, 10, 0)
+    assert hours_engine._within_trading_hours(naive_within_hours)
+    # Las mismas 10:00, pero marcadas explicitamente como UTC en vez de NY,
+    # caen fuera de horario una vez convertidas a NY (-4hs en horario de
+    # verano: 6:00 NY) -- prueba que la hora SI se interpreta segun su
+    # tzinfo cuando lo tiene, y solo se asume `trading_hours_timezone`
+    # cuando el datetime llega naive (sin tzinfo).
+    same_wall_clock_marked_as_utc = naive_within_hours.replace(tzinfo=timezone.utc)
+    assert not hours_engine._within_trading_hours(same_wall_clock_marked_as_utc)
+
+
+def test_within_trading_hours_converts_aware_datetime_in_another_timezone(hours_engine):
+    # 14:00 UTC en junio (horario de verano, NY = UTC-4) son las 10:00 NY:
+    # dentro de horario, aunque el datetime llegue en otra zona horaria.
+    aware_utc = datetime(2026, 6, 23, 14, 0, tzinfo=timezone.utc)
+    assert hours_engine._within_trading_hours(aware_utc)
+
+
+def test_within_trading_hours_true_when_extended_hours_allowed_on_weekend():
+    engine = RulesEngine(RulesConfig(allow_extended_hours=True))
+    assert engine._within_trading_hours(datetime(2026, 6, 20, 3, 0))
