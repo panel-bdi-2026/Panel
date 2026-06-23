@@ -361,7 +361,7 @@ def test_regime_filter_blocks_entries_when_benchmark_below_regime_sma(monkeypatc
         run_backtest(config)
 
 
-def _trade(symbol, entry_day, exit_day, return_pct=1.0):
+def _trade(symbol, entry_day, exit_day, return_pct=1.0, exit_reason="max_holding_days"):
     from datetime import datetime
     from app.models import BacktestTrade
     return BacktestTrade(
@@ -371,7 +371,7 @@ def _trade(symbol, entry_day, exit_day, return_pct=1.0):
         entry_price=100.0,
         exit_price=100.0 * (1 + return_pct / 100),
         return_pct=return_pct,
-        exit_reason="max_holding_days",
+        exit_reason=exit_reason,
     )
 
 
@@ -471,6 +471,23 @@ def test_avg_exposure_pct_reflects_capital_utilization():
     trades = [_trade("A", 1, 11, return_pct=10.0), _trade("B", 1, 6, return_pct=-20.0)]
     summary = _compute_summary_stats(trades, top_n=2, bench_bars=_bench_bars_for_stats())
     assert summary.avg_exposure_pct == 50.0
+
+
+def test_exit_reason_counts_cover_all_trades_not_just_truncated_sample():
+    from app.backtest import _compute_summary_stats
+    # summary.trades se trunca a las ultimas 50 (ver _compute_summary_stats),
+    # pero exit_reason_counts debe reflejar TODAS las operaciones: 60 en
+    # total, repartidas en 3 motivos de salida, no solo las ultimas 50.
+    trades = (
+        [_trade(f"A{i}", 1, 2, exit_reason="stop_loss") for i in range(20)]
+        + [_trade(f"B{i}", 1, 2, exit_reason="max_holding_days") for i in range(20)]
+        + [_trade(f"C{i}", 1, 2, exit_reason="score_exit") for i in range(20)]
+    )
+    summary = _compute_summary_stats(trades, top_n=10, bench_bars=_bench_bars_for_stats(2))
+    assert summary.total_trades == 60
+    assert len(summary.trades) == 50
+    assert summary.exit_reason_counts == {"stop_loss": 20, "max_holding_days": 20, "score_exit": 20}
+    assert sum(summary.exit_reason_counts.values()) == summary.total_trades
 
 
 def test_cap_concurrent_positions_limits_simultaneous_trades():

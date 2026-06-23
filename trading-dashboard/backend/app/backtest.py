@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import statistics
 import time
+from collections import Counter
 
 import pandas as pd
 
@@ -667,6 +668,7 @@ def _compute_summary_stats(
         max_drawdown_pct=round(max_drawdown, 2),
         sharpe_ratio=round(sharpe_ratio, 2) if sharpe_ratio is not None else None,
         avg_exposure_pct=avg_exposure_pct,
+        exit_reason_counts=dict(Counter(t.exit_reason for t in all_trades)),
         trades=all_trades[-50:],
         equity_curve=equity_curve,
     )

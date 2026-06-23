@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -68,8 +67,10 @@ def _summary_to_dict(summary) -> dict:
         # Desglose por que cerro cada operacion (stop_loss/max_holding_days/
         # score_exit, ver BacktestTrade.exit_reason): diagnostico para saber
         # que tocar a continuacion (ATR del stop, max_holding_days, o el
-        # umbral de salida por score) en vez de ajustar a ciegas.
-        "exit_reason_counts": dict(Counter(trade.exit_reason for trade in summary.trades)),
+        # umbral de salida por score) en vez de ajustar a ciegas. Viene de
+        # summary.exit_reason_counts (calculado en backtest.py sobre TODAS las
+        # operaciones), no de summary.trades (que se trunca a las ultimas 50).
+        "exit_reason_counts": dict(summary.exit_reason_counts),
     }
 
 

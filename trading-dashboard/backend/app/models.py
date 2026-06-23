@@ -243,6 +243,10 @@ class BacktestSummary(BaseModel):
     # parte del tiempo sin suficientes señales como para usar el capital
     # asignado a top_n posiciones.
     avg_exposure_pct: float = 0.0
+    # Conteo de exit_reason sobre TODAS las operaciones (no solo las de
+    # `trades`, que se trunca a las ultimas 50 para no inflar el payload del
+    # dashboard en vivo).
+    exit_reason_counts: dict[str, int] = {}
     trades: list[BacktestTrade] = []
     equity_curve: list[EquityCurvePoint] = []
 
