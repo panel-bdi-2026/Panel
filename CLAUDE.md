@@ -3,6 +3,11 @@
 Hechos confirmados por el usuario sobre el despliegue real. No inventar ni
 asumir variantes de esto sin volver a confirmar.
 
+## Idioma
+
+Responder SIEMPRE en español, en todo mensaje de chat, sin excepción. El
+usuario ya lo pidió varias veces.
+
 ## Acceso al droplet de producción
 
 - Host: `100.92.236.44` (alcanzable solo por la red privada de Tailscale, no
