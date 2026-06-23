@@ -21,6 +21,7 @@ from .market_data import MarketDataError, get_daily_bars
 from .models import BacktestSummary, BacktestTrade, EquityCurvePoint, WalkForwardFold, WalkForwardResult
 from .screener_config import GROWTH_TICKERS, ScreenerConfig
 from .sector_strength import sector_relative_strength_series
+from .sectors import get_sector
 
 # Misma ventana fija que _CONTEXT_MOMENTUM_3M_DAYS en strategies/common.py
 # (el momentum "de contexto" que usa Oportunista para su propio
@@ -213,6 +214,7 @@ def _simulate_symbol(
     entry_idx = 0
     entry_date = None
     stop_price = 0.0
+    entry_atr = 0.0
     pending_entry_atr = None  # ATR del dia en que se detecto la senal (ver mas abajo)
 
     # Si el filtro de cercania al maximo de 52 semanas esta activo, incluye
@@ -250,6 +252,7 @@ def _simulate_symbol(
             entry_price = open_price
             entry_idx = i
             entry_date = date
+            entry_atr = pending_entry_atr
             stop_price = entry_price - cfg.stop_loss_atr_multiplier * pending_entry_atr
             pending_entry_atr = None
             continue
@@ -283,6 +286,7 @@ def _simulate_symbol(
                     exit_price=round(raw_exit_price, 2),
                     return_pct=round(ret_pct, 2),
                     exit_reason=exit_reason,
+                    entry_atr_pct=round(entry_atr / entry_price * 100, 4) if entry_price else None,
                 )
                 trades.append(trade)
                 if marks_by_trade_id is not None:
@@ -411,6 +415,7 @@ def _simulate_symbol_opportunistic(
     entry_idx = 0
     entry_date = None
     stop_price = 0.0
+    entry_atr = 0.0
     pending_entry_atr = None
 
     start_idx = max(opp.momentum_lookback_days, cfg.atr_period, 252) + 1
@@ -425,6 +430,7 @@ def _simulate_symbol_opportunistic(
             entry_price = open_price
             entry_idx = i
             entry_date = date
+            entry_atr = pending_entry_atr
             stop_price = entry_price - opp.stop_loss_atr_multiplier * pending_entry_atr
             pending_entry_atr = None
             continue
@@ -456,6 +462,7 @@ def _simulate_symbol_opportunistic(
                     exit_price=round(raw_exit_price, 2),
                     return_pct=round(ret_pct, 2),
                     exit_reason=exit_reason,
+                    entry_atr_pct=round(entry_atr / entry_price * 100, 4) if entry_price else None,
                 )
                 trades.append(trade)
                 if marks_by_trade_id is not None:
@@ -554,7 +561,7 @@ def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTra
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
 
     all_trades.sort(key=lambda t: t.entry_date)
-    all_trades = cap_concurrent_positions(all_trades, cfg.top_n)
+    all_trades = cap_concurrent_positions(all_trades, cfg.top_n, cfg.max_concurrent_positions_per_sector)
 
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
@@ -570,7 +577,8 @@ def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     (ver _simulate_symbol_opportunistic)."""
     all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg)
     return _compute_summary_stats(
-        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, cfg.invest_idle_cash_in_benchmark
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id,
+        cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
     )
 
 
@@ -580,27 +588,82 @@ def run_opportunistic_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 
     misma logica, solo cambia la simulacion subyacente."""
     all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg)
     return _build_walk_forward_result(
-        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds, cfg.invest_idle_cash_in_benchmark
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds,
+        cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
     )
 
 
-def cap_concurrent_positions(trades: list[BacktestTrade], top_n: int) -> list[BacktestTrade]:
+def cap_concurrent_positions(
+    trades: list[BacktestTrade], top_n: int, max_per_sector: int | None = None
+) -> list[BacktestTrade]:
     """Filtra una lista de operaciones a un maximo de top_n posiciones abiertas
     a la vez, recorriendolas por fecha de entrada y descartando las que no
     tendrian cupo libre (como en la operatoria real, donde no se pueden tener
     mas de top_n posiciones simultaneas). Sin top_n valido devuelve la lista
-    intacta. Se asume que `trades` ya viene ordenada por fecha de entrada."""
+    intacta. Se asume que `trades` ya viene ordenada por fecha de entrada.
+
+    Si max_per_sector esta activo (ver
+    ScreenerConfig.max_concurrent_positions_per_sector), ademas descarta una
+    operacion si su sector (get_sector) ya tiene esa cantidad de posiciones
+    abiertas a la vez, aunque todavia haya cupo libre en top_n: sin esto, el
+    cupo global no evita terminar con, por ejemplo, top_n posiciones todas del
+    mismo sector (una sola apuesta concentrada, no una cartera diversificada)."""
     if not top_n or top_n <= 0:
         return list(trades)
     taken: list[BacktestTrade] = []
     open_exit_dates: list = []
+    open_sector_exit_dates: dict[str, list] = {}
     for t in trades:
         open_exit_dates = [d for d in open_exit_dates if d > t.entry_date]
         if len(open_exit_dates) >= top_n:
             continue  # sin cupo libre: en la realidad no se podria abrir
+        sector = get_sector(t.symbol) if max_per_sector else None
+        if sector is not None and max_per_sector:
+            sector_dates = [d for d in open_sector_exit_dates.get(sector, []) if d > t.entry_date]
+            open_sector_exit_dates[sector] = sector_dates
+            if len(sector_dates) >= max_per_sector:
+                continue  # sin cupo libre en el sector: ya esta concentrado
         taken.append(t)
         open_exit_dates.append(t.exit_date)
+        if sector is not None and max_per_sector:
+            open_sector_exit_dates[sector].append(t.exit_date)
     return taken
+
+
+def _trade_weights(all_trades: list[BacktestTrade], top_n: int, vol_weighting_enabled: bool) -> dict[int, float]:
+    """Pondera cada operacion para _daily_equity_curve, keyeado por id(trade)
+    (mismo criterio que marks_by_trade_id). Por defecto (vol_weighting_enabled
+    apagado, o falta el ATR de entrada de alguna operacion) devuelve el mismo
+    peso uniforme 1/top_n para todas -- igual comportamiento que antes de que
+    existiera este campo, sin excepciones.
+
+    Si esta activo, pondera cada posicion ~ 1/ATR_entrada (mismo criterio que
+    el sizing por riesgo en vivo, ver rules.suggested_quantity: menos peso a
+    lo mas volatil) en vez de equiponderar, normalizado para que el promedio
+    de los multiplicadores sea 1 (mismo presupuesto total de capital que el
+    esquema equiponderado, para que las dos curvas sigan siendo comparables).
+    El multiplicador se acota a [0.5, 2.0] para que un simbolo con ATR casi
+    nulo no termine dominando la cartera simulada -- mismo espiritu que los
+    topes de tamaño de posicion del sizing en vivo
+    (max_position_pct_of_equity/max_order_value_usd)."""
+    base_weight = 1.0 / top_n if top_n else 0.0
+    if not vol_weighting_enabled or not all_trades:
+        return {id(t): base_weight for t in all_trades}
+    inv_atrs = []
+    for t in all_trades:
+        if t.entry_atr_pct is None or t.entry_atr_pct <= 0:
+            # Falta el dato en alguna operacion (ej. trade sintetico de test):
+            # no se puede ponderar el conjunto de forma consistente, se cae a
+            # equiponderar todo en vez de mezclar criterios distintos.
+            return {id(t): base_weight for t in all_trades}
+        inv_atrs.append(1.0 / t.entry_atr_pct)
+    avg_inv_atr = sum(inv_atrs) / len(inv_atrs)
+    weights: dict[int, float] = {}
+    for t, inv_atr in zip(all_trades, inv_atrs):
+        multiplier = inv_atr / avg_inv_atr if avg_inv_atr else 1.0
+        multiplier = max(0.5, min(2.0, multiplier))
+        weights[id(t)] = base_weight * multiplier
+    return weights
 
 
 def _daily_equity_curve(
@@ -609,6 +672,7 @@ def _daily_equity_curve(
     bench_bars: pd.DataFrame,
     marks_by_trade_id: dict | None = None,
     invest_idle_cash_in_benchmark: bool = False,
+    vol_weighting_enabled: bool = False,
 ) -> tuple[list[EquityCurvePoint], list[float], float, float]:
     """Construye la curva de equity dia por dia (no solo en cada evento de
     salida): cada operacion abierta aporta un retorno NO realizado, ponderado
@@ -653,10 +717,16 @@ def _daily_equity_curve(
     max_drawdown_pct y sharpe_ratio, ya que esos se calculan sobre
     daily_equity).
 
+    Si vol_weighting_enabled esta activo (ver ScreenerConfig), cada operacion
+    pesa ~ 1/ATR_entrada en vez del mismo 1/top_n para todas (ver
+    _trade_weights) -- alinea el peso simulado de cada posicion con el
+    sizing por riesgo ATR que usa el sizing en vivo (rules.suggested_quantity),
+    en vez de equiponderar una cartera que en la realidad nunca se opera asi.
+
     Devuelve (equity_curve, equity_diaria_en_factor, avg_exposure_pct,
     exposure_adjusted_benchmark_return_pct).
     """
-    weight = 1.0 / top_n
+    weights = _trade_weights(all_trades, top_n, vol_weighting_enabled)
     bench_close = bench_bars["Close"]
     start, end = all_trades[0].entry_date, all_trades[-1].exit_date
     calendar = sorted(
@@ -685,7 +755,7 @@ def _daily_equity_curve(
         still_open = []
         for t in open_trades:
             if t.exit_date <= date:
-                closed_factor *= 1 + weight * t.return_pct / 100
+                closed_factor *= 1 + weights[id(t)] * t.return_pct / 100
             else:
                 still_open.append(t)
         open_trades = still_open
@@ -698,9 +768,9 @@ def _daily_equity_curve(
                 entry_pos, exit_pos = pos_by_date[t.entry_date], pos_by_date[t.exit_date]
                 frac = (day_idx - entry_pos) / (exit_pos - entry_pos) if exit_pos > entry_pos else 1.0
                 factor = 1 + t.return_pct / 100 * frac
-            unrealized_pct += weight * (factor - 1) * 100
+            unrealized_pct += weights[id(t)] * (factor - 1) * 100
 
-        exposure_today = len(open_trades) * weight
+        exposure_today = sum(weights[id(t)] for t in open_trades)
         exposure_sum += exposure_today
 
         bench_price = bench_close.asof(date)
@@ -751,6 +821,7 @@ def _compute_summary_stats(
     bench_bars: pd.DataFrame,
     marks_by_trade_id: dict | None = None,
     invest_idle_cash_in_benchmark: bool = False,
+    vol_weighting_enabled: bool = False,
 ) -> BacktestSummary:
     """Calcula las metricas resumen a partir de la lista final de operaciones
     (ya filtrada por cap_concurrent_positions). Separado de run_backtest para
@@ -773,7 +844,7 @@ def _compute_summary_stats(
     expectancy = sum(returns) / len(returns)
 
     equity_curve, daily_equity, avg_exposure_pct, exposure_adjusted_benchmark_return_pct = _daily_equity_curve(
-        all_trades, top_n, bench_bars, marks_by_trade_id, invest_idle_cash_in_benchmark
+        all_trades, top_n, bench_bars, marks_by_trade_id, invest_idle_cash_in_benchmark, vol_weighting_enabled
     )
 
     bench_close = bench_bars["Close"]
@@ -836,6 +907,7 @@ def _build_walk_forward_result(
     marks_by_trade_id: dict,
     n_folds: int,
     invest_idle_cash_in_benchmark: bool = False,
+    vol_weighting_enabled: bool = False,
 ) -> WalkForwardResult:
     """Particiona [primera_entrada, ultima_salida] del benchmark en n_folds
     ventanas consecutivas de igual duracion calendario (no de igual cantidad
@@ -867,7 +939,7 @@ def _build_walk_forward_result(
             folds.append(WalkForwardFold(start_date=fold_start, end_date=fold_end, total_trades=len(fold_trades)))
             continue
         summary = _compute_summary_stats(
-            fold_trades, top_n, fold_bench_bars, marks_by_trade_id, invest_idle_cash_in_benchmark
+            fold_trades, top_n, fold_bench_bars, marks_by_trade_id, invest_idle_cash_in_benchmark, vol_weighting_enabled
         )
         folds.append(
             WalkForwardFold(
@@ -970,7 +1042,7 @@ def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], 
     # subrepresentaba el capital realmente usado e inflaba el retorno. Ahora se
     # descartan las operaciones que no tendrian cupo libre (ver
     # cap_concurrent_positions), igual que en la operatoria real.
-    all_trades = cap_concurrent_positions(all_trades, cfg.top_n)
+    all_trades = cap_concurrent_positions(all_trades, cfg.top_n, cfg.max_concurrent_positions_per_sector)
 
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
@@ -1006,7 +1078,8 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     """
     all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg)
     return _compute_summary_stats(
-        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, cfg.invest_idle_cash_in_benchmark
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id,
+        cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
     )
 
 
@@ -1031,5 +1104,6 @@ def run_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 3) -> WalkForw
     tramos de tiempo, o gano todo en un solo tramo favorable?"""
     all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg)
     return _build_walk_forward_result(
-        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds, cfg.invest_idle_cash_in_benchmark
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds,
+        cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
     )

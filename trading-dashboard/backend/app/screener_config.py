@@ -347,6 +347,13 @@ class ScreenerConfig(BaseModel):
     # seguir siendo poco liquida en terminos de dinero realmente operado.
     min_avg_dollar_volume: float = 1_000_000
     top_n: int = 10
+    # Tope de posiciones concurrentes ABIERTAS A LA VEZ en el mismo sector (ver
+    # get_sector en sectors.py), aplicado por cap_concurrent_positions en
+    # backtest.py. top_n por si solo no evita concentracion: nada impide
+    # terminar con, por ejemplo, 10 semiconductoras a la vez (una sola apuesta
+    # sectorial disfrazada de 10 posiciones diversificadas). 0 = sin tope (solo
+    # el de top_n), mismo criterio "0/invalido deshabilita" que top_n.
+    max_concurrent_positions_per_sector: int = 0
 
     atr_period: int = 14
     stop_loss_atr_multiplier: float = 1.5
@@ -426,6 +433,18 @@ class ScreenerConfig(BaseModel):
     backtest_assumed_capital_usd: float = 100_000
     commission_per_trade_usd: float = 1.0
     slippage_pct: float = 0.05
+
+    # El backtest equipondera cada posicion concurrente (1/top_n, ver
+    # _daily_equity_curve en backtest.py), pero el sizing en vivo
+    # (rules.suggested_quantity) es por riesgo ATR: dos esquemas distintos, asi
+    # que el backtest no valida realmente lo que se opera en vivo. Si esta
+    # activo, cada posicion pesa ~ 1/ATR en vez de igual (mismo criterio de
+    # riesgo que el sizing en vivo: menos peso a lo mas volatil), lo que en
+    # general sube el Sharpe a retorno similar. Apagado por defecto: cambia los
+    # numeros historicos del backtest, asi que es una decision explicita del
+    # usuario, no el comportamiento nuevo por defecto de una version anterior
+    # que nunca lo tuvo.
+    backtest_vol_weighting_enabled: bool = False
 
     # "Core+satelite" en el backtest: por defecto, el cash no invertido cada
     # dia (1 - exposicion, ver _daily_equity_curve en backtest.py) se asume

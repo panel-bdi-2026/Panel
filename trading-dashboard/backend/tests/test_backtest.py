@@ -464,7 +464,7 @@ def test_regime_filter_blocks_entries_when_benchmark_below_regime_sma(monkeypatc
         run_backtest(config)
 
 
-def _trade(symbol, entry_day, exit_day, return_pct=1.0, exit_reason="max_holding_days"):
+def _trade(symbol, entry_day, exit_day, return_pct=1.0, exit_reason="max_holding_days", entry_atr_pct=None):
     from datetime import datetime
     from app.models import BacktestTrade
     return BacktestTrade(
@@ -475,6 +475,7 @@ def _trade(symbol, entry_day, exit_day, return_pct=1.0, exit_reason="max_holding
         exit_price=100.0 * (1 + return_pct / 100),
         return_pct=return_pct,
         exit_reason=exit_reason,
+        entry_atr_pct=entry_atr_pct,
     )
 
 
@@ -574,6 +575,66 @@ def test_avg_exposure_pct_reflects_capital_utilization():
     trades = [_trade("A", 1, 11, return_pct=10.0), _trade("B", 1, 6, return_pct=-20.0)]
     summary = _compute_summary_stats(trades, top_n=2, bench_bars=_bench_bars_for_stats())
     assert summary.avg_exposure_pct == 50.0
+
+
+def test_trade_weights_uniform_when_disabled():
+    from app.backtest import _trade_weights
+    trades = [_trade("A", 1, 2, entry_atr_pct=2.0), _trade("B", 1, 2, entry_atr_pct=8.0)]
+    weights = _trade_weights(trades, top_n=2, vol_weighting_enabled=False)
+    assert weights == {id(trades[0]): 0.5, id(trades[1]): 0.5}
+
+
+def test_trade_weights_uniform_when_atr_missing():
+    from app.backtest import _trade_weights
+    # Vol-weighting activo pero falta el ATR de UNA operacion (ej. trade
+    # sintetico de test, o dato historico de antes de este campo): se cae a
+    # equiponderar TODO el conjunto en vez de mezclar criterios.
+    trades = [_trade("A", 1, 2, entry_atr_pct=2.0), _trade("B", 1, 2, entry_atr_pct=None)]
+    weights = _trade_weights(trades, top_n=2, vol_weighting_enabled=True)
+    assert weights == {id(trades[0]): 0.5, id(trades[1]): 0.5}
+
+
+def test_trade_weights_inversely_proportional_to_atr_when_enabled():
+    from app.backtest import _trade_weights
+    # Razon de ATR 1:2 (2.0 vs 4.0) da multiplicadores 4/3 y 2/3, ambos dentro
+    # de [0.5, 2.0] (sin clipping): el de menor ATR pesa el doble que el de
+    # mayor ATR, la misma relacion inversa que sus ATR.
+    trades = [_trade("A", 1, 2, entry_atr_pct=2.0), _trade("B", 1, 2, entry_atr_pct=4.0)]
+    weights = _trade_weights(trades, top_n=2, vol_weighting_enabled=True)
+    assert weights[id(trades[0])] == pytest.approx(2 / 3)
+    assert weights[id(trades[1])] == pytest.approx(1 / 3)
+    assert weights[id(trades[0])] == pytest.approx(2 * weights[id(trades[1])])
+
+
+def test_trade_weights_clips_extreme_atr_ratio():
+    from app.backtest import _trade_weights
+    # Razon de ATR 1:4 (2.0 vs 8.0) implicaria un multiplicador 1.6/0.4 sin
+    # acotar; 0.4 esta fuera de [0.5, 2.0] y se acota a 0.5 (ver
+    # _trade_weights) para que el simbolo de menor ATR no domine la cartera.
+    trades = [_trade("A", 1, 2, entry_atr_pct=2.0), _trade("B", 1, 2, entry_atr_pct=8.0)]
+    weights = _trade_weights(trades, top_n=2, vol_weighting_enabled=True)
+    assert weights[id(trades[0])] == pytest.approx(0.8)
+    assert weights[id(trades[1])] == pytest.approx(0.25)
+
+
+def test_vol_weighting_overweights_lower_volatility_winner_in_summary_stats():
+    from app.backtest import _compute_summary_stats
+    # A (ATR bajo, ganadora +10%) y B (ATR alto, perdedora -10%) cierran el
+    # mismo dia: equiponderado el resultado neto es levemente negativo (los
+    # pesos iguales no compensan exactamente por el efecto multiplicativo del
+    # compounding), pero con vol-weighting activo A pesa mas que B (0.8 vs
+    # 0.25, ver test_trade_weights_clips_extreme_atr_ratio) y el resultado
+    # neto pasa a ser claramente positivo -- la misma mecanica de
+    # _trade_weights, ahora a traves de la curva de equity completa.
+    trades = [
+        _trade("A", 1, 2, return_pct=10.0, entry_atr_pct=2.0),
+        _trade("B", 1, 2, return_pct=-10.0, entry_atr_pct=8.0),
+    ]
+    bench_bars = _bench_bars_for_stats()
+    equal = _compute_summary_stats(trades, top_n=2, bench_bars=bench_bars)
+    weighted = _compute_summary_stats(trades, top_n=2, bench_bars=bench_bars, vol_weighting_enabled=True)
+    assert equal.strategy_cumulative_return_pct == pytest.approx(-0.25)
+    assert weighted.strategy_cumulative_return_pct == pytest.approx(5.3)
 
 
 def test_trade_alpha_pct_subtracts_benchmark_return_over_same_window():
@@ -741,6 +802,48 @@ def test_cap_concurrent_positions_no_cap_when_top_n_invalid():
     from app.backtest import cap_concurrent_positions
     trades = [_trade("A", 1, 10), _trade("B", 1, 10)]
     assert len(cap_concurrent_positions(trades, top_n=0)) == 2
+
+
+def test_cap_concurrent_positions_sector_cap_blocks_concentrated_sector():
+    from app.backtest import cap_concurrent_positions
+    # AMD, NVDA e INTC son las 3 "Information Technology" (ver sectors.py):
+    # se solapan completamente y top_n=3 no bloquea por cantidad total, pero
+    # max_per_sector=2 si bloquea la tercera del mismo sector (el caso "10
+    # semis" del audit, aca con 3).
+    trades = [_trade("AMD", 1, 10), _trade("NVDA", 1, 10), _trade("INTC", 1, 10)]
+    taken = cap_concurrent_positions(trades, top_n=3, max_per_sector=2)
+    assert [t.symbol for t in taken] == ["AMD", "NVDA"]
+
+
+def test_cap_concurrent_positions_sector_cap_allows_diversified_sectors():
+    from app.backtest import cap_concurrent_positions
+    # Mismo solapamiento total, pero sectores distintos (IT, Financials,
+    # Health Care): con max_per_sector=1 ninguno compite por el mismo cupo
+    # sectorial, asi que las 3 entran igual (el tope de sector no penaliza
+    # una cartera ya diversificada).
+    trades = [_trade("AMD", 1, 10), _trade("JPM", 1, 10), _trade("UNH", 1, 10)]
+    taken = cap_concurrent_positions(trades, top_n=3, max_per_sector=1)
+    assert [t.symbol for t in taken] == ["AMD", "JPM", "UNH"]
+
+
+def test_cap_concurrent_positions_sector_cap_reuses_freed_slot():
+    from app.backtest import cap_concurrent_positions
+    # AMD ocupa el unico cupo IT dias 1-5; cuando cierra, INTC (que entra dia
+    # 6) puede tomarlo. NVDA se solapa con AMD y queda afuera con
+    # max_per_sector=1, aunque top_n=3 le sobre cupo global.
+    trades = [_trade("AMD", 1, 5), _trade("NVDA", 2, 4), _trade("INTC", 6, 9)]
+    taken = cap_concurrent_positions(trades, top_n=3, max_per_sector=1)
+    assert [t.symbol for t in taken] == ["AMD", "INTC"]
+
+
+def test_cap_concurrent_positions_no_sector_cap_when_max_per_sector_falsy():
+    from app.backtest import cap_concurrent_positions
+    # Sin max_per_sector (default None), el comportamiento es exactamente el
+    # mismo de siempre: 3 simbolos del mismo sector, sin tope sectorial, solo
+    # limitados por top_n.
+    trades = [_trade("AMD", 1, 10), _trade("NVDA", 1, 10), _trade("INTC", 1, 10)]
+    taken = cap_concurrent_positions(trades, top_n=3)
+    assert [t.symbol for t in taken] == ["AMD", "NVDA", "INTC"]
 
 
 def test_near_high_filter_reduces_entries_far_from_52w_high(monkeypatch):

@@ -223,6 +223,12 @@ class BacktestTrade(BaseModel):
     # default, porque 0.0 significa "empato exactamente con el benchmark", un
     # dato distinto de "no se pudo calcular".
     alpha_pct: Optional[float] = None
+    # ATR al momento de la entrada, como % del precio de entrada. Usado por
+    # _trade_weights en backtest.py para ponderar cada posicion por volatilidad
+    # inversa (igual criterio que el sizing por riesgo en vivo, ver
+    # rules.suggested_quantity) en vez de equiponderar. None si no se pudo
+    # calcular (compatibilidad con datos historicos sin este campo).
+    entry_atr_pct: Optional[float] = None
 
 
 class EquityCurvePoint(BaseModel):
