@@ -180,6 +180,22 @@ def test_auto_trade_entry_executes_buy_and_records_fill(monkeypatch):
     assert pos.opened_at is not None
 
 
+def test_auto_trade_entry_deducts_commission_from_configured_screener_config(monkeypatch):
+    """El fill de entrada tiene que descontar la comision configurada en
+    screener_config (no un valor fijo): si esto se rompe, el ledger del fondo
+    deja de coincidir con el costo que el backtest modela para la misma
+    config."""
+    main_module.screener_config.commission_per_trade_usd = 2.5
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
+
+    asyncio.run(main_module._try_auto_trade_entry(make_signal(last_price=100.0, stop=95.0)))
+
+    fund = main_module.funds_store.get(fund.id)
+    qty = fund.owned_quantity("AAPL")
+    assert fund.cash_usd == 10_000 - qty * 100.0 - 2.5
+
+
 def test_auto_trade_entry_records_signal_rationale_in_audit(monkeypatch):
     # El audit trail tiene que conservar el POR QUE el motor de señales
     # decidio esta compra (score/momentum/RSI/notas), no solo el QUE se
@@ -317,7 +333,7 @@ def test_check_fund_exit_reconciles_full_stop_loss_fill(monkeypatch):
 
     fund = main_module.funds_store.get(fund.id)
     assert fund.owned_quantity("AAPL") == 0
-    assert fund.cash_usd == 9_950  # 10000 - 10*100 (compra) + 10*95 (stop reconciliado)
+    assert fund.cash_usd == 9_949  # 10000 - 10*100 (compra) + 10*95 (stop reconciliado) - 1 (comision venta)
 
 
 def test_check_fund_exit_reconciles_partial_stop_loss_fill_and_keeps_remainder(monkeypatch):
@@ -369,7 +385,7 @@ def test_check_fund_exit_reconciles_via_specific_stop_order_even_if_broker_aggre
 
     fund = main_module.funds_store.get(fund.id)
     assert fund.owned_quantity("AAPL") == 0
-    assert fund.cash_usd == 9_945  # 10000 - 10*100 (compra) + 10*94.5 (stop reconciliado)
+    assert fund.cash_usd == 9_944  # 10000 - 10*100 (compra) + 10*94.5 (stop reconciliado) - 1 (comision venta)
 
 
 def test_check_fund_exit_reconciles_partial_fill_via_specific_stop_order(monkeypatch):
@@ -420,7 +436,7 @@ def test_check_fund_exit_falls_back_to_aggregate_when_specific_order_not_found(m
 
     fund = main_module.funds_store.get(fund.id)
     assert fund.owned_quantity("AAPL") == 0
-    assert fund.cash_usd == 9_950  # fallback usa stop_loss_price (95) como aproximacion
+    assert fund.cash_usd == 9_949  # fallback usa stop_loss_price (95) como aproximacion, - 1 (comision venta)
 
 
 def test_check_fund_exit_closes_on_max_holding_days(monkeypatch):
@@ -446,7 +462,7 @@ def test_check_fund_exit_closes_on_max_holding_days(monkeypatch):
 
     fund = main_module.funds_store.get(fund.id)
     assert fund.owned_quantity("AAPL") == 0
-    assert fund.cash_usd == 10_050  # 10000 - 10*100 (compra) + 10*105 (salida)
+    assert fund.cash_usd == 10_049  # 10000 - 10*100 (compra) + 10*105 (salida) - 1 (comision venta)
 
 
 def test_check_fund_exit_closes_on_trend_break(monkeypatch):
@@ -904,7 +920,7 @@ def test_concurrent_submit_order_does_not_overspend_fund_cash(monkeypatch):
     assert failures[0].status_code == 422
 
     fund = main_module.funds_store.get(fund.id)
-    assert fund.cash_usd == 3_500  # 8000 - 4500: la segunda compra se rechazo
+    assert fund.cash_usd == 3_499  # 8000 - 4500 - 1 (comision compra): la segunda compra se rechazo
     assert fund.owned_quantity("AAPL") == 45
 
 

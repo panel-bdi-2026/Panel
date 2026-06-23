@@ -465,6 +465,7 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
                 fund.id, symbol, Side.BUY, filled_qty, fill_price,
                 stop_loss_price=result.suggested_stop_loss_price,
                 stop_order_id=result_payload.get("stop_order_id"),
+                commission=screener_config.commission_per_trade_usd,
             )
         audit.record(
             "auto_trade_executed" if filled_qty > 0 else "auto_trade_submitted_unfilled",
@@ -713,7 +714,10 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                         avg_fill_price if avg_fill_price is not None
                         else (position.stop_loss_price or position.avg_cost)
                     )
-                    funds_store.record_fill(fund_id, symbol, Side.SELL, closed_qty, fill_price)
+                    funds_store.record_fill(
+                        fund_id, symbol, Side.SELL, closed_qty, fill_price,
+                        commission=screener_config.commission_per_trade_usd,
+                    )
                     audit.record(
                         "auto_trade_stop_loss_reconciled",
                         {"fund_id": fund_id, "symbol": symbol},
@@ -742,7 +746,10 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
             if broker_qty < position.quantity:
                 closed_qty = position.quantity - max(broker_qty, 0.0)
                 fill_price = position.stop_loss_price or position.avg_cost
-                funds_store.record_fill(fund_id, symbol, Side.SELL, closed_qty, fill_price)
+                funds_store.record_fill(
+                    fund_id, symbol, Side.SELL, closed_qty, fill_price,
+                    commission=screener_config.commission_per_trade_usd,
+                )
                 audit.record(
                     "auto_trade_stop_loss_reconciled",
                     {"fund_id": fund_id, "symbol": symbol},
@@ -789,7 +796,10 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
         filled_qty = result_payload.get("filled_qty") or 0.0
         fill_price = result_payload.get("avg_fill_price") or reference_price
         if filled_qty > 0:
-            funds_store.record_fill(fund_id, symbol, Side.SELL, filled_qty, fill_price)
+            funds_store.record_fill(
+                fund_id, symbol, Side.SELL, filled_qty, fill_price,
+                commission=screener_config.commission_per_trade_usd,
+            )
         reason = "max_holding_days" if timed_out else "trend_break"
         audit.record(
             "auto_trade_exit" if filled_qty > 0 else "auto_trade_exit_unfilled",
@@ -1711,6 +1721,7 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
                 order.fund_id, order.symbol, order.side, filled_qty, fill_price,
                 stop_loss_price=order.stop_loss_price,
                 stop_order_id=result.get("stop_order_id"),
+                commission=screener_config.commission_per_trade_usd,
             )
         status_label = "executed" if filled_qty > 0 else "submitted"
         audit.record(
@@ -1762,6 +1773,7 @@ async def approve_order(order_id: str, _: None = Depends(require_api_key)):
                 pending.order.fund_id, pending.order.symbol, pending.order.side, filled_qty, fill_price,
                 stop_loss_price=pending.order.stop_loss_price,
                 stop_order_id=result.get("stop_order_id"),
+                commission=screener_config.commission_per_trade_usd,
             )
         status_label = "executed" if filled_qty > 0 else "submitted"
         audit.record(

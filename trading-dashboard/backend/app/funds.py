@@ -158,10 +158,21 @@ class Fund(BaseModel):
         price: float,
         stop_loss_price: Optional[float] = None,
         stop_order_id: Optional[int] = None,
+        commission: float = 0.0,
     ) -> FundTrade:
         """Aplica una compra/venta ya ejecutada en el broker a la contabilidad
         del fondo: mueve cash_usd, actualiza la posicion (costo promedio en
         compras, PnL realizado en ventas) y la agrega al historial.
+
+        `commission` se descuenta de cash_usd ademas del precio*cantidad, en
+        ambos lados (compra y venta): sin esto, el ledger del fondo asumia
+        operar gratis, mientras que el backtest (ver commission_per_trade_usd
+        en screener_config.py) si modela ese costo -- inflando el P&L en vivo
+        respecto al de un backtest comparable. No se suma a avg_cost (el
+        costo de la posicion queda en precio puro): se resta directo del cash
+        al comprar, y del PnL realizado al vender, asi equity_estimate()
+        siempre refleja el costo total pagado sin importar en que pierna se
+        cobro la comision.
 
         No valida nada (cash suficiente): esa validacion corre ANTES de
         enviar la orden al broker (ver main.py). La cantidad vendida si se
@@ -182,7 +193,7 @@ class Fund(BaseModel):
                 (pos.avg_cost * pos.quantity + price * quantity) / new_qty if new_qty else 0.0
             )
             pos.quantity = new_qty
-            self.cash_usd -= price * quantity
+            self.cash_usd -= price * quantity + commission
         else:
             if quantity > pos.quantity:
                 logger.warning(
@@ -191,7 +202,7 @@ class Fund(BaseModel):
                     quantity, symbol, self.id, pos.quantity,
                 )
                 quantity = pos.quantity
-            realized_pnl = (price - pos.avg_cost) * quantity
+            realized_pnl = (price - pos.avg_cost) * quantity - commission
             pos.quantity -= quantity
             if pos.quantity <= 0:
                 pos.quantity = 0.0
@@ -199,7 +210,7 @@ class Fund(BaseModel):
                 pos.opened_at = None
                 pos.stop_loss_price = None
                 pos.stop_order_id = None
-            self.cash_usd += price * quantity
+            self.cash_usd += price * quantity - commission
 
         trade = FundTrade(
             id=str(uuid.uuid4()),
@@ -397,12 +408,15 @@ class FundsStore:
         price: float,
         stop_loss_price: Optional[float] = None,
         stop_order_id: Optional[int] = None,
+        commission: float = 0.0,
     ) -> FundTrade | None:
         with self._lock:
             fund = self.funds.get(fund_id)
             if fund is None:
                 return None
-            trade = fund.record_fill(symbol, side, quantity, price, stop_loss_price, stop_order_id)
+            trade = fund.record_fill(
+                symbol, side, quantity, price, stop_loss_price, stop_order_id, commission
+            )
             self.save()
             return trade
 

@@ -37,6 +37,14 @@ def test_buy_reduces_cash_and_opens_position(store):
     assert fund.positions["AAPL"].avg_cost == 100
 
 
+def test_buy_deducts_commission_from_cash_without_changing_avg_cost(store):
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100, commission=1.0)
+    fund = store.get(fund.id)
+    assert fund.cash_usd == 5000 - 10 * 100 - 1.0
+    assert fund.positions["AAPL"].avg_cost == 100
+
+
 def test_buy_twice_averages_cost(store):
     fund = store.create("Test", 10_000)
     store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100)
@@ -54,6 +62,15 @@ def test_sell_increases_cash_and_records_realized_pnl(store):
     assert fund.owned_quantity("AAPL") == 0
     assert fund.cash_usd == 5000 + (120 - 100) * 10
     assert fund.realized_pnl_total() == 200.0
+
+
+def test_sell_deducts_commission_from_cash_and_realized_pnl(store):
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100, commission=1.0)
+    store.record_fill(fund.id, "AAPL", Side.SELL, 10, 120, commission=1.0)
+    fund = store.get(fund.id)
+    assert fund.cash_usd == 5000 - 1.0 + (120 - 100) * 10 - 1.0
+    assert fund.realized_pnl_total() == 200.0 - 1.0
 
 
 def test_partial_sell_keeps_remaining_position_and_avg_cost(store):
