@@ -1850,9 +1850,11 @@ async function runBacktest(){
         <span title="Cantidad total de operaciones (entrada+salida completa) simuladas en el período.">${r.total_trades} operaciones</span> ·
         <span title="Porcentaje de esas operaciones que cerraron con ganancia.">win rate ${r.win_rate_pct}%</span> ·
         <span title="Ganancia bruta total dividida entre pérdida bruta total. Mayor a 1 = las ganancias superan a las pérdidas. ∞ significa que no hubo ninguna operación perdedora.">profit factor ${r.profit_factor_is_infinite ? '∞' : (r.profit_factor ?? '—')}</span> ·
-        <span title="Retorno ajustado por riesgo: retorno promedio diario sobre su propio desvío estándar, anualizado. A mayor Sharpe, mejor retorno por unidad de volatilidad asumida (no es lo mismo que retorno total).">Sharpe ${r.sharpe_ratio ?? '—'}</span><br>
+        <span title="Retorno ajustado por riesgo: retorno promedio diario sobre su propio desvío estándar, anualizado. A mayor Sharpe, mejor retorno por unidad de volatilidad asumida (no es lo mismo que retorno total).">Sharpe ${r.sharpe_ratio ?? '—'}</span> ·
+        <span title="Promedio del alpha de cada operación (su retorno menos lo que hizo el benchmark en esa misma ventana exacta de entrada/salida) sobre todas las operaciones que tienen ese dato. — si el benchmark no cubre la ventana de ninguna.">Alpha promedio: ${r.avg_alpha_pct ?? '—'}${r.avg_alpha_pct != null ? '%' : ''}</span><br>
         <span title="Retorno acumulado de la estrategia en todo el período del backtest, ya neto de la comisión y el slippage estimados por operación.">Retorno estrategia (neto de comisión/slippage estimados): ${r.strategy_cumulative_return_pct}%</span> vs
-        <span title="Retorno acumulado de comprar y mantener el benchmark configurado durante el mismo período, como referencia de comparación.">benchmark (${r.benchmark_cumulative_return_pct}%)</span><br>
+        <span title="Retorno acumulado de comprar y mantener el benchmark configurado durante el mismo período, como referencia de comparación.">benchmark (${r.benchmark_cumulative_return_pct}%)</span> /
+        <span title="Lo que hubiera devuelto el benchmark si cada día se hubiera invertido solo la misma fracción de capital que la estrategia realmente tuvo desplegada ese día (en vez de 100% todo el período). Comparar contra esta cifra evita penalizar a la estrategia por el cash ocioso que ya refleja la exposición promedio.">ajustado por exposición (${r.exposure_adjusted_benchmark_return_pct}%)</span><br>
         <span title="Mayor caída porcentual desde un máximo de la curva de equity hasta su punto más bajo posterior dentro del período.">Max drawdown: ${r.max_drawdown_pct}%</span> ·
         <span title="Porcentaje promedio del capital asignado que estuvo efectivamente invertido (no en cash) a lo largo del período, contando cada posición abierta ese día.">Exposición promedio del capital: ${r.avg_exposure_pct ?? '—'}%</span>
       </p>
@@ -1898,6 +1900,8 @@ async function runWalkForward(){
         <td>${f.win_rate_pct ?? '—'}${f.win_rate_pct != null ? '%' : ''}</td>
         <td>${f.strategy_cumulative_return_pct ?? '—'}${f.strategy_cumulative_return_pct != null ? '%' : ''}</td>
         <td>${f.benchmark_cumulative_return_pct ?? '—'}${f.benchmark_cumulative_return_pct != null ? '%' : ''}</td>
+        <td>${f.exposure_adjusted_benchmark_return_pct ?? '—'}${f.exposure_adjusted_benchmark_return_pct != null ? '%' : ''}</td>
+        <td>${f.avg_alpha_pct ?? '—'}${f.avg_alpha_pct != null ? '%' : ''}</td>
         <td>${f.max_drawdown_pct ?? '—'}${f.max_drawdown_pct != null ? '%' : ''}</td>
         <td>${f.sharpe_ratio ?? '—'}</td>
       </tr>`).join('');
@@ -1911,6 +1915,8 @@ async function runWalkForward(){
           <th title="Porcentaje de las operaciones de este tramo que cerraron con ganancia.">Win rate</th>
           <th title="Retorno acumulado de la estrategia dentro de este tramo, neto de comisión/slippage estimados.">Retorno estrategia</th>
           <th title="Retorno acumulado de comprar y mantener el benchmark durante este mismo tramo.">Retorno benchmark</th>
+          <th title="Lo que hubiera devuelto el benchmark si cada día se hubiera invertido solo la misma fracción de capital que la estrategia realmente tuvo desplegada ese día dentro de este tramo (en vez de 100% todo el tramo). Comparar contra esta cifra evita penalizar a la estrategia por el cash ocioso.">Benchmark ajustado por exposición</th>
+          <th title="Promedio del alpha de cada operación de este tramo (su retorno menos lo que hizo el benchmark en esa misma ventana exacta de entrada/salida) sobre las operaciones del tramo que tienen ese dato.">Alpha promedio</th>
           <th title="Mayor caída porcentual desde un máximo hasta su punto más bajo posterior, dentro de este tramo.">Max drawdown</th>
           <th title="Retorno ajustado por riesgo dentro de este tramo (retorno promedio diario sobre su desvío estándar, anualizado).">Sharpe</th>
         </tr></thead>
