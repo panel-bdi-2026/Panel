@@ -169,7 +169,7 @@ def test_regime_filter_does_not_block_when_benchmark_above_regime_sma(screener):
 def test_evaluate_symbol_exposes_score_components(screener):
     result = screener.evaluate_symbol("MOM", benchmark_roc_3m=5.0, regime_ok=True)
     assert set(result.score_components.keys()) == {
-        "relative_strength", "momentum_3m", "momentum_1m", "trend", "rsi",
+        "relative_strength", "momentum_12_1", "trend", "rsi",
         "macd", "bollinger", "sector_relative_strength",
     }
 
@@ -257,7 +257,10 @@ def test_near_high_filter_returns_none_with_insufficient_history(monkeypatch):
     monkeypatch.setattr(screener_module, "get_daily_bars", fake_get_daily_bars)
     monkeypatch.setattr(screener_module, "get_next_earnings_date", lambda symbol, force=False: None)
 
-    config = ScreenerConfig(universe=["MOM"], benchmark_symbol="SPY")
+    config = ScreenerConfig(
+        universe=["MOM"], benchmark_symbol="SPY",
+        momentum_12_1_lookback_days=20, momentum_12_1_skip_days=5,
+    )
     s = MomentumScreener(config)
     result = s.evaluate_symbol("MOM", benchmark_roc_3m=0.0, regime_ok=True)
 

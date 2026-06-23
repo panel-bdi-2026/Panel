@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from .indicators import atr, bollinger_percent_b, macd, pct_from_high, rate_of_change, rsi, sma
+from .indicators import atr, bollinger_percent_b, macd, momentum_12_1, pct_from_high, rate_of_change, rsi, sma
 from .market_data import MarketDataError, get_daily_bars, get_next_earnings_date, is_bars_cached
 from .models import SignalResult
 from .news_sentiment import apply_news_sentiment_adjustment
@@ -79,7 +79,9 @@ class MomentumScreener:
             bars = get_daily_bars(symbol, cfg.lookback_days, force=force)
         except MarketDataError:
             return None
-        if len(bars) < cfg.sma_slow + cfg.momentum_lookback_days // 2:
+        if len(bars) < max(
+            cfg.sma_slow + cfg.momentum_lookback_days // 2, cfg.momentum_12_1_lookback_days + 1
+        ):
             return None
 
         close = bars["Close"]
@@ -87,6 +89,7 @@ class MomentumScreener:
         sma_slow_s = sma(close, cfg.sma_slow)
         roc_3m = rate_of_change(close, cfg.momentum_lookback_days)
         roc_1m = rate_of_change(close, cfg.momentum_short_days)
+        roc_12_1 = momentum_12_1(close, cfg.momentum_12_1_lookback_days, cfg.momentum_12_1_skip_days)
         rsi_s = rsi(close, cfg.rsi_period)
         atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
         avg_volume_s = bars["Volume"].rolling(20, min_periods=1).mean()
@@ -95,13 +98,19 @@ class MomentumScreener:
         _, _, macd_hist_s = macd(close)
         bollinger_pct_b_s = bollinger_percent_b(close)
 
-        if pd.isna(sma_slow_s.iloc[-1]) or pd.isna(roc_3m.iloc[-1]) or pd.isna(atr_s.iloc[-1]):
+        if (
+            pd.isna(sma_slow_s.iloc[-1])
+            or pd.isna(roc_3m.iloc[-1])
+            or pd.isna(roc_12_1.iloc[-1])
+            or pd.isna(atr_s.iloc[-1])
+        ):
             return None
 
         last_price = float(close.iloc[-1])
         last_rsi = float(rsi_s.iloc[-1])
         last_roc_3m = float(roc_3m.iloc[-1])
         last_roc_1m = float(roc_1m.iloc[-1]) if not pd.isna(roc_1m.iloc[-1]) else 0.0
+        last_roc_12_1 = float(roc_12_1.iloc[-1])
         last_avg_vol = float(avg_volume_s.iloc[-1])
         last_avg_dollar_vol = float(avg_dollar_volume_s.iloc[-1])
         last_atr = float(atr_s.iloc[-1])
@@ -180,8 +189,7 @@ class MomentumScreener:
 
         components = {
             "relative_strength": relative_strength,
-            "momentum_3m": last_roc_3m,
-            "momentum_1m": last_roc_1m,
+            "momentum_12_1": last_roc_12_1,
             "trend": trend_strength_pct,
             "rsi": last_rsi - 50,
             "macd": last_macd_hist_pct if last_macd_hist_pct is not None else 0.0,
@@ -190,8 +198,7 @@ class MomentumScreener:
         }
         score = (
             cfg.score_weight_relative_strength * components["relative_strength"]
-            + cfg.score_weight_momentum_3m * components["momentum_3m"]
-            + cfg.score_weight_momentum_1m * components["momentum_1m"]
+            + cfg.score_weight_momentum_12_1 * components["momentum_12_1"]
             + cfg.score_weight_trend * components["trend"]
             + cfg.score_weight_rsi * components["rsi"]
             + cfg.score_weight_macd * components["macd"]
@@ -252,8 +259,7 @@ class MomentumScreener:
             )
         apply_cross_sectional_normalization(results, {
             "relative_strength": self.config.score_weight_relative_strength,
-            "momentum_3m": self.config.score_weight_momentum_3m,
-            "momentum_1m": self.config.score_weight_momentum_1m,
+            "momentum_12_1": self.config.score_weight_momentum_12_1,
             "trend": self.config.score_weight_trend,
             "rsi": self.config.score_weight_rsi,
             "macd": self.config.score_weight_macd,

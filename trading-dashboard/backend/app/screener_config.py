@@ -291,9 +291,24 @@ class ScreenerConfig(BaseModel):
     sma_fast: int = 20
     sma_slow: int = 50
 
-    # Momentum: retorno (%) en cada ventana.
+    # Momentum: retorno (%) en cada ventana. momentum_lookback_days y
+    # momentum_short_days alimentan momentum_3m_pct/momentum_1m_pct (campos de
+    # contexto/display de SignalResult) y relative_strength (vs. el benchmark);
+    # NO alimentan mas el score de Momentum, que usa el momentum 12-1 de abajo.
     momentum_lookback_days: int = 63  # ~3 meses
     momentum_short_days: int = 21  # ~1 mes
+
+    # Momentum "12-1" (Jegadeesh & Titman, ver indicators.momentum_12_1):
+    # retorno entre t-momentum_12_1_lookback_days y t-momentum_12_1_skip_days,
+    # saltando el ultimo mes para no premiar la reversion de corto plazo que
+    # domina ese tramo -- a diferencia del viejo blend momentum_3m + momentum_1m
+    # (score_weight_momentum_3m/1m, eliminados), que sumaba ese tramo en vez de
+    # excluirlo. Reemplaza esos dos componentes en el score (ver evaluate_symbol
+    # en screener.py); son campos nuevos (no se reusan momentum_lookback_days/
+    # momentum_short_days) para no romper la semantica de los campos de
+    # display/contexto de arriba, que siguen siendo ventanas de 3m/1m de verdad.
+    momentum_12_1_lookback_days: int = 252  # ~12 meses
+    momentum_12_1_skip_days: int = 21  # ~1 mes salteado
 
     rsi_period: int = 14
     rsi_min: float = 40
@@ -305,8 +320,7 @@ class ScreenerConfig(BaseModel):
     # directamente contra backtest_score_entry_threshold, que tambien sirve
     # de umbral de auto-trading en vivo, ver mas abajo).
     score_weight_relative_strength: float = 0.25
-    score_weight_momentum_3m: float = 0.1786
-    score_weight_momentum_1m: float = 0.1071
+    score_weight_momentum_12_1: float = 0.2857
     score_weight_trend: float = 0.1071
     score_weight_rsi: float = 0.0714
     # Señales tecnicas adicionales (confirmacion de tendencia, no gating):

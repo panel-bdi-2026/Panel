@@ -6,7 +6,7 @@ from collections import Counter
 
 import pandas as pd
 
-from .indicators import atr, bollinger_percent_b, macd, pct_from_high, rate_of_change, rsi, sma
+from .indicators import atr, bollinger_percent_b, macd, momentum_12_1, pct_from_high, rate_of_change, rsi, sma
 from .market_data import MarketDataError, get_daily_bars
 from .models import BacktestSummary, BacktestTrade, EquityCurvePoint, WalkForwardFold, WalkForwardResult
 from .screener_config import GROWTH_TICKERS, ScreenerConfig
@@ -101,7 +101,7 @@ def _momentum_raw_components(
     benchmark_roc = rate_of_change(bench_bars["Close"], cfg.momentum_lookback_days)
 
     keys = (
-        "relative_strength", "momentum_3m", "momentum_1m", "trend",
+        "relative_strength", "momentum_12_1", "trend",
         "rsi", "macd", "bollinger", "sector_relative_strength",
     )
     per_symbol: dict[str, dict[str, pd.Series]] = {key: {} for key in keys}
@@ -111,7 +111,7 @@ def _momentum_raw_components(
         sma_fast_s = sma(close, cfg.sma_fast)
         sma_slow_s = sma(close, cfg.sma_slow)
         roc_3m = rate_of_change(close, cfg.momentum_lookback_days)
-        roc_1m = rate_of_change(close, cfg.momentum_short_days)
+        roc_12_1 = momentum_12_1(close, cfg.momentum_12_1_lookback_days, cfg.momentum_12_1_skip_days)
         rsi_s = rsi(close, cfg.rsi_period)
         _, _, macd_hist_s = macd(close)
         bollinger_s = bollinger_percent_b(close)
@@ -122,7 +122,7 @@ def _momentum_raw_components(
         # score: se chequea aparte en _simulate_symbol antes de usarlo para
         # el stop-loss). Sin esto, un simbolo con poca historia entraria al
         # ranking cross-sectional con momentum/tendencia indefinidos.
-        valid = ~(sma_slow_s.isna() | roc_3m.isna())
+        valid = ~(sma_slow_s.isna() | roc_3m.isna() | roc_12_1.isna())
 
         # Fuerza continua de la tendencia, mismo calculo que screener.py:
         # promedio de cuanto el precio esta por encima de la SMA rapida y
@@ -142,8 +142,7 @@ def _momentum_raw_components(
         sector_component = sector_rel.fillna(0.0) if sector_rel is not None else pd.Series(0.0, index=close.index)
 
         per_symbol["relative_strength"][symbol] = (roc_3m - aligned_bench_roc).where(valid)
-        per_symbol["momentum_3m"][symbol] = roc_3m.where(valid)
-        per_symbol["momentum_1m"][symbol] = roc_1m.fillna(0.0).where(valid)
+        per_symbol["momentum_12_1"][symbol] = roc_12_1.where(valid)
         per_symbol["trend"][symbol] = trend_component.where(valid)
         per_symbol["rsi"][symbol] = (rsi_s - 50).where(valid)
         per_symbol["macd"][symbol] = macd_pct_s.fillna(0.0).where(valid)
@@ -215,7 +214,16 @@ def _simulate_symbol(
     # True) no hace falta esperar esos 252 dias: nada en la entrada depende
     # de fh.
     near_high_min_days = 252 if cfg.near_high_filter_enabled else 0
-    start_idx = max(cfg.sma_slow, cfg.momentum_lookback_days, cfg.atr_period, near_high_min_days) + 1
+    start_idx = (
+        max(
+            cfg.sma_slow,
+            cfg.momentum_lookback_days,
+            cfg.momentum_12_1_lookback_days,
+            cfg.atr_period,
+            near_high_min_days,
+        )
+        + 1
+    )
     for i in range(start_idx, len(bars)):
         date = bars.index[i]
         price = float(close.iloc[i])
@@ -891,7 +899,7 @@ def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], 
             bars = get_daily_bars(symbol, history_days)
         except MarketDataError:
             continue
-        if len(bars) < cfg.sma_slow + cfg.momentum_lookback_days:
+        if len(bars) < max(cfg.sma_slow + cfg.momentum_lookback_days, cfg.momentum_12_1_lookback_days + 1):
             continue
         bars_by_symbol[symbol] = bars
 
@@ -905,8 +913,7 @@ def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], 
     raw_components = _momentum_raw_components(bars_by_symbol, cfg, bench_bars, history_days)
     score_panel = _cross_sectional_score_panel(raw_components, {
         "relative_strength": cfg.score_weight_relative_strength,
-        "momentum_3m": cfg.score_weight_momentum_3m,
-        "momentum_1m": cfg.score_weight_momentum_1m,
+        "momentum_12_1": cfg.score_weight_momentum_12_1,
         "trend": cfg.score_weight_trend,
         "rsi": cfg.score_weight_rsi,
         "macd": cfg.score_weight_macd,

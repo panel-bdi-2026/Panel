@@ -26,6 +26,15 @@ def rate_of_change(close: pd.Series, period: int) -> pd.Series:
     return (close / close.shift(period) - 1) * 100
 
 
+def momentum_12_1(close: pd.Series, lookback: int, skip: int) -> pd.Series:
+    """Momentum academico "12 meses menos 1" (Jegadeesh & Titman): retorno
+    entre t-lookback y t-skip, saltando el tramo mas reciente (`skip` dias).
+    A diferencia de un blend `momentum_3m + momentum_1m`, no carga el tramo
+    de 1 mes que en la practica tiene reversion de corto plazo en vez de
+    momentum -- ese tramo queda excluido del calculo, no solo sub-ponderado."""
+    return (close.shift(skip) / close.shift(lookback) - 1) * 100
+
+
 def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
     prev_close = close.shift(1)
     true_range = pd.concat(
