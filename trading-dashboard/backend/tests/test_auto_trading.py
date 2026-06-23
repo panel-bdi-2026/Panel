@@ -87,6 +87,14 @@ def reset_state(monkeypatch, tmp_path):
         allow_extended_hours=True,
         manual_approval_threshold_usd=1_000_000,
     ))
+    # asyncio.Lock se ata al event loop la primera vez que alguien tiene que
+    # esperarlo (contencion real), no a la creacion. Como cada test que usa
+    # asyncio.run() corre en un loop nuevo, reusar el _funds_order_lock del
+    # modulo entre tests con contencion real revienta con "is bound to a
+    # different event loop" (o peor, deja de bloquear silenciosamente) en
+    # cuanto un segundo test lo contiende desde otro loop. Una instancia
+    # nueva por test evita que el binding se filtre entre tests.
+    monkeypatch.setattr(main_module, "_funds_order_lock", asyncio.Lock())
     monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 0)
 
     async def fake_get_account_summary():
@@ -898,6 +906,64 @@ def test_concurrent_submit_order_does_not_overspend_fund_cash(monkeypatch):
     fund = main_module.funds_store.get(fund.id)
     assert fund.cash_usd == 3_500  # 8000 - 4500: la segunda compra se rechazo
     assert fund.owned_quantity("AAPL") == 45
+
+
+def test_concurrent_submit_order_does_not_exceed_max_position_pct(monkeypatch):
+    """Reproduce la otra carrera de _funds_order_lock: account_summary y
+    position_qty se leian ANTES de adquirir el lock, asi que dos ordenes
+    concurrentes sobre el MISMO simbolo evaluaban max_position_pct_of_equity
+    contra el mismo current_position_qty desactualizado (0 las dos), aunque
+    juntas excedan el limite. Con el fix, la segunda orden lee el
+    position_qty YA actualizado por el fill de la primera (simulado via
+    filled_state) y debe ser rechazada."""
+    main_module.rules_engine.reload(RulesConfig(
+        symbol_whitelist=["AAPL"],
+        allow_extended_hours=True,
+        manual_approval_threshold_usd=1_000_000,
+        max_order_value_usd=100_000,
+        max_position_pct_of_equity=10,
+    ))
+
+    async def fake_get_account_summary():
+        return make_account(net_liq=20_000)
+
+    monkeypatch.setattr(main_module.broker, "get_account_summary", fake_get_account_summary)
+
+    filled_state = {"qty": 0.0}
+
+    async def slow_place_order(order):
+        await asyncio.sleep(0.05)  # ensancha la ventana de carrera si el lock fallara
+        filled_state["qty"] += order.quantity
+        return {"order_id": 1, "status": "Filled", "filled_qty": order.quantity, "avg_fill_price": order.limit_price}
+
+    monkeypatch.setattr(main_module.broker, "place_order", slow_place_order)
+    monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: filled_state["qty"])
+
+    def make_order():
+        return main_module.OrderRequest(
+            symbol="AAPL",
+            side=main_module.Side.BUY,
+            quantity=11,
+            order_type="LMT",
+            limit_price=100.0,
+            stop_loss_price=95.0,
+        )
+
+    async def run_both():
+        return await asyncio.gather(
+            main_module.submit_order(make_order(), None),
+            main_module.submit_order(make_order(), None),
+            return_exceptions=True,
+        )
+
+    results = asyncio.run(run_both())
+
+    successes = [r for r in results if isinstance(r, dict)]
+    failures = [r for r in results if isinstance(r, main_module.HTTPException)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert failures[0].status_code == 422
+    assert filled_state["qty"] == 11  # solo la primera orden se ejecuto
 
 
 def test_run_auto_exit_monitor_cycle_continues_after_a_check_fails(monkeypatch):

@@ -76,6 +76,14 @@ def reset_state(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 0)
     monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account()))
     monkeypatch.setattr(main_module, "_persist_state", lambda: None)
+    # asyncio.Lock se ata al event loop la primera vez que alguien tiene que
+    # esperarlo (contencion real), no a la creacion. Como cada test que usa
+    # asyncio.run() corre en un loop nuevo, reusar el _funds_order_lock del
+    # modulo entre tests con contencion real revienta con "is bound to a
+    # different event loop" (o peor, deja de bloquear silenciosamente) en
+    # cuanto un segundo test lo contiende desde otro loop. Una instancia
+    # nueva por test evita que el binding se filtre entre tests.
+    monkeypatch.setattr(main_module, "_funds_order_lock", asyncio.Lock())
     main_module._sessions.clear()
     yield
     main_module._sessions.clear()
@@ -501,6 +509,39 @@ def test_close_fund_rejects_when_cash_not_zero(monkeypatch):
 def test_close_fund_unknown_returns_404():
     resp = client.post("/api/funds/no-existe/close", headers={"X-API-Key": "test-key"})
     assert resp.status_code == 404
+
+
+def test_close_fund_waits_for_in_flight_order_holding_the_lock():
+    """close_fund debe esperar _funds_order_lock, no solo el lock interno de
+    FundsStore: sin esto, podia validar 'sin posiciones abiertas' justo antes
+    de que un fill en curso (que no chequea fund.closed) le agregara una
+    posicion al fondo ya cerrado. Con el fix, para cuando close_fund corre la
+    validacion ya vio el fill que la orden en vuelo dejo, y rechaza el cierre."""
+    # Cash justo en 100 para que la compra de 1 accion a $100 deje cash_usd en
+    # 0 exacto: la unica razon por la que close() puede rechazar despues es la
+    # posicion abierta, no el cash.
+    fund = main_module.funds_store.create("Fondo", 1000)
+    main_module.funds_store.apply_capital_flow(fund.id, -900, note="Retiro parcial")
+
+    async def scenario():
+        order_started = asyncio.Event()
+
+        async def fake_order_in_flight():
+            async with main_module._funds_order_lock:
+                order_started.set()
+                await asyncio.sleep(0.05)
+                main_module.funds_store.record_fill(fund.id, "AAPL", Side.BUY, 1, 100)
+
+        task = asyncio.create_task(fake_order_in_flight())
+        await order_started.wait()
+        with pytest.raises(main_module.HTTPException) as exc_info:
+            await main_module.close_fund(fund.id, None)
+        await task
+        return exc_info.value
+
+    exc = asyncio.run(scenario())
+    assert exc.status_code == 422
+    assert "abiertas" in exc.detail.lower()
 
 
 def test_capital_flow_rejected_on_closed_fund(monkeypatch):

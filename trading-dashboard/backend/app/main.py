@@ -697,7 +697,12 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                     audit.record(
                         "auto_trade_stop_loss_reconciled",
                         {"fund_id": fund_id, "symbol": symbol},
-                        {"quantity": closed_qty, "price": fill_price},
+                        # approximate=True marca que fill_price es el stop teorico
+                        # (o avg_cost), no el fill real reportado por IBKR -- pasa
+                        # cuando avgFillPrice viene vacio/0 para esta orden. Sin
+                        # esta marca un PnL con error sistematico queda indistinguible
+                        # de uno exacto en el audit log.
+                        {"quantity": closed_qty, "price": fill_price, "approximate": avg_fill_price is None},
                     )
                     fund = funds_store.get(fund_id)
                     position = fund.positions.get(symbol) if fund else None
@@ -706,9 +711,12 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                 reconciled_via_order = True
 
         # Sin stop_order_id, o la orden ya no esta en self.ib.trades() de esta
-        # sesion (ver get_trade_fill): unico caso donde se cae al agregado de
-        # TODA la cuenta, que puede confundir posiciones de otros fondos en el
-        # mismo simbolo -- mejor que no reconciliar nada.
+        # sesion (ver get_trade_fill, tipicamente tras un restart/reconnect):
+        # unico caso donde se cae al agregado de TODA la cuenta, que puede
+        # confundir posiciones de otros fondos en el mismo simbolo -- mejor
+        # que no reconciliar nada. El precio aca siempre es el stop teorico
+        # (no hay forma de recuperar el fill real sin rastro de la orden en
+        # esta sesion), por eso approximate=True siempre en esta rama.
         if not reconciled_via_order:
             broker_qty = broker.get_position_qty(symbol)
             if broker_qty < position.quantity:
@@ -718,7 +726,7 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                 audit.record(
                     "auto_trade_stop_loss_reconciled",
                     {"fund_id": fund_id, "symbol": symbol},
-                    {"quantity": closed_qty, "price": fill_price},
+                    {"quantity": closed_qty, "price": fill_price, "approximate": True},
                 )
                 fund = funds_store.get(fund_id)
                 position = fund.positions.get(symbol) if fund else None
@@ -1610,18 +1618,23 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
     if not state["connected"]:
         raise HTTPException(status_code=503, detail="No conectado a IBKR.")
 
-    account_summary = await broker.get_account_summary()
-    position_qty = broker.get_position_qty(order.symbol)
-    reference_price = order.limit_price
-    if reference_price is None:
-        reference_price = await broker.get_reference_price(order.symbol)
-    if not reference_price:
-        raise HTTPException(
-            status_code=422,
-            detail="No se pudo obtener un precio de referencia para validar la orden. Usa una orden LMT con precio definido.",
-        )
-
     async with _funds_order_lock:
+        # account_summary/position_qty se leen DENTRO del lock, no antes: si se
+        # leyeran antes de adquirirlo, dos submit_order concurrentes sobre el
+        # mismo simbolo evaluarian el rules_engine contra el mismo estado
+        # pre-orden (el lock solo protegia el cash del fondo a partir de aca,
+        # no esta lectura) y juntas podrian violar max_position_pct/daily_loss.
+        account_summary = await broker.get_account_summary()
+        position_qty = broker.get_position_qty(order.symbol)
+        reference_price = order.limit_price
+        if reference_price is None:
+            reference_price = await broker.get_reference_price(order.symbol)
+        if not reference_price:
+            raise HTTPException(
+                status_code=422,
+                detail="No se pudo obtener un precio de referencia para validar la orden. Usa una orden LMT con precio definido.",
+            )
+
         if order.fund_id:
             _validate_fund_order(order, reference_price)
 
@@ -2068,13 +2081,20 @@ def set_fund_strategy(fund_id: str, body: FundStrategyUpdate, _: None = Depends(
 
 
 @app.post("/api/funds/{fund_id}/close")
-def close_fund(fund_id: str, _: None = Depends(require_api_key)):
+async def close_fund(fund_id: str, _: None = Depends(require_api_key)):
     """Cierra un fondo de forma definitiva (ver FundsStore.close()): exige
-    cash_usd en 0 y ninguna posicion abierta. No hay endpoint para reabrirlo."""
-    try:
-        fund = funds_store.close(fund_id)
-    except FundValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+    cash_usd en 0 y ninguna posicion abierta. No hay endpoint para reabrirlo.
+
+    Toma _funds_order_lock (igual que submit_order/approve_order/el
+    auto-trading) para no poder cerrarse mientras una orden de ESE fondo esta
+    en pleno vuelo: sin el lock, close() podia validar "sin posiciones
+    abiertas" justo antes de que un fill en curso (que no chequea fund.closed)
+    le agregara una posicion al fondo ya cerrado."""
+    async with _funds_order_lock:
+        try:
+            fund = funds_store.close(fund_id)
+        except FundValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
     if fund is None:
         raise HTTPException(status_code=404, detail="Fondo no encontrado.")
     audit.record("fund_closed", {"fund_id": fund_id}, {})

@@ -65,6 +65,22 @@ def test_partial_sell_keeps_remaining_position_and_avg_cost(store):
     assert fund.positions["AAPL"].avg_cost == 100
 
 
+def test_sell_more_than_held_clamps_to_position_quantity(store, caplog):
+    """Una venta que pide mas de lo que la posicion tiene (ej. un closed_qty
+    mal calculado en una reconciliacion) no debe inflar cash_usd con dinero
+    virtual ni registrar un PnL irreal: se acota a lo realmente poseido."""
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100)
+    with caplog.at_level("WARNING"):
+        store.record_fill(fund.id, "AAPL", Side.SELL, 15, 120)
+    fund = store.get(fund.id)
+    assert fund.owned_quantity("AAPL") == 0
+    assert fund.cash_usd == 5000 + (120 - 100) * 10
+    assert fund.realized_pnl_total() == 200.0
+    assert fund.trades[-1].quantity == 10
+    assert "supera la posicion registrada" in caplog.text
+
+
 def test_owned_quantity_does_not_see_holdings_never_bought_by_this_fund(store):
     """El guardrail central: un fondo que nunca compro un simbolo no figura
     con cantidad en su ledger, sin importar lo que haya en la cuenta real de

@@ -163,11 +163,12 @@ class Fund(BaseModel):
         del fondo: mueve cash_usd, actualiza la posicion (costo promedio en
         compras, PnL realizado en ventas) y la agrega al historial.
 
-        No valida nada (cash suficiente, cantidad disponible): esas
-        validaciones corren ANTES de enviar la orden al broker (ver
-        main.py). Llamar a esto con una venta que deja quantity negativa
-        indicaria un bug en esa validacion previa, no algo que este metodo
-        deba intentar corregir silenciosamente.
+        No valida nada (cash suficiente): esa validacion corre ANTES de
+        enviar la orden al broker (ver main.py). La cantidad vendida si se
+        acota a lo que la posicion realmente tiene: un caller con un bug (ej.
+        una reconciliacion que calculo mal closed_qty) no debe poder inflar
+        cash_usd con dinero virtual ni registrar un PnL irreal vendiendo mas
+        de lo que el fondo posee.
         """
         pos = self.positions.setdefault(symbol, FundPosition())
         realized_pnl = None
@@ -183,6 +184,13 @@ class Fund(BaseModel):
             pos.quantity = new_qty
             self.cash_usd -= price * quantity
         else:
+            if quantity > pos.quantity:
+                logger.warning(
+                    "record_fill: venta de %.6f %s en fondo %s supera la posicion "
+                    "registrada (%.6f); se acota a lo disponible.",
+                    quantity, symbol, self.id, pos.quantity,
+                )
+                quantity = pos.quantity
             realized_pnl = (price - pos.avg_cost) * quantity
             pos.quantity -= quantity
             if pos.quantity <= 0:
