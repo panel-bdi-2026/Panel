@@ -214,6 +214,15 @@ class BacktestTrade(BaseModel):
     exit_price: float
     return_pct: float
     exit_reason: str  # stop_loss | max_holding_days | score_exit
+    # Alpha de ESTA operacion vs el benchmark (cfg.benchmark_symbol): return_pct
+    # menos lo que hizo el benchmark close-a-close en la misma ventana exacta
+    # entry_date->exit_date (no el periodo completo del backtest, que es lo
+    # que ya compara benchmark_cumulative_return_pct a nivel resumen). None si
+    # el benchmark no tiene ninguna cotizacion conocida en o antes de alguna
+    # de las dos fechas (ver _trade_alpha_pct en backtest.py) -- nunca 0.0 por
+    # default, porque 0.0 significa "empato exactamente con el benchmark", un
+    # dato distinto de "no se pudo calcular".
+    alpha_pct: Optional[float] = None
 
 
 class EquityCurvePoint(BaseModel):
@@ -234,6 +243,23 @@ class BacktestSummary(BaseModel):
     expectancy_pct: float
     strategy_cumulative_return_pct: float
     benchmark_cumulative_return_pct: float
+    # Lo que hubiera devuelto el benchmark si CADA DIA se hubiera invertido
+    # solo la misma fraccion de capital que la estrategia realmente tuvo
+    # desplegada ese dia (la misma fraccion day-by-day que alimenta
+    # avg_exposure_pct, ver _daily_equity_curve), compuesta sobre el camino
+    # real de precios del benchmark -- no benchmark_cumulative_return_pct
+    # (100% invertido los dos extremos del periodo) escalado de forma
+    # estatica por un promedio. Comparar contra esta cifra (en vez de contra
+    # benchmark_cumulative_return_pct) evita penalizar a la estrategia por el
+    # cash ocioso que avg_exposure_pct ya muestra que tuvo: con exposicion
+    # promedio baja, un retorno parcialmente invertido se ve injustamente
+    # peor frente a un benchmark 100% invertido todo el tiempo.
+    exposure_adjusted_benchmark_return_pct: float
+    # Promedio de BacktestTrade.alpha_pct sobre TODAS las operaciones (no solo
+    # las ultimas 50 de `trades`, igual que exit_reason_counts), excluyendo
+    # las que no tienen alpha definido. None si ninguna operacion tiene alpha
+    # definido (ej. el benchmark no cubre la ventana de ninguna operacion).
+    avg_alpha_pct: Optional[float] = None
     max_drawdown_pct: float
     sharpe_ratio: Optional[float] = None
     # % promedio del capital asumido (backtest_assumed_capital_usd) que estuvo
@@ -261,6 +287,11 @@ class WalkForwardFold(BaseModel):
     avg_return_pct: Optional[float] = None
     strategy_cumulative_return_pct: Optional[float] = None
     benchmark_cumulative_return_pct: Optional[float] = None
+    # Mismas dos metricas nuevas que BacktestSummary (ver ahi para el detalle),
+    # calculadas solo dentro de la ventana de este fold. None junto con el
+    # resto de las metricas cuando el fold no tuvo ninguna operacion.
+    exposure_adjusted_benchmark_return_pct: Optional[float] = None
+    avg_alpha_pct: Optional[float] = None
     max_drawdown_pct: Optional[float] = None
     sharpe_ratio: Optional[float] = None
 

@@ -105,6 +105,19 @@ def test_backtest_includes_sharpe_ratio_when_enough_trades(patched_market_data):
     assert summary.sharpe_ratio is not None
 
 
+def test_backtest_includes_exposure_adjusted_benchmark_and_alpha(patched_market_data):
+    # Smoke test end-to-end (no con operaciones sinteticas a mano): confirma
+    # que las dos metricas nuevas quedan conectadas a traves de todo el
+    # pipeline real (_collect_momentum_trades -> _compute_summary_stats), no
+    # solo en los tests unitarios de mas abajo que llaman _compute_summary_
+    # stats directamente.
+    config = ScreenerConfig(universe=["MOM", "FLAT"], benchmark_symbol="SPY", backtest_years=1)
+    summary = run_backtest(config)
+    assert isinstance(summary.exposure_adjusted_benchmark_return_pct, float)
+    assert any(t.alpha_pct is not None for t in summary.trades)
+    assert summary.avg_alpha_pct is not None
+
+
 def test_backtest_throttles_between_symbols_to_avoid_rate_limiting(monkeypatch, patched_market_data):
     """Mismo motivo que el throttle del scan en vivo (scan_request_delay_seconds):
     con un universo grande (S&P 500 completo) el backtest pega cientos de
@@ -473,6 +486,96 @@ def test_avg_exposure_pct_reflects_capital_utilization():
     assert summary.avg_exposure_pct == 50.0
 
 
+def test_trade_alpha_pct_subtracts_benchmark_return_over_same_window():
+    from app.backtest import _trade_alpha_pct
+    # Benchmark Jan1->Jan11 (ver _bench_bars_2024): 100->110, +10%. La
+    # operacion cubre exactamente esa misma ventana, asi que el alpha es
+    # simplemente su propio retorno menos ese +10%.
+    bench_bars = _bench_bars_2024(n_days=11)
+    trade = _trade("A", 1, 11, return_pct=15.0)
+    assert _trade_alpha_pct(trade, bench_bars["Close"]) == 5.0
+
+
+def test_trade_alpha_pct_returns_none_when_benchmark_predates_entry():
+    from app.backtest import _trade_alpha_pct
+    # El benchmark recien arranca Jan5: una operacion que entro y salio antes
+    # de eso (Jan1/Jan3) no tiene ningun precio de benchmark conocido en o
+    # antes de su entry_date (asof devuelve NaN), asi que el alpha de esa
+    # operacion queda indefinido en vez de un 0% o un error.
+    bench_bars = _bench_bars_2024(n_days=7, start="2024-01-05")
+    trade = _trade("A", 1, 3, return_pct=8.0)
+    assert _trade_alpha_pct(trade, bench_bars["Close"]) is None
+
+
+def test_trade_alpha_pct_returns_none_when_benchmark_entry_price_is_zero():
+    from app.backtest import _trade_alpha_pct
+    idx = pd.date_range("2024-01-01", periods=3, freq="D")
+    bench_close = pd.Series([0.0, 1.0, 2.0], index=idx)
+    trade = _trade("A", 1, 3, return_pct=5.0)
+    assert _trade_alpha_pct(trade, bench_close) is None
+
+
+def test_avg_alpha_pct_averages_only_trades_with_defined_alpha():
+    from app.backtest import _compute_summary_stats
+    # B opera Jan1-Jan3, antes de que arranque la historia del benchmark
+    # (Jan5): su alpha queda indefinido (ver test de _trade_alpha_pct de
+    # arriba) y no debe entrar al promedio. A opera Jan5-Jan11, dentro de la
+    # ventana del benchmark (100->106, +6%): su alpha es 20 - 6 = 14.0, y debe
+    # ser el unico valor que compone avg_alpha_pct.
+    bench_bars = _bench_bars_2024(n_days=7, start="2024-01-05")
+    trade_without_alpha = _trade("B", 1, 3, return_pct=8.0)
+    trade_with_alpha = _trade("A", 5, 11, return_pct=20.0)
+    summary = _compute_summary_stats(
+        [trade_without_alpha, trade_with_alpha], top_n=10, bench_bars=bench_bars
+    )
+    assert summary.trades[0].alpha_pct is None
+    assert summary.trades[1].alpha_pct == 14.0
+    assert summary.avg_alpha_pct == 14.0
+
+
+def test_avg_alpha_pct_is_none_when_no_trade_has_defined_alpha():
+    from app.backtest import _compute_summary_stats
+    # Benchmark arranca bien despues (Feb) de que cualquiera de las dos
+    # operaciones (Jan1-Jan3) haya cerrado: ninguna tiene alpha definido, asi
+    # que avg_alpha_pct debe ser None en vez de promediar sobre una lista
+    # vacia (ZeroDivisionError) o devolver 0.0 (que significaria "empato
+    # exacto con el benchmark", un dato distinto de "no se pudo calcular").
+    bench_bars = _bench_bars_2024(n_days=7, start="2024-02-01")
+    trades = [_trade("A", 1, 2, return_pct=5.0), _trade("B", 2, 3, return_pct=-1.0)]
+    summary = _compute_summary_stats(trades, top_n=10, bench_bars=bench_bars)
+    assert all(t.alpha_pct is None for t in summary.trades)
+    assert summary.avg_alpha_pct is None
+
+
+def test_exposure_adjusted_benchmark_return_pct_only_counts_invested_days():
+    from app.backtest import _compute_summary_stats
+    # Benchmark sube +1 cada dia (100->110) en los 11 dias del calendario
+    # (Jan1..Jan11). La unica operacion (top_n=1, 100% de exposicion) esta
+    # abierta esos mismos 11 dias pero ya cerrada el dia de salida (Jan11): ese
+    # dia no cuenta exposicion (mismo mecanismo que avg_exposure_pct, ver
+    # test_avg_exposure_pct_reflects_capital_utilization), asi que el
+    # benchmark ajustado por exposicion no debe capturar la ultima suba del
+    # benchmark (109->110): 109/100-1 = 9.0%, no el 110/100-1 = 10.0% del
+    # benchmark crudo.
+    bench_bars = _bench_bars_2024(n_days=11)
+    trades = [_trade("A", 1, 11, return_pct=10.0)]
+    summary = _compute_summary_stats(trades, top_n=1, bench_bars=bench_bars)
+    assert summary.benchmark_cumulative_return_pct == 10.0
+    assert summary.exposure_adjusted_benchmark_return_pct == 9.0
+
+
+def test_exposure_adjusted_benchmark_return_pct_scales_down_with_lower_exposure():
+    from app.backtest import _compute_summary_stats
+    # Misma ventana y benchmark que el test anterior, pero top_n=2 en vez de 1
+    # (50% de exposicion mientras la operacion esta abierta, no 100%): el
+    # benchmark ajustado por exposicion debe capturar menos que con 100% de
+    # exposicion (9.0%, ver test anterior) pero mas que cero.
+    bench_bars = _bench_bars_2024(n_days=11)
+    trades = [_trade("A", 1, 11, return_pct=10.0)]
+    summary = _compute_summary_stats(trades, top_n=2, bench_bars=bench_bars)
+    assert 0 < summary.exposure_adjusted_benchmark_return_pct < 9.0
+
+
 def test_exit_reason_counts_cover_all_trades_not_just_truncated_sample():
     from app.backtest import _compute_summary_stats
     # summary.trades se trunca a las ultimas 50 (ver _compute_summary_stats),
@@ -769,8 +872,8 @@ def test_opportunistic_backtest_raises_when_no_trades_generated(monkeypatch):
         backtest_module.run_opportunistic_backtest(config)
 
 
-def _bench_bars_2024(n_days=11):
-    idx = pd.date_range("2024-01-01", periods=n_days, freq="D")
+def _bench_bars_2024(n_days=11, start="2024-01-01"):
+    idx = pd.date_range(start, periods=n_days, freq="D")
     close = pd.Series([100.0 + i for i in range(n_days)], index=idx)
     return pd.DataFrame(
         {"Open": close, "High": close + 1, "Low": close - 1, "Close": close, "Volume": 5_000_000},

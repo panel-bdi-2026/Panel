@@ -528,7 +528,7 @@ def cap_concurrent_positions(trades: list[BacktestTrade], top_n: int) -> list[Ba
 
 def _daily_equity_curve(
     all_trades: list[BacktestTrade], top_n: int, bench_bars: pd.DataFrame, marks_by_trade_id: dict | None = None,
-) -> tuple[list[EquityCurvePoint], list[float], float]:
+) -> tuple[list[EquityCurvePoint], list[float], float, float]:
     """Construye la curva de equity dia por dia (no solo en cada evento de
     salida): cada operacion abierta aporta un retorno NO realizado, ponderado
     por 1/top_n igual que una operacion cerrada. Antes la curva solo se
@@ -552,9 +552,20 @@ def _daily_equity_curve(
     ultima salida, mas las fechas exactas de entrada/salida de cada operacion
     por si alguna no cae justo en una fecha del benchmark.
 
-    Devuelve (equity_curve, equity_diaria_en_factor, avg_exposure_pct).
+    Ademas de la exposicion (fraccion de capital con alguna posicion abierta)
+    se usa esa misma fraccion, dia por dia, para componer un benchmark
+    "ajustado por exposicion": cuanto hubiera devuelto el benchmark si solo se
+    hubiera estado invertido en el la misma fraccion de capital que la
+    estrategia realmente tuvo desplegada cada dia (en vez de 100% todo el
+    periodo). Usa el precio de cierre mas reciente conocido en o antes de cada
+    fecha (bench_close.asof) para tolerar fechas del calendario que no caen
+    justo en una barra del benchmark (igual motivo que el resto de la funcion).
+
+    Devuelve (equity_curve, equity_diaria_en_factor, avg_exposure_pct,
+    exposure_adjusted_benchmark_return_pct).
     """
     weight = 1.0 / top_n
+    bench_close = bench_bars["Close"]
     start, end = all_trades[0].entry_date, all_trades[-1].exit_date
     calendar = sorted(
         set(bench_bars.index[(bench_bars.index >= start) & (bench_bars.index <= end)])
@@ -570,6 +581,8 @@ def _daily_equity_curve(
     equity_curve: list[EquityCurvePoint] = []
     daily_equity: list[float] = []
     exposure_sum = 0.0
+    bench_factor = 1.0
+    prev_bench_price = None
 
     for day_idx, date in enumerate(calendar):
         while next_entry_idx < len(trades_by_entry) and trades_by_entry[next_entry_idx].entry_date <= date:
@@ -596,11 +609,41 @@ def _daily_equity_curve(
 
         equity = closed_factor * (1 + unrealized_pct / 100)
         daily_equity.append(equity)
-        exposure_sum += len(open_trades) * weight
+        exposure_today = len(open_trades) * weight
+        exposure_sum += exposure_today
+
+        bench_price = bench_close.asof(date)
+        if prev_bench_price is not None and not pd.isna(bench_price) and prev_bench_price != 0:
+            bench_factor *= 1 + exposure_today * (bench_price / prev_bench_price - 1)
+        if not pd.isna(bench_price):
+            prev_bench_price = bench_price
+
         equity_curve.append(EquityCurvePoint(date=date, equity_pct=round((equity - 1) * 100, 2)))
 
     avg_exposure_pct = round(exposure_sum / len(calendar) * 100, 1)
-    return equity_curve, daily_equity, avg_exposure_pct
+    exposure_adjusted_benchmark_return_pct = round((bench_factor - 1) * 100, 2)
+    return equity_curve, daily_equity, avg_exposure_pct, exposure_adjusted_benchmark_return_pct
+
+
+def _trade_alpha_pct(trade: BacktestTrade, bench_close: pd.Series) -> float | None:
+    """Alpha de una operacion individual: su return_pct menos lo que hizo el
+    benchmark close-a-close en la misma ventana exacta entry_date->exit_date
+    (no el periodo completo del backtest). Usa bench_close.asof (el ultimo
+    precio conocido en o antes de la fecha) en vez de exigir coincidencia
+    exacta de calendario, igual motivo que el resto del archivo: una accion
+    individual puede tener una fecha sin barra exacta en el benchmark.
+
+    None si el benchmark no tiene NINGUN precio conocido en o antes de alguna
+    de las dos fechas (asof devuelve NaN cuando la fecha pedida es anterior a
+    toda la historia disponible -- tipico de operaciones sinteticas en tests
+    que no comparten calendario con bench_bars) o si el precio de entrada del
+    benchmark es 0."""
+    entry_bench = bench_close.asof(trade.entry_date)
+    exit_bench = bench_close.asof(trade.exit_date)
+    if pd.isna(entry_bench) or pd.isna(exit_bench) or entry_bench == 0:
+        return None
+    bench_return_pct = (exit_bench / entry_bench - 1) * 100
+    return round(trade.return_pct - bench_return_pct, 2)
 
 
 def _compute_summary_stats(
@@ -626,7 +669,14 @@ def _compute_summary_stats(
     profit_factor_is_infinite = gross_loss == 0 and gross_profit > 0
     expectancy = sum(returns) / len(returns)
 
-    equity_curve, daily_equity, avg_exposure_pct = _daily_equity_curve(all_trades, top_n, bench_bars, marks_by_trade_id)
+    equity_curve, daily_equity, avg_exposure_pct, exposure_adjusted_benchmark_return_pct = _daily_equity_curve(
+        all_trades, top_n, bench_bars, marks_by_trade_id
+    )
+
+    bench_close = bench_bars["Close"]
+    trades_with_alpha = [t.model_copy(update={"alpha_pct": _trade_alpha_pct(t, bench_close)}) for t in all_trades]
+    alpha_values = [t.alpha_pct for t in trades_with_alpha if t.alpha_pct is not None]
+    avg_alpha_pct = round(sum(alpha_values) / len(alpha_values), 2) if alpha_values else None
 
     peak = 1.0
     max_drawdown = 0.0
@@ -665,11 +715,13 @@ def _compute_summary_stats(
         expectancy_pct=round(expectancy, 2),
         strategy_cumulative_return_pct=round(cumulative_return, 2),
         benchmark_cumulative_return_pct=round(benchmark_cumulative, 2),
+        exposure_adjusted_benchmark_return_pct=exposure_adjusted_benchmark_return_pct,
+        avg_alpha_pct=avg_alpha_pct,
         max_drawdown_pct=round(max_drawdown, 2),
         sharpe_ratio=round(sharpe_ratio, 2) if sharpe_ratio is not None else None,
         avg_exposure_pct=avg_exposure_pct,
         exit_reason_counts=dict(Counter(t.exit_reason for t in all_trades)),
-        trades=all_trades[-50:],
+        trades=trades_with_alpha[-50:],
         equity_curve=equity_curve,
     )
 
@@ -720,6 +772,8 @@ def _build_walk_forward_result(
                 avg_return_pct=summary.avg_return_pct,
                 strategy_cumulative_return_pct=summary.strategy_cumulative_return_pct,
                 benchmark_cumulative_return_pct=summary.benchmark_cumulative_return_pct,
+                exposure_adjusted_benchmark_return_pct=summary.exposure_adjusted_benchmark_return_pct,
+                avg_alpha_pct=summary.avg_alpha_pct,
                 max_drawdown_pct=summary.max_drawdown_pct,
                 sharpe_ratio=summary.sharpe_ratio,
             )
