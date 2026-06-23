@@ -684,3 +684,15 @@ auto_scan_interval_minutes: 30
 # (ademas no draftea mas alla de los cupos libres respecto a top_n contando lo
 # que ya esta pendiente). Evita inundar la cola si muchos simbolos pasan a la vez.
 max_auto_drafts_per_cycle: 3
+
+# Oportunista: pesos de score invertidos respecto al default de
+# OpportunisticConfig (momentum 0.3077 / room_to_grow 0.1538 -> 0.1538 /
+# 0.3077), para que domine el componente alineado con la tesis declarada de
+# la estrategia ("todavia lejos del maximo de 52 semanas") en vez del que la
+# contradice (premiar lo que ya subio). Validado con backtest + walk-forward
+# (3 folds) el 2026-06-23: retorno acumulado 24.6% -> 68.5%, Sharpe 0.42 ->
+# 0.80, mejora sostenida en 2 de 3 folds (ver scripts/experiments/
+# p1_momentum_sin_1m_oportunista_swap.yaml para el detalle del experimento).
+opportunistic:
+  score_weight_momentum: 0.1538
+  score_weight_room_to_grow: 0.3077
