@@ -685,28 +685,30 @@ auto_scan_interval_minutes: 30
 # que ya esta pendiente). Evita inundar la cola si muchos simbolos pasan a la vez.
 max_auto_drafts_per_cycle: 3
 
-# --- Experimento P1 (analisis momentum/oportunista 2026-06-23) ---
-# No tocar screener.yaml: este archivo es una copia + overrides, pensado para
-# correr scripts/run_experiment.sh contra el mismo codigo y comparar contra
-# la config base sin afectar el deploy en vivo.
-
-# Momentum: se saca el componente de 1 mes (momentum_1m) del score -- ese
-# horizonte choca con la reversion de corto plazo documentada en la
-# literatura de momentum (1-3-12 meses es la ventana robusta, no 1 mes) -- y
-# se renormaliza el resto proporcionalmente para que la suma siga en 1.0.
-score_weight_relative_strength: 0.28
-score_weight_momentum_3m: 0.20
-score_weight_momentum_1m: 0.0
-score_weight_trend: 0.12
-score_weight_rsi: 0.08
-score_weight_macd: 0.08
-score_weight_bollinger: 0.08
-score_weight_sector_relative_strength: 0.16
-
-# Oportunista: se invierten los pesos de "momentum" (ROC de 10 dias, premia
-# lo que ya subio) y "room_to_grow" (distancia al maximo de 52 semanas, la
-# tesis declarada de "todavia lejos del maximo"), para que domine el
-# componente alineado con la estrategia en vez del que la contradice.
+# Oportunista: pesos de score invertidos respecto al default de
+# OpportunisticConfig (momentum 0.3077 / room_to_grow 0.1538 -> 0.1538 /
+# 0.3077), para que domine el componente alineado con la tesis declarada de
+# la estrategia ("todavia lejos del maximo de 52 semanas") en vez del que la
+# contradice (premiar lo que ya subio). Validado con backtest + walk-forward
+# (3 folds) el 2026-06-23: retorno acumulado 24.6% -> 68.5%, Sharpe 0.42 ->
+# 0.80, mejora sostenida en 2 de 3 folds (ver scripts/experiments/
+# p1_momentum_sin_1m_oportunista_swap.yaml para el detalle del experimento).
 opportunistic:
   score_weight_momentum: 0.1538
   score_weight_room_to_grow: 0.3077
+
+# --- Experimento P2 (analisis momentum/oportunista 2026-06-23) ---
+# No tocar screener.yaml: copia + override para correr contra el mismo
+# codigo y comparar contra la config base (con el swap de Oportunista P1 ya
+# aplicado) sin afectar el deploy en vivo.
+#
+# Momentum: apaga el filtro de regimen (SPY > su SMA200). Confirmado en
+# backtest.py que SOLO Momentum usa este filtro (Oportunista nunca lo
+# consulta, ver _collect_opportunistic_trades), asi que este cambio aisla
+# el efecto en Momentum sin tocar Oportunista. Hipotesis: una SMA200 es un
+# filtro lento -- saca de mercado tarde durante la caida y reintegra tarde
+# durante la recuperacion (whipsaw) -- y eso explicaria por que el Fold 1
+# (2021-2023, tramo bajista) del walk-forward de Momentum quedo tan negativo
+# (-19% / sharpe -0.92) arrastrando el resultado del periodo completo muy
+# por debajo del benchmark.
+regime_filter_enabled: false

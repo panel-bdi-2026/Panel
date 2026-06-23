@@ -61,7 +61,30 @@ def _compare_strategy(name: str, before: dict, after: dict) -> None:
     if before.get("profit_factor_is_infinite") or after.get("profit_factor_is_infinite"):
         print("  (profit_factor 'infinito' = no hubo operaciones perdedoras en ese periodo)")
 
+    _compare_exit_reasons(before.get("exit_reason_counts"), after.get("exit_reason_counts"))
     _compare_walk_forward(before.get("walk_forward"), after.get("walk_forward"))
+
+
+def _compare_exit_reasons(before: dict | None, after: dict | None) -> None:
+    """Por que se cerro cada operacion (ver BacktestTrade.exit_reason):
+    distingue stop_loss (stop demasiado ajustado/ancho) de max_holding_days
+    (el limite de tiempo corta antes de que el score confirme la salida) de
+    score_exit (la salida 'normal', dirigida por el umbral de score)."""
+    if not before and not after:
+        return
+    before, after = before or {}, after or {}
+    b_total = sum(before.values()) or 1
+    a_total = sum(after.values()) or 1
+    reasons = sorted(set(before) | set(after))
+    if not reasons:
+        return
+    print("\n  -- Motivo de salida --")
+    for reason in reasons:
+        b_n, a_n = before.get(reason, 0), after.get(reason, 0)
+        print(
+            f"  {reason:18} antes {b_n:4d} ({100 * b_n / b_total:4.1f}%)"
+            f"   despues {a_n:4d} ({100 * a_n / a_total:4.1f}%)"
+        )
 
 
 def _compare_walk_forward(before: dict | None, after: dict | None) -> None:
