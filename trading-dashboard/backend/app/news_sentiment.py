@@ -27,6 +27,14 @@ _MODEL = "claude-haiku-4-5"
 # Mas alla de unos pocos titulares no suma precision a la clasificacion y
 # si suma tokens (costo): se toman los mas recientes nada mas.
 _MAX_HEADLINES = 8
+# El SDK de Anthropic, sin `timeout` explicito, usa un default de 600s (10
+# minutos) de read timeout. Esta llamada es sincronica DENTRO del scan de
+# señales (ver apply_news_sentiment_adjustment): clasificar 8 titulares no
+# deberia tardar mas que esto en un dia normal, y si Claude esta colgado o
+# con un incidente, preferimos que falle rapido y caiga al cache de falla de
+# 15 min (ver _classify) en vez de frenar el scan completo varios minutos
+# por un simbolo del shortlist.
+_CLAUDE_TIMEOUT_SECONDS = 20.0
 
 
 class NewsSentiment(BaseModel):
@@ -60,7 +68,7 @@ def _fetch_headlines(symbol: str) -> list[str]:
 def _call_claude(symbol: str, headlines: list[str]) -> NewsSentiment:
     """Aislado en su propia funcion (en vez de inline en _classify) para que
     los tests puedan reemplazarla sin tocar el SDK de Anthropic ni la red."""
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key, timeout=_CLAUDE_TIMEOUT_SECONDS)
     headlines_text = "\n".join(f"- {h}" for h in headlines)
     response = client.messages.parse(
         model=_MODEL,

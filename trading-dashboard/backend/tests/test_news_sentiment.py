@@ -88,6 +88,33 @@ def test_fetch_headlines_returns_empty_list_when_news_is_none(monkeypatch):
     assert news_sentiment_module._fetch_headlines("AAPL") == []
 
 
+# --- _call_claude: timeout explicito al cliente de Anthropic ---------------
+
+
+def test_call_claude_passes_explicit_timeout_to_anthropic_client(with_api_key, monkeypatch):
+    """Sin un timeout explicito, el SDK de Anthropic usa un default de 600s
+    (10 min) de read timeout -- esta llamada es sincronica DENTRO del scan de
+    señales, asi que un colgazo de Claude frenaria el scan completo varios
+    minutos por un solo simbolo del shortlist."""
+    captured_kwargs = {}
+
+    class FakeMessages:
+        def parse(self, **kwargs):
+            return type("Response", (), {"parsed_output": NewsSentiment(sentiment="neutral", summary="ok")})()
+
+    class FakeAnthropicClient:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self.messages = FakeMessages()
+
+    monkeypatch.setattr(news_sentiment_module.anthropic, "Anthropic", FakeAnthropicClient)
+
+    news_sentiment_module._call_claude("AAPL", ["un titular"])
+
+    assert captured_kwargs.get("timeout") == news_sentiment_module._CLAUDE_TIMEOUT_SECONDS
+    assert 0 < captured_kwargs["timeout"] < 600  # bien por debajo del default del SDK (10 min)
+
+
 # --- get_news_sentiment: fail-safe, cache --------------------------------
 
 
