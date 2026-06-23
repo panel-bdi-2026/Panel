@@ -434,6 +434,24 @@ class ScreenerConfig(BaseModel):
     commission_per_trade_usd: float = 1.0
     slippage_pct: float = 0.05
 
+    # slippage_pct fijo es razonable para nombres liquidos, pero subestima el
+    # costo real de entrar/salir en microcaps o nombres de bajo volumen: ahi
+    # el spread es mas ancho y una orden a mercado (o un gap) mueve el precio
+    # mucho mas que en un nombre liquido (ver _effective_slippage_pct en
+    # backtest.py). Si el volumen promedio en dolares del dia del fill (entrada
+    # o salida, evaluados por separado: la liquidez puede cambiar entre una
+    # punta y la otra de la misma operacion) esta por debajo de este umbral,
+    # se multiplica slippage_pct por low_liquidity_slippage_multiplier para
+    # ESE fill especifico. A diferencia de otras features nuevas del backtest,
+    # esto va prendido por defecto: no es una eleccion de metodologia (como
+    # equiponderar vs por volatilidad), es corregir un costo ya modelado pero
+    # con un numero fijo irrealmente optimista para el segmento de baja
+    # liquidez. 0 en el umbral deshabilita (ningun simbolo recibe el
+    # multiplicador), mismo criterio "0 deshabilita" que el resto de los topes
+    # del backtest.
+    low_liquidity_dollar_volume_threshold: float = 5_000_000
+    low_liquidity_slippage_multiplier: float = 3.0
+
     # El backtest equipondera cada posicion concurrente (1/top_n, ver
     # _daily_equity_curve en backtest.py), pero el sizing en vivo
     # (rules.suggested_quantity) es por riesgo ATR: dos esquemas distintos, asi

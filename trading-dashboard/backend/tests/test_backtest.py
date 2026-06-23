@@ -225,6 +225,92 @@ def test_costs_reduce_returns_vs_zero_cost_baseline():
         assert t_cost.return_pct < t_no_cost.return_pct
 
 
+def test_effective_slippage_pct_returns_base_when_volume_at_or_above_threshold():
+    from app.backtest import _effective_slippage_pct
+
+    assert _effective_slippage_pct(0.05, 5_000_000, 5_000_000, 3.0) == pytest.approx(0.05)
+    assert _effective_slippage_pct(0.05, 9_000_000, 5_000_000, 3.0) == pytest.approx(0.05)
+
+
+def test_effective_slippage_pct_multiplies_when_volume_below_threshold():
+    from app.backtest import _effective_slippage_pct
+
+    assert _effective_slippage_pct(0.05, 1_000_000, 5_000_000, 3.0) == pytest.approx(0.15)
+
+
+def test_effective_slippage_pct_disabled_when_threshold_not_positive():
+    # threshold <= 0 = sin umbral configurado: ningun simbolo recibe el
+    # multiplicador, sin importar cuan bajo sea su volumen.
+    from app.backtest import _effective_slippage_pct
+
+    assert _effective_slippage_pct(0.05, 1.0, 0, 3.0) == pytest.approx(0.05)
+    assert _effective_slippage_pct(0.05, 1.0, -10, 3.0) == pytest.approx(0.05)
+
+
+def test_effective_slippage_pct_ignores_nan_volume():
+    # Sin suficiente historia todavia para el volumen promedio: no penaliza,
+    # mismo criterio "sin dato no bloquea/no penaliza" que el resto de los
+    # gates del backtest.
+    from app.backtest import _effective_slippage_pct
+
+    assert _effective_slippage_pct(0.05, float("nan"), 5_000_000, 3.0) == pytest.approx(0.05)
+
+
+def test_low_liquidity_symbol_pays_more_slippage_cost_than_liquid_symbol():
+    # Mismas barras de precio (MOM_CLOSE) y misma config de costos, solo
+    # difiere el volumen: con un volumen bajo, el volumen promedio en dolares
+    # (dollar_volume_s) queda por debajo de low_liquidity_dollar_volume_threshold
+    # (5_000_000 por default) pero todavia por encima de min_avg_dollar_volume
+    # (1_000_000 por default, asi que la entrada no se bloquea), asi que el
+    # slippage de cada fill se multiplica por low_liquidity_slippage_multiplier.
+    from app.backtest import _simulate_symbol
+
+    base_kwargs = dict(universe=["MOM"], benchmark_symbol="SPY", backtest_years=1, regime_filter_enabled=False)
+    cfg = ScreenerConfig(**base_kwargs, commission_per_trade_usd=0.0, slippage_pct=0.05)
+
+    bars_liquid = _bars(MOM_CLOSE, volume=5_000_000)
+    bars_low_liquidity = _bars(MOM_CLOSE, volume=30_000)
+    score_series = pd.Series(1000.0, index=bars_liquid.index)
+    regime_ok = pd.Series(True, index=bars_liquid.index)
+
+    trades_liquid = _simulate_symbol("MOM", bars_liquid, cfg, score_series, regime_ok)
+    trades_low_liquidity = _simulate_symbol("MOM", bars_low_liquidity, cfg, score_series, regime_ok)
+
+    assert len(trades_liquid) > 0
+    assert [t.entry_date for t in trades_liquid] == [t.entry_date for t in trades_low_liquidity]
+    for t_liquid, t_low in zip(trades_liquid, trades_low_liquidity):
+        assert t_low.return_pct < t_liquid.return_pct
+
+
+def test_low_liquidity_multiplier_disabled_when_threshold_is_zero():
+    # Con el umbral en 0 (deshabilitado), el volumen bajo ya no importa: el
+    # mismo escenario del test anterior debe dar resultados identicos.
+    from app.backtest import _simulate_symbol
+
+    base_kwargs = dict(
+        universe=["MOM"],
+        benchmark_symbol="SPY",
+        backtest_years=1,
+        regime_filter_enabled=False,
+        commission_per_trade_usd=0.0,
+        slippage_pct=0.05,
+        low_liquidity_dollar_volume_threshold=0,
+    )
+    cfg = ScreenerConfig(**base_kwargs)
+
+    bars_liquid = _bars(MOM_CLOSE, volume=5_000_000)
+    bars_low_liquidity = _bars(MOM_CLOSE, volume=30_000)
+    score_series = pd.Series(1000.0, index=bars_liquid.index)
+    regime_ok = pd.Series(True, index=bars_liquid.index)
+
+    trades_liquid = _simulate_symbol("MOM", bars_liquid, cfg, score_series, regime_ok)
+    trades_low_liquidity = _simulate_symbol("MOM", bars_low_liquidity, cfg, score_series, regime_ok)
+
+    assert len(trades_liquid) > 0
+    for t_liquid, t_low in zip(trades_liquid, trades_low_liquidity):
+        assert t_low.return_pct == pytest.approx(t_liquid.return_pct)
+
+
 def test_trade_daily_marks_uses_real_close_path_and_corrects_last_day():
     from app.backtest import _trade_daily_marks
 

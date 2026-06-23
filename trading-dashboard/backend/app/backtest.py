@@ -56,6 +56,20 @@ def _band_score_series(value: pd.Series, center: float, half_range: float) -> pd
     return 100.0 * (1.0 - (value - center).abs().div(half_range).clip(upper=1.0))
 
 
+def _effective_slippage_pct(
+    base_slippage_pct: float, dollar_volume: float, threshold: float, multiplier: float
+) -> float:
+    """slippage_pct base, multiplicado si dollar_volume (volumen promedio en
+    USD del dia de ESTE fill puntual) esta por debajo de threshold. threshold
+    <= 0 deshabilita (siempre devuelve el base). Un dollar_volume NaN (sin
+    suficiente historia todavia) tampoco aplica el multiplicador, mismo
+    criterio de "sin dato no bloquea/no penaliza" que el resto de los gates
+    del backtest."""
+    if threshold <= 0 or pd.isna(dollar_volume) or dollar_volume >= threshold:
+        return base_slippage_pct
+    return base_slippage_pct * multiplier
+
+
 def _trade_daily_marks(
     bars: pd.DataFrame, entry_idx: int, exit_idx: int, entry_fill: float, ret_pct: float
 ) -> dict:
@@ -269,8 +283,20 @@ def _simulate_symbol(
                 # (peor que el stop); si no, se asume fill al precio del stop.
                 raw_exit_price = min(open_price, stop_price) if hit_stop else price
 
-                entry_fill = entry_price * (1 + cfg.slippage_pct / 100)
-                exit_fill = raw_exit_price * (1 - cfg.slippage_pct / 100)
+                entry_slippage_pct = _effective_slippage_pct(
+                    cfg.slippage_pct,
+                    dollar_volume_s.iloc[entry_idx],
+                    cfg.low_liquidity_dollar_volume_threshold,
+                    cfg.low_liquidity_slippage_multiplier,
+                )
+                exit_slippage_pct = _effective_slippage_pct(
+                    cfg.slippage_pct,
+                    dollar_volume_s.iloc[i],
+                    cfg.low_liquidity_dollar_volume_threshold,
+                    cfg.low_liquidity_slippage_multiplier,
+                )
+                entry_fill = entry_price * (1 + entry_slippage_pct / 100)
+                exit_fill = raw_exit_price * (1 - exit_slippage_pct / 100)
                 commission_pct = (
                     (2 * cfg.commission_per_trade_usd / notional_per_trade) * 100
                     if notional_per_trade
@@ -445,8 +471,20 @@ def _simulate_symbol_opportunistic(
                 exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "trend_break")
                 raw_exit_price = min(open_price, stop_price) if hit_stop else price
 
-                entry_fill = entry_price * (1 + cfg.slippage_pct / 100)
-                exit_fill = raw_exit_price * (1 - cfg.slippage_pct / 100)
+                entry_slippage_pct = _effective_slippage_pct(
+                    cfg.slippage_pct,
+                    dollar_volume_s.iloc[entry_idx],
+                    cfg.low_liquidity_dollar_volume_threshold,
+                    cfg.low_liquidity_slippage_multiplier,
+                )
+                exit_slippage_pct = _effective_slippage_pct(
+                    cfg.slippage_pct,
+                    dollar_volume_s.iloc[i],
+                    cfg.low_liquidity_dollar_volume_threshold,
+                    cfg.low_liquidity_slippage_multiplier,
+                )
+                entry_fill = entry_price * (1 + entry_slippage_pct / 100)
+                exit_fill = raw_exit_price * (1 - exit_slippage_pct / 100)
                 commission_pct = (
                     (2 * cfg.commission_per_trade_usd / notional_per_trade) * 100
                     if notional_per_trade
