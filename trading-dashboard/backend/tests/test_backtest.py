@@ -7,7 +7,7 @@ import pytest
 from app import backtest as backtest_module
 from app.backtest import BacktestError, run_backtest
 from app.market_data import MarketDataError
-from app.screener_config import ScreenerConfig
+from app.screener_config import GROWTH_TICKERS, ScreenerConfig
 
 
 def _series(n, drift, amplitude, period, base=100.0):
@@ -83,6 +83,43 @@ def test_backtest_raises_when_no_trades_generated(monkeypatch):
     config = ScreenerConfig(universe=["MISSING"], benchmark_symbol="SPY")
     with pytest.raises(BacktestError):
         run_backtest(config)
+
+
+def test_backtest_universe_helper_filters_growth_tickers_by_membership():
+    # Filtra por membership contra GROWTH_TICKERS, no por como se construyo
+    # el universe: tambien excluye un growth ticker que el usuario agrego a
+    # mano a un universe custom, no solo los que vienen de DEFAULT_UNIVERSE.
+    from app.backtest import _backtest_universe
+
+    growth_symbol = GROWTH_TICKERS[-1]
+    config = ScreenerConfig(universe=["AAPL", growth_symbol, "MSFT"], benchmark_symbol="SPY")
+
+    assert _backtest_universe(config) == ["AAPL", "MSFT"]
+
+
+def test_backtest_never_requests_market_data_for_growth_tickers(monkeypatch):
+    # GROWTH_TICKERS (screener_config.py) se armo buscando hoy nombres que ya
+    # se sabe que tuvieron una corrida fuerte reciente: dejarlos en el
+    # universo de un backtest historico seria sesgo de look-ahead de
+    # inclusion. El backtest nunca deberia pedirles datos de mercado, ni
+    # siquiera si estan presentes en cfg.universe.
+    requested = []
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        requested.append(symbol)
+        if symbol not in FAKE_BARS:
+            raise MarketDataError(f"sin datos sinteticos para {symbol}")
+        return FAKE_BARS[symbol]
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+    growth_symbol = GROWTH_TICKERS[0]
+    config = ScreenerConfig(
+        universe=["MOM", "FLAT", growth_symbol], benchmark_symbol="SPY", backtest_years=1
+    )
+    summary = run_backtest(config)
+
+    assert growth_symbol not in requested
+    assert summary.total_trades > 0
 
 
 def test_backtest_includes_equity_curve_anchored_at_zero(patched_market_data):
@@ -831,6 +868,43 @@ def test_opportunistic_backtest_produces_trades_and_metrics(monkeypatch):
     assert all(t.symbol in ("OPP", "OPP2") for t in summary.trades)
     assert 0 <= summary.win_rate_pct <= 100
     assert summary.start_date < summary.end_date
+
+
+def test_opportunistic_backtest_never_requests_market_data_for_growth_tickers(monkeypatch):
+    # Mismo sesgo de look-ahead de inclusion que test_backtest_never_requests_
+    # market_data_for_growth_tickers (ver ese comentario), aplicado al
+    # backtest de Oportunista.
+    bars = _opportunistic_oscillating_bars()
+    bench_bars = _bars([100.0] * len(bars))
+    buddy_bars = _opportunistic_buddy_bars(len(bars))
+    growth_symbol = GROWTH_TICKERS[0]
+
+    requested = []
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        requested.append(symbol)
+        if symbol == "SPY":
+            return bench_bars
+        if symbol == "OPP":
+            return bars
+        if symbol == "OPP2":
+            return buddy_bars
+        raise MarketDataError("no data")
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+    config = _opportunistic_cfg()
+    config = config.model_copy(
+        update={
+            "benchmark_symbol": "SPY",
+            "backtest_years": 1,
+            "universe": ["OPP", "OPP2", growth_symbol],
+        }
+    )
+
+    summary = backtest_module.run_opportunistic_backtest(config)
+
+    assert growth_symbol not in requested
+    assert summary.total_trades > 0
 
 
 def test_opportunistic_backtest_raises_when_benchmark_unavailable(monkeypatch):

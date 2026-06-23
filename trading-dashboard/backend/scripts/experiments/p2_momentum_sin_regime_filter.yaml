@@ -518,7 +518,7 @@ universe:
   # Complemento al S&P 500: empresas mas chicas/jovenes de alto potencial de
   # crecimiento (small/mid-cap), confirmadas individualmente via busqueda web
   # contra al menos una fuente financiera real para evitar tickers inventados
-  # o deslistados. Ver comentario de _GROWTH_TICKERS en screener_config.py.
+  # o deslistados. Ver comentario de GROWTH_TICKERS en screener_config.py.
   - ABAT
   - ACHR
   - ACMR

@@ -85,7 +85,18 @@ _SP500_TICKERS = [
 # compañias son mas volatiles y menos liquidas que el S&P 500, por lo que el
 # filtro de min_avg_dollar_volume es el que las saca del scan si se vuelven
 # demasiado ilíquidas.
-_GROWTH_TICKERS = [
+#
+# Sesgo de look-ahead de INCLUSION: cada nombre se busco hoy a mano, lo que
+# en la practica selecciona simbolos que YA se sabe que tuvieron una corrida
+# fuerte reciente (IONQ, RGTI, OKLO, CRCL, SMCI, etc). Un backtest historico
+# sobre este universo "encontraria" ganadores que estan en la lista PORQUE ya
+# se sabe que ganaron -- algo que ningun scan corrido en tiempo real en el
+# pasado podria haber replicado. Por eso backtest.py excluye estos tickers
+# del universo que realmente simula (ver GROWTH_TICKERS/_backtest_universe
+# ahi); el scan en vivo (screener.py y strategies/*.py) si los incluye sin
+# ese problema, porque ahi se evaluan con datos de HOY para decidir una
+# entrada HOY, no para medir un resultado historico ya conocido.
+GROWTH_TICKERS = [
     "ABAT", "ACHR", "ACMR", "ADMA", "AEHR", "ALRM", "AMBA", "AMPX", "AMRC", "AOSL",
     "ASYS", "ATLX", "AVAV", "BB", "BKSY", "CAMT", "CEVA", "CHYM", "COHU", "CRBU",
     "CRCL", "CRML", "CRNX", "CRWV", "CURO", "ELVA", "EOSE", "FIVN", "FLNC", "GDOT",
@@ -97,7 +108,7 @@ _GROWTH_TICKERS = [
     "TMC", "USAR", "VKTX", "VRNS", "WTTR", "ZS",
 ]
 
-DEFAULT_UNIVERSE = _SP500_TICKERS + _GROWTH_TICKERS
+DEFAULT_UNIVERSE = _SP500_TICKERS + GROWTH_TICKERS
 
 STRATEGY_IDS = ("momentum", "opportunistic", "long_term", "dividend")
 

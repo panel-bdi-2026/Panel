@@ -9,7 +9,7 @@ import pandas as pd
 from .indicators import atr, bollinger_percent_b, macd, pct_from_high, rate_of_change, rsi, sma
 from .market_data import MarketDataError, get_daily_bars
 from .models import BacktestSummary, BacktestTrade, EquityCurvePoint, WalkForwardFold, WalkForwardResult
-from .screener_config import ScreenerConfig
+from .screener_config import GROWTH_TICKERS, ScreenerConfig
 from .sector_strength import sector_relative_strength_series
 
 # Misma ventana fija que _CONTEXT_MOMENTUM_3M_DAYS en strategies/common.py
@@ -24,6 +24,17 @@ _OPPORTUNISTIC_CONTEXT_MOMENTUM_DAYS = 63
 
 class BacktestError(RuntimeError):
     pass
+
+
+def _backtest_universe(cfg: ScreenerConfig) -> list[str]:
+    """cfg.universe sin los simbolos de GROWTH_TICKERS (ver el comentario de
+    look-ahead de inclusion en screener_config.py): esos tickers se eligieron
+    buscando hoy nombres que ya tuvieron una corrida fuerte reciente, asi que
+    dejarlos en el universo de un backtest historico infla el resultado con
+    ganadores que solo estan ahi porque ya se sabe que ganaron. Se filtra por
+    membership (no por orden de la lista original) para que tambien excluya
+    estos simbolos si el usuario los agrego a mano a un universe custom."""
+    return [s for s in cfg.universe if s not in GROWTH_TICKERS]
 
 
 def _band_score_series(value: pd.Series, center: float, half_range: float) -> pd.Series:
@@ -440,7 +451,7 @@ def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTra
 
     bars_by_symbol: dict[str, pd.DataFrame] = {}
     delay = cfg.scan_request_delay_seconds
-    for i, symbol in enumerate(cfg.universe):
+    for i, symbol in enumerate(_backtest_universe(cfg)):
         if i > 0 and delay > 0:
             time.sleep(delay)
         try:
@@ -812,7 +823,7 @@ def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], 
 
     bars_by_symbol: dict[str, pd.DataFrame] = {}
     delay = cfg.scan_request_delay_seconds
-    for i, symbol in enumerate(cfg.universe):
+    for i, symbol in enumerate(_backtest_universe(cfg)):
         # Misma pausa anti-rate-limit que el scan en vivo (ver
         # scan_request_delay_seconds): el backtest pega tantos pedidos como
         # simbolos tenga el universo configurado, y con el S&P 500 completo

@@ -13,7 +13,7 @@ import yfinance as yf
 # evaluate() y de todos sus llamadores) solo para esta feature.
 #
 # Cada entrada fue verificada contra al menos una fuente financiera real
-# (mismo estandar que _GROWTH_TICKERS en screener_config.py, via un agente de
+# (mismo estandar que GROWTH_TICKERS en screener_config.py, via un agente de
 # investigacion dedicado). Cualquier ticker no presente devuelve None en
 # get_sector(), y todo el codigo que la consume (RulesEngine, SignalResult.sector)
 # trata None como "sin dato, no bloquea" en vez de fallar.
