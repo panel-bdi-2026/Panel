@@ -406,6 +406,21 @@ class ScreenerConfig(BaseModel):
     commission_per_trade_usd: float = 1.0
     slippage_pct: float = 0.05
 
+    # "Core+satelite" en el backtest: por defecto, el cash no invertido cada
+    # dia (1 - exposicion, ver _daily_equity_curve en backtest.py) se asume
+    # quieto, sin generar nada. Si esta activo, ese cash ocioso se simula
+    # invertido dia por dia en el benchmark (mismo mecanismo de ponderacion
+    # por exposicion que ya usa exposure_adjusted_benchmark_return_pct, pero
+    # aplicado al COMPLEMENTO de la exposicion en vez de a la exposicion
+    # misma), en vez de quedar a 0% fijo. Apagado por defecto: cambia el
+    # perfil de retorno/riesgo de la curva de equity simulada, asi que es una
+    # decision explicita del usuario, no el comportamiento nuevo por defecto
+    # de una version anterior que nunca lo tuvo. Solo afecta al backtest: el
+    # auto-trading en vivo no compra el benchmark automaticamente con el cash
+    # libre, eso requeriria logica de rebalanceo en main.py/broker que esta
+    # fuera del alcance de esta simulacion.
+    invest_idle_cash_in_benchmark: bool = False
+
     # Escaneo proactivo en background: si esta habilitado, el backend corre el
     # screener solo (sin que el usuario abra el dashboard) cada
     # auto_scan_interval_minutes y arma ordenes de compra en borrador para

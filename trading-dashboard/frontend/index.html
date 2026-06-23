@@ -787,6 +787,8 @@ const SCREENER_FIELDS = [
   { key:'backtest_assumed_capital_usd', label:'Capital asumido en el backtest (USD)', type:'number', min:0 },
   { key:'commission_per_trade_usd', label:'Comisión por operación (USD)', type:'number', min:0 },
   { key:'slippage_pct', label:'Slippage asumido (%)', type:'number', min:0 },
+  { key:'invest_idle_cash_in_benchmark', label:'Backtest: invertir cash ocioso en el benchmark (core+satélite)', type:'checkbox',
+    hint:'Si está activo, el cash que cada día no está desplegado en ninguna posición se simula invertido en el benchmark en vez de quieto a 0%. Cambia el retorno, drawdown y Sharpe simulados. Solo afecta al backtest: el auto-trading en vivo no compra el benchmark automáticamente con el cash libre.' },
   { key:'auto_scan_enabled', label:'Escaneo proactivo en background activo', type:'checkbox' },
   { key:'auto_scan_interval_minutes', label:'Intervalo del escaneo proactivo (minutos)', type:'number', min:1, step:1, integer:true },
   { key:'max_auto_drafts_per_cycle', label:'Máx. borradores por ciclo de escaneo proactivo', type:'number', min:0, step:1, integer:true },

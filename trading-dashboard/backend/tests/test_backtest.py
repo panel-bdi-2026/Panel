@@ -660,6 +660,42 @@ def test_exposure_adjusted_benchmark_return_pct_scales_down_with_lower_exposure(
     assert 0 < summary.exposure_adjusted_benchmark_return_pct < 9.0
 
 
+def test_invest_idle_cash_in_benchmark_disabled_by_default_leaves_idle_cash_flat():
+    from app.backtest import _compute_summary_stats
+    # Operacion sin ganancia ni perdida (return_pct=0), abierta solo el dia 1
+    # (top_n=2: 50% de exposicion ese dia) y ya cerrada el dia 2 (0% de
+    # exposicion ese dia, mismo mecanismo que
+    # test_exposure_adjusted_benchmark_return_pct_only_counts_invested_days).
+    # Con return_pct=0, cualquier movimiento en la curva de equity solo puede
+    # venir del cash ocioso: por default (invest_idle_cash_in_benchmark=False,
+    # ScreenerConfig.invest_idle_cash_in_benchmark) ese cash queda quieto a
+    # 0%, sin importar que el benchmark suba.
+    bench_bars = _bench_bars_2024(n_days=2)  # Jan1=100, Jan2=101 (+1%)
+    trades = [_trade("A", 1, 2, return_pct=0.0)]
+    summary = _compute_summary_stats(trades, top_n=2, bench_bars=bench_bars)
+    points = {p.date: p.equity_pct for p in summary.equity_curve}
+    assert points[trades[0].entry_date] == 0.0
+    assert points[trades[0].exit_date] == 0.0
+    assert summary.strategy_cumulative_return_pct == 0.0
+
+
+def test_invest_idle_cash_in_benchmark_grows_uninvested_capital_with_benchmark():
+    from app.backtest import _compute_summary_stats
+    # Mismo escenario que el test anterior, pero con invest_idle_cash_in_benchmark
+    # activo: el dia 2 la operacion ya cerro (0% de exposicion, 100% ocioso) y
+    # ese cash ocioso debe captar el +1% que hizo el benchmark entre Jan1 y
+    # Jan2 (100->101), aunque la operacion en si no haya generado nada.
+    bench_bars = _bench_bars_2024(n_days=2)
+    trades = [_trade("A", 1, 2, return_pct=0.0)]
+    summary = _compute_summary_stats(
+        trades, top_n=2, bench_bars=bench_bars, invest_idle_cash_in_benchmark=True
+    )
+    points = {p.date: p.equity_pct for p in summary.equity_curve}
+    assert points[trades[0].entry_date] == 0.0
+    assert points[trades[0].exit_date] == 1.0
+    assert summary.strategy_cumulative_return_pct == 1.0
+
+
 def test_exit_reason_counts_cover_all_trades_not_just_truncated_sample():
     from app.backtest import _compute_summary_stats
     # summary.trades se trunca a las ultimas 50 (ver _compute_summary_stats),

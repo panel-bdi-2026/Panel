@@ -531,7 +531,9 @@ def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     del universo); aca solo cambia la logica de entrada/salida por simbolo
     (ver _simulate_symbol_opportunistic)."""
     all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg)
-    return _compute_summary_stats(all_trades, cfg.top_n, bench_bars, marks_by_trade_id)
+    return _compute_summary_stats(
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, cfg.invest_idle_cash_in_benchmark
+    )
 
 
 def run_opportunistic_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 3) -> WalkForwardResult:
@@ -539,7 +541,9 @@ def run_opportunistic_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 
     run_backtest_walk_forward (Momentum) para el alcance y las limitaciones:
     misma logica, solo cambia la simulacion subyacente."""
     all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg)
-    return _build_walk_forward_result(all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds)
+    return _build_walk_forward_result(
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds, cfg.invest_idle_cash_in_benchmark
+    )
 
 
 def cap_concurrent_positions(trades: list[BacktestTrade], top_n: int) -> list[BacktestTrade]:
@@ -562,7 +566,11 @@ def cap_concurrent_positions(trades: list[BacktestTrade], top_n: int) -> list[Ba
 
 
 def _daily_equity_curve(
-    all_trades: list[BacktestTrade], top_n: int, bench_bars: pd.DataFrame, marks_by_trade_id: dict | None = None,
+    all_trades: list[BacktestTrade],
+    top_n: int,
+    bench_bars: pd.DataFrame,
+    marks_by_trade_id: dict | None = None,
+    invest_idle_cash_in_benchmark: bool = False,
 ) -> tuple[list[EquityCurvePoint], list[float], float, float]:
     """Construye la curva de equity dia por dia (no solo en cada evento de
     salida): cada operacion abierta aporta un retorno NO realizado, ponderado
@@ -596,6 +604,17 @@ def _daily_equity_curve(
     fecha (bench_close.asof) para tolerar fechas del calendario que no caen
     justo en una barra del benchmark (igual motivo que el resto de la funcion).
 
+    Si invest_idle_cash_in_benchmark esta activo (ver ScreenerConfig), el
+    cash que ese mismo dia NO esta desplegado en ninguna posicion (1 -
+    exposicion) se simula invertido en el benchmark en vez de quieto a 0%:
+    mismo mecanismo de compounding dia por dia que el benchmark ajustado por
+    exposicion de arriba, pero ponderado por el COMPLEMENTO de la exposicion
+    (1 - exposicion_hoy) en vez de la exposicion misma, y su crecimiento se
+    suma directamente al factor de equity de la estrategia (no es solo una
+    cifra de comparacion aparte: cambia strategy_cumulative_return_pct,
+    max_drawdown_pct y sharpe_ratio, ya que esos se calculan sobre
+    daily_equity).
+
     Devuelve (equity_curve, equity_diaria_en_factor, avg_exposure_pct,
     exposure_adjusted_benchmark_return_pct).
     """
@@ -617,6 +636,7 @@ def _daily_equity_curve(
     daily_equity: list[float] = []
     exposure_sum = 0.0
     bench_factor = 1.0
+    idle_cash_factor = 1.0
     prev_bench_price = None
 
     for day_idx, date in enumerate(calendar):
@@ -642,16 +662,22 @@ def _daily_equity_curve(
                 factor = 1 + t.return_pct / 100 * frac
             unrealized_pct += weight * (factor - 1) * 100
 
-        equity = closed_factor * (1 + unrealized_pct / 100)
-        daily_equity.append(equity)
         exposure_today = len(open_trades) * weight
         exposure_sum += exposure_today
 
         bench_price = bench_close.asof(date)
         if prev_bench_price is not None and not pd.isna(bench_price) and prev_bench_price != 0:
-            bench_factor *= 1 + exposure_today * (bench_price / prev_bench_price - 1)
+            bench_return_today = bench_price / prev_bench_price - 1
+            bench_factor *= 1 + exposure_today * bench_return_today
+            if invest_idle_cash_in_benchmark:
+                idle_cash_factor *= 1 + (1 - exposure_today) * bench_return_today
         if not pd.isna(bench_price):
             prev_bench_price = bench_price
+
+        equity = closed_factor * (1 + unrealized_pct / 100)
+        if invest_idle_cash_in_benchmark:
+            equity += idle_cash_factor - 1
+        daily_equity.append(equity)
 
         equity_curve.append(EquityCurvePoint(date=date, equity_pct=round((equity - 1) * 100, 2)))
 
@@ -682,7 +708,11 @@ def _trade_alpha_pct(trade: BacktestTrade, bench_close: pd.Series) -> float | No
 
 
 def _compute_summary_stats(
-    all_trades: list[BacktestTrade], top_n: int, bench_bars: pd.DataFrame, marks_by_trade_id: dict | None = None,
+    all_trades: list[BacktestTrade],
+    top_n: int,
+    bench_bars: pd.DataFrame,
+    marks_by_trade_id: dict | None = None,
+    invest_idle_cash_in_benchmark: bool = False,
 ) -> BacktestSummary:
     """Calcula las metricas resumen a partir de la lista final de operaciones
     (ya filtrada por cap_concurrent_positions). Separado de run_backtest para
@@ -705,7 +735,7 @@ def _compute_summary_stats(
     expectancy = sum(returns) / len(returns)
 
     equity_curve, daily_equity, avg_exposure_pct, exposure_adjusted_benchmark_return_pct = _daily_equity_curve(
-        all_trades, top_n, bench_bars, marks_by_trade_id
+        all_trades, top_n, bench_bars, marks_by_trade_id, invest_idle_cash_in_benchmark
     )
 
     bench_close = bench_bars["Close"]
@@ -767,6 +797,7 @@ def _build_walk_forward_result(
     bench_bars: pd.DataFrame,
     marks_by_trade_id: dict,
     n_folds: int,
+    invest_idle_cash_in_benchmark: bool = False,
 ) -> WalkForwardResult:
     """Particiona [primera_entrada, ultima_salida] del benchmark en n_folds
     ventanas consecutivas de igual duracion calendario (no de igual cantidad
@@ -797,7 +828,9 @@ def _build_walk_forward_result(
         if not fold_trades or fold_bench_bars.empty:
             folds.append(WalkForwardFold(start_date=fold_start, end_date=fold_end, total_trades=len(fold_trades)))
             continue
-        summary = _compute_summary_stats(fold_trades, top_n, fold_bench_bars, marks_by_trade_id)
+        summary = _compute_summary_stats(
+            fold_trades, top_n, fold_bench_bars, marks_by_trade_id, invest_idle_cash_in_benchmark
+        )
         folds.append(
             WalkForwardFold(
                 start_date=fold_start,
@@ -933,7 +966,9 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     promesa de resultados futuros.
     """
     all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg)
-    return _compute_summary_stats(all_trades, cfg.top_n, bench_bars, marks_by_trade_id)
+    return _compute_summary_stats(
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, cfg.invest_idle_cash_in_benchmark
+    )
 
 
 def run_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 3) -> WalkForwardResult:
@@ -956,4 +991,6 @@ def run_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 3) -> WalkForw
     set de reglas fijo (el que ya esta configurado) se sostiene en distintos
     tramos de tiempo, o gano todo en un solo tramo favorable?"""
     all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg)
-    return _build_walk_forward_result(all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds)
+    return _build_walk_forward_result(
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds, cfg.invest_idle_cash_in_benchmark
+    )
