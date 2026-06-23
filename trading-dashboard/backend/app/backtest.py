@@ -6,7 +6,17 @@ from collections import Counter
 
 import pandas as pd
 
-from .indicators import atr, bollinger_percent_b, macd, momentum_12_1, pct_from_high, rate_of_change, rsi, sma
+from .indicators import (
+    atr,
+    bollinger_percent_b,
+    macd,
+    market_regime_ok,
+    momentum_12_1,
+    pct_from_high,
+    rate_of_change,
+    rsi,
+    sma,
+)
 from .market_data import MarketDataError, get_daily_bars
 from .models import BacktestSummary, BacktestTrade, EquityCurvePoint, WalkForwardFold, WalkForwardResult
 from .screener_config import GROWTH_TICKERS, ScreenerConfig
@@ -365,6 +375,7 @@ def _simulate_symbol_opportunistic(
     bars: pd.DataFrame,
     cfg: ScreenerConfig,
     score_series: pd.Series,
+    benchmark_regime_ok: pd.Series,
     marks_by_trade_id: dict | None = None,
 ) -> list[BacktestTrade]:
     """Misma logica score-driven que _simulate_symbol (ver ese docstring para
@@ -372,9 +383,13 @@ def _simulate_symbol_opportunistic(
     Oportunista: a diferencia de Momentum, las 4 condiciones booleanas
     originales (momentum corto positivo, RSI en zona de recuperacion,
     volatilidad minima, espacio de crecimiento) ya son, cada una, un
-    componente del score (ver _opportunistic_raw_components) -- el unico gate
-    booleano aparte del umbral de score es la liquidez minima (igual que
-    Momentum, que tampoco la incluye en su score).
+    componente del score (ver _opportunistic_raw_components). Los gates
+    booleanos aparte del umbral de score son la liquidez minima (igual que
+    Momentum, que tampoco la incluye en su score) y el regimen del benchmark:
+    comprar caidas (la esencia de Oportunista) en un mercado en regimen
+    bajista de fondo es comprar cuchillos cayendo, asi que este filtro ahora
+    se aplica tambien aqui (antes solo bloqueaba nuevas entradas de
+    Momentum).
 
     Entra cuando score_series supera opp.backtest_score_entry_threshold y la
     liquidez minima lo permite; sale por stop-loss, tiempo maximo en la
@@ -458,6 +473,10 @@ def _simulate_symbol_opportunistic(
         if dollar_volume_s.iloc[i] < cfg.min_avg_dollar_volume:
             continue
 
+        regime_ok = bool(benchmark_regime_ok.iloc[i]) if i < len(benchmark_regime_ok) else True
+        if not regime_ok:
+            continue
+
         pending_entry_atr = atr_s.iloc[i]
 
     return trades
@@ -480,6 +499,19 @@ def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTra
     demas para esa misma fecha."""
     history_days = int(cfg.backtest_years * 365)
     opp = cfg.opportunistic
+
+    try:
+        bench_bars = get_daily_bars(cfg.benchmark_symbol, history_days)
+    except MarketDataError as exc:
+        raise BacktestError(str(exc)) from exc
+
+    if cfg.regime_filter_enabled:
+        benchmark_regime_ok = market_regime_ok(
+            bench_bars["Close"], cfg.regime_sma_period, cfg.regime_slope_lookback_days,
+            cfg.regime_absolute_momentum_lookback_days,
+        )
+    else:
+        benchmark_regime_ok = pd.Series(True, index=bench_bars.index)
 
     bars_by_symbol: dict[str, pd.DataFrame] = {}
     delay = cfg.scan_request_delay_seconds
@@ -513,7 +545,10 @@ def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTra
     all_trades: list[BacktestTrade] = []
     marks_by_trade_id: dict = {}
     for symbol, bars in bars_by_symbol.items():
-        all_trades.extend(_simulate_symbol_opportunistic(symbol, bars, cfg, score_panel[symbol], marks_by_trade_id))
+        aligned_regime_ok = benchmark_regime_ok.reindex(bars.index, method="ffill").fillna(True)
+        all_trades.extend(
+            _simulate_symbol_opportunistic(symbol, bars, cfg, score_panel[symbol], aligned_regime_ok, marks_by_trade_id)
+        )
 
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
@@ -523,11 +558,6 @@ def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTra
 
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
-
-    try:
-        bench_bars = get_daily_bars(cfg.benchmark_symbol, history_days)
-    except MarketDataError as exc:
-        raise BacktestError(str(exc)) from exc
 
     return all_trades, marks_by_trade_id, bench_bars
 
@@ -881,8 +911,10 @@ def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], 
         raise BacktestError(str(exc)) from exc
 
     if cfg.regime_filter_enabled:
-        bench_regime_sma = sma(bench_bars["Close"], cfg.regime_sma_period)
-        benchmark_regime_ok = (bench_bars["Close"] > bench_regime_sma) | bench_regime_sma.isna()
+        benchmark_regime_ok = market_regime_ok(
+            bench_bars["Close"], cfg.regime_sma_period, cfg.regime_slope_lookback_days,
+            cfg.regime_absolute_momentum_lookback_days,
+        )
     else:
         benchmark_regime_ok = pd.Series(True, index=bench_bars.index)
 

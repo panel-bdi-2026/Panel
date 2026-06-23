@@ -72,6 +72,30 @@ def bollinger_percent_b(close: pd.Series, period: int = 20, num_std: float = 2.0
     return (close - lower) / (upper - lower)
 
 
+def market_regime_ok(
+    close: pd.Series,
+    sma_period: int = 200,
+    slope_lookback: int = 20,
+    absolute_momentum_lookback: int = 252,
+) -> pd.Series:
+    """Filtro de regimen sin whipsaw: en vez de un cruce binario y lento
+    (precio vs SMA200), exige que se cumplan dos condiciones mas lentas a la
+    vez. (a) Pendiente: la SMA de regimen hoy esta por encima de si misma
+    `slope_lookback` dias atras (la media esta subiendo, no solo el precio
+    cruzandola). (b) Momentum absoluto (dual momentum, Antonacci): el
+    benchmark tiene retorno positivo en los ultimos `absolute_momentum_lookback`
+    dias. Ambas en AND: alternar de a una sola senal lenta sigue dejando
+    pasar el mismo whipsaw que motivo este cambio. Sin suficiente historia
+    para alguna de las dos, esa condicion no bloquea (True), igual que
+    pct_from_high/near_high_filter: NaN no es evidencia de regimen malo."""
+    regime_sma = sma(close, sma_period)
+    prior_sma = regime_sma.shift(slope_lookback)
+    slope_ok = (regime_sma > prior_sma) | prior_sma.isna()
+    absolute_momentum = rate_of_change(close, absolute_momentum_lookback)
+    momentum_ok = (absolute_momentum > 0) | absolute_momentum.isna()
+    return slope_ok & momentum_ok
+
+
 def pct_from_high(close: pd.Series, window: int) -> pd.Series:
     """Pct. de distancia (<=0) del cierre actual respecto del maximo de los
     ultimos `window` dias. Exige la ventana completa (min_periods=window):

@@ -961,7 +961,7 @@ def test_opportunistic_trend_break_exit_when_price_falls_below_sma_fast():
     score_series = pd.Series(opp.backtest_score_entry_threshold - 1, index=bars.index)
     score_series.iloc[262:] = opp.backtest_score_entry_threshold + 1
 
-    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series)
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series, pd.Series(True, index=bars.index))
 
     assert trades[0].exit_reason == "trend_break"
     assert trades[0].entry_date == bars.index[263]
@@ -985,7 +985,7 @@ def test_opportunistic_max_holding_days_exit_takes_priority_over_trend_break():
     score_series = pd.Series(opp.backtest_score_entry_threshold - 1, index=bars.index)
     score_series.iloc[262:] = opp.backtest_score_entry_threshold + 1
 
-    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series)
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series, pd.Series(True, index=bars.index))
 
     assert trades[0].exit_reason == "max_holding_days"
     assert trades[0].exit_date == bars.index[278]
@@ -1005,7 +1005,7 @@ def test_opportunistic_stop_loss_triggers_on_intraday_low_not_close():
     score_series = pd.Series(opp.backtest_score_entry_threshold - 1, index=bars.index)
     score_series.iloc[262:] = opp.backtest_score_entry_threshold + 1
 
-    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series)
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series, pd.Series(True, index=bars.index))
 
     assert trades[0].exit_reason == "stop_loss"
     assert trades[0].exit_date == bars.index[264]
@@ -1029,7 +1029,7 @@ def test_opportunistic_liquidity_filter_blocks_entry_for_low_volume_symbol():
     score_series = pd.Series(opp.backtest_score_entry_threshold - 1, index=bars.index)
     score_series.iloc[262:] = opp.backtest_score_entry_threshold + 1
 
-    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series)
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series, pd.Series(True, index=bars.index))
 
     assert trades == []
 
@@ -1050,7 +1050,14 @@ def test_opportunistic_backtest_produces_trades_and_metrics(monkeypatch):
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
     config = _opportunistic_cfg()
-    config = config.model_copy(update={"benchmark_symbol": "SPY", "backtest_years": 1})
+    # regime_filter_enabled=False: el benchmark sintetico de este test es
+    # plano (SMA de regimen sin pendiente y momentum absoluto en 0%), lo que
+    # bloquearia TODA entrada bajo el nuevo filtro de regimen sin whipsaw
+    # (ver indicators.market_regime_ok) -- irrelevante para lo que este test
+    # verifica (metricas del backtest de Oportunista).
+    config = config.model_copy(
+        update={"benchmark_symbol": "SPY", "backtest_years": 1, "regime_filter_enabled": False}
+    )
 
     summary = backtest_module.run_opportunistic_backtest(config)
 
@@ -1083,11 +1090,15 @@ def test_opportunistic_backtest_never_requests_market_data_for_growth_tickers(mo
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
     config = _opportunistic_cfg()
+    # regime_filter_enabled=False: ver comentario equivalente en
+    # test_opportunistic_backtest_produces_trades_and_metrics (benchmark
+    # sintetico plano, irrelevante para lo que este test verifica).
     config = config.model_copy(
         update={
             "benchmark_symbol": "SPY",
             "backtest_years": 1,
             "universe": ["OPP", "OPP2", growth_symbol],
+            "regime_filter_enabled": False,
         }
     )
 
@@ -1203,7 +1214,12 @@ def test_opportunistic_backtest_walk_forward_partitions_all_trades_without_loss(
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
     config = _opportunistic_cfg()
-    config = config.model_copy(update={"benchmark_symbol": "SPY", "backtest_years": 1})
+    # regime_filter_enabled=False: ver comentario equivalente en
+    # test_opportunistic_backtest_produces_trades_and_metrics (benchmark
+    # sintetico plano, irrelevante para lo que este test verifica).
+    config = config.model_copy(
+        update={"benchmark_symbol": "SPY", "backtest_years": 1, "regime_filter_enabled": False}
+    )
 
     full_summary = backtest_module.run_opportunistic_backtest(config)
     result = backtest_module.run_opportunistic_backtest_walk_forward(config, n_folds=3)

@@ -3,7 +3,9 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-from ..indicators import rate_of_change, rsi
+import pandas as pd
+
+from ..indicators import market_regime_ok, rate_of_change, rsi
 from ..market_data import MarketDataError, get_daily_bars, is_bars_cached
 from ..models import SignalResult
 from ..news_sentiment import apply_news_sentiment_adjustment
@@ -42,7 +44,31 @@ class OpportunisticStrategy:
     def reload(self, config: ScreenerConfig) -> None:
         self.config = config
 
-    def evaluate_symbol(self, symbol: str, force: bool = False) -> SignalResult | None:
+    def _benchmark_regime_ok(self, force: bool = False) -> bool:
+        """Igual que MomentumScreener._benchmark_context, pero solo el
+        booleano de regimen: Oportunista no usa el ROC del benchmark para
+        fuerza relativa (no tiene ese componente de score). Antes esta
+        estrategia no consultaba el regimen en absoluto -- comprar caidas
+        (su logica central) en un mercado en tendencia bajista de fondo es
+        comprar cuchillos cayendo."""
+        cfg = self.config
+        if not cfg.regime_filter_enabled:
+            return True
+        try:
+            bench_bars = get_daily_bars(cfg.benchmark_symbol, cfg.lookback_days, force=force)
+        except MarketDataError:
+            return True
+        close = bench_bars["Close"]
+        if not len(close):
+            return True
+        regime_series = market_regime_ok(
+            close, cfg.regime_sma_period, cfg.regime_slope_lookback_days,
+            cfg.regime_absolute_momentum_lookback_days,
+        )
+        last_value = regime_series.iloc[-1]
+        return bool(last_value) if not pd.isna(last_value) else True
+
+    def evaluate_symbol(self, symbol: str, regime_ok: bool = True, force: bool = False) -> SignalResult | None:
         cfg = self.config
         opp = cfg.opportunistic
         try:
@@ -83,7 +109,7 @@ class OpportunisticStrategy:
 
         days_to_earnings: int | None = None
         earnings_ok = True
-        if momentum_ok and rsi_ok and volatility_ok and liquidity_ok and room_to_grow_ok:
+        if momentum_ok and rsi_ok and volatility_ok and liquidity_ok and room_to_grow_ok and regime_ok:
             earnings_ok, days_to_earnings = earnings_blackout_ok(symbol, cfg.earnings_blackout_days, force=force)
 
         notes: list[str] = []
@@ -97,6 +123,8 @@ class OpportunisticStrategy:
             notes.append("Volumen promedio por debajo del minimo de liquidez configurado.")
         if not room_to_grow_ok:
             notes.append(f"Solo {abs(last_from_high):.1f}% por debajo del maximo de 52 semanas: poco espacio de crecimiento.")
+        if not regime_ok:
+            notes.append("Filtro de regimen: el benchmark no esta en regimen alcista de fondo.")
         if not earnings_ok:
             notes.append(f"Earnings estimados en {days_to_earnings} dia(s): dentro de la ventana de blackout.")
 
@@ -145,9 +173,13 @@ class OpportunisticStrategy:
             pct_from_52w_high=round(last_from_high, 2) if last_from_high is not None else None,
             suggested_stop_loss_price=round(stop_loss_price, 2),
             suggested_stop_loss_pct=round(stop_loss_pct, 2),
-            passes_filters=momentum_ok and rsi_ok and volatility_ok and liquidity_ok and room_to_grow_ok and earnings_ok,
+            passes_filters=(
+                momentum_ok and rsi_ok and volatility_ok and liquidity_ok and room_to_grow_ok
+                and regime_ok and earnings_ok
+            ),
             liquidity_ok=liquidity_ok,
             earnings_ok=earnings_ok,
+            regime_ok=regime_ok,
             notes=notes,
             strategy_id=self.id,
             sector=get_sector(symbol),
@@ -159,6 +191,7 @@ class OpportunisticStrategy:
 
     def scan(self, force: bool = False) -> list[SignalResult]:
         results = []
+        regime_ok = self._benchmark_regime_ok(force=force)
         delay = self.config.scan_request_delay_seconds
         for i, symbol in enumerate(self.config.universe):
             # Salteado si el dato ya esta cacheado (ej. otra estrategia ya
@@ -166,7 +199,7 @@ class OpportunisticStrategy:
             # espaciar (ver is_bars_cached).
             if i > 0 and delay > 0 and (force or not is_bars_cached(symbol, self.config.lookback_days)):
                 time.sleep(delay)
-            result = self.evaluate_symbol(symbol, force=force)
+            result = self.evaluate_symbol(symbol, regime_ok=regime_ok, force=force)
             if result is not None:
                 results.append(result)
         if self.config.universe and not results:

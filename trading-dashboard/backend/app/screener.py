@@ -5,7 +5,17 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from .indicators import atr, bollinger_percent_b, macd, momentum_12_1, pct_from_high, rate_of_change, rsi, sma
+from .indicators import (
+    atr,
+    bollinger_percent_b,
+    macd,
+    market_regime_ok,
+    momentum_12_1,
+    pct_from_high,
+    rate_of_change,
+    rsi,
+    sma,
+)
 from .market_data import MarketDataError, get_daily_bars, get_next_earnings_date, is_bars_cached
 from .models import SignalResult
 from .news_sentiment import apply_news_sentiment_adjustment
@@ -45,10 +55,12 @@ class MomentumScreener:
         """Retorna (roc_3m, regime_ok) del benchmark.
 
         roc_3m es el momentum usado para la fuerza relativa de cada simbolo.
-        regime_ok indica si el benchmark esta por encima de su propia SMA de
-        regimen (mercado en tendencia alcista de fondo); si no hay suficiente
-        historia para calcularla, se asume regime_ok=True en vez de bloquear
-        todo el scan por falta de dato.
+        regime_ok indica si el benchmark esta en regimen alcista de fondo
+        segun indicators.market_regime_ok (pendiente de la SMA de regimen
+        positiva Y momentum absoluto positivo, no solo precio > SMA: evita
+        el whipsaw de un cruce binario en una SMA plana); si no hay
+        suficiente historia para calcularlo, se asume regime_ok=True en vez
+        de bloquear todo el scan por falta de dato.
         """
         try:
             bars = get_daily_bars(self.config.benchmark_symbol, self.config.lookback_days, force=force)
@@ -61,10 +73,15 @@ class MomentumScreener:
 
         regime_ok = True
         if self.config.regime_filter_enabled and len(close):
-            regime_sma = sma(close, self.config.regime_sma_period)
-            last_sma = regime_sma.iloc[-1]
-            if not pd.isna(last_sma):
-                regime_ok = bool(close.iloc[-1] > last_sma)
+            regime_series = market_regime_ok(
+                close,
+                self.config.regime_sma_period,
+                self.config.regime_slope_lookback_days,
+                self.config.regime_absolute_momentum_lookback_days,
+            )
+            last_value = regime_series.iloc[-1]
+            if not pd.isna(last_value):
+                regime_ok = bool(last_value)
         return roc_3m, regime_ok
 
     def evaluate_symbol(

@@ -388,12 +388,19 @@ class ScreenerConfig(BaseModel):
     live_rotation_batch_size: int = 25
 
     # Filtro de regimen de mercado: no se sugieren entradas largas si el
-    # benchmark esta por debajo de su propia SMA de regimen (mercado en
-    # tendencia bajista de fondo). Una estrategia long-only de momentum tiende
-    # a funcionar mal en ese contexto aunque el papel individual pase los
-    # demas filtros.
+    # benchmark no esta en un regimen alcista de fondo. Antes era un cruce
+    # binario precio > SMA200, lento pero igual propenso a whipsaw cuando la
+    # SMA esta plana (cruces de ida y vuelta sin que cambie el regimen real).
+    # Ahora exige dos condiciones mas lentas a la vez (ver
+    # indicators.market_regime_ok): la SMA de regimen tiene que estar en
+    # pendiente positiva (no solo el precio por encima de ella), y el
+    # benchmark tiene que tener momentum absoluto positivo (dual
+    # momentum/Antonacci) en una ventana larga. Se aplica tanto a Momentum
+    # como a Oportunista (antes este ultimo no lo consultaba).
     regime_filter_enabled: bool = True
     regime_sma_period: int = 200
+    regime_slope_lookback_days: int = 20
+    regime_absolute_momentum_lookback_days: int = 252
 
     # Dias antes de la fecha estimada de earnings en los que NO se sugieren
     # nuevas entradas: un gap por sorpresa de resultados puede saltarse un
