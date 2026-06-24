@@ -1137,6 +1137,8 @@ def status(_: None = Depends(require_api_key)):
         # tomado por varios minutos (ver _market_scan_lock).
         "market_scan_busy": _market_scan_lock.locked(),
         "live_radar_enabled": screener_config.live_radar_enabled,
+        "live_hot_count": len(_hot_symbols),
+        "live_hot_cap": screener_config.live_hot_symbols_cap,
     }
 
 

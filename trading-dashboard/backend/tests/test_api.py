@@ -106,6 +106,19 @@ def test_status_returns_data_with_valid_api_key():
     assert "ib_host" in resp.json()
 
 
+def test_status_reports_live_hot_set_size_and_cap():
+    # El frontend recalcula "X/Y streaming en vivo" en cada poll de
+    # /api/status (no solo al escanear) para que ese texto no quede
+    # mostrando un estado congelado de la ultima vez que el usuario escaneo.
+    main_module._hot_symbols.update({"AAPL", "MSFT"})
+    main_module.screener_config.live_hot_symbols_cap = 50
+
+    resp = client.get("/api/status", headers={"X-API-Key": "test-key"})
+    body = resp.json()
+    assert body["live_hot_count"] == 2
+    assert body["live_hot_cap"] == 50
+
+
 def test_protected_endpoint_rejects_missing_api_key():
     resp = client.get("/api/rules")
     assert resp.status_code == 401

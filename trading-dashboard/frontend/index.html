@@ -488,6 +488,7 @@ async function refreshStatus(){
   try{
     const s = await api('/api/status', { auth:true });
     lastStatus = s;
+    renderSignalsMeta();
     document.getElementById('hdr-sub').textContent =
       `IBKR ${s.ib_host}:${s.ib_port} · modo ${s.mode}`;
     const modeBadge = document.getElementById('modeBadge');
@@ -1544,10 +1545,27 @@ function liveStreamingPausedNote(liveHotCount){
   return '';
 }
 
+// Prefijo fijo (fecha de la ultima corrida, cantidad de simbolos) seteado
+// solo al escanear; lo combinamos con el estado de streaming en vivo, que
+// en cambio se recalcula solo en cada refreshStatus() (cada 8s vía
+// lastStatus), para que "X/Y streaming en vivo" nunca quede mostrando un
+// "pausado" congelado de un lock que ya se liberó.
+let signalsMetaPrefix = '';
+
+function renderSignalsMeta(){
+  if(!signalsMetaPrefix) return;
+  const meta = document.getElementById('signalsMeta');
+  const cap = lastStatus.live_hot_cap;
+  const count = lastStatus.live_hot_count || 0;
+  const hotInfo = cap
+    ? ` · ${count ? '🟢' : '⚪'} ${count}/${cap} símbolos con streaming en vivo (compartido entre estrategias, los de mejor score en cualquiera de ellas)${liveStreamingPausedNote(count)}`
+    : '';
+  meta.textContent = signalsMetaPrefix + hotInfo;
+}
+
 async function scanSignals(force=false){
   const requestId = ++scanRequestId;
   const body = document.getElementById('signalsBody');
-  const meta = document.getElementById('signalsMeta');
   body.innerHTML = `<tr><td colspan="${SIGNALS_COLSPAN}" class="empty">Escaneando…</td></tr>`;
   try{
     const qs = new URLSearchParams({ strategy_id: currentStrategyId });
@@ -1563,10 +1581,8 @@ async function scanSignals(force=false){
       data.results.forEach(r => lastSignals[r.symbol] = r);
       renderSignalsTable();
     }
-    const hotInfo = data.live_hot_cap
-      ? ` · ${data.live_hot_count ? '🟢' : '⚪'} ${data.live_hot_count || 0}/${data.live_hot_cap} símbolos con streaming en vivo (compartido entre estrategias, los de mejor score en cualquiera de ellas)${liveStreamingPausedNote(data.live_hot_count)}`
-      : '';
-    meta.textContent = `Actualizado: ${new Date(data.as_of).toLocaleString()}${data.cached ? ' (cache)' : ''} · ${data.results.length} símbolos con datos${hotInfo}`;
+    signalsMetaPrefix = `Actualizado: ${new Date(data.as_of).toLocaleString()}${data.cached ? ' (cache)' : ''} · ${data.results.length} símbolos con datos`;
+    renderSignalsMeta();
     renderSignalsChart(data.results);
     // El score de las otras estrategias se trae aparte y nunca con force: la
     // activa ya se forzo arriba si correspondia, y las demas usan su propio
