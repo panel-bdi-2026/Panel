@@ -18,7 +18,7 @@ from .indicators import (
     rsi,
     sma,
 )
-from .market_data import MarketDataError, get_daily_bars
+from .market_data import MarketDataError, get_daily_bars, is_bars_cached
 from .models import BacktestSummary, BacktestTrade, EquityCurvePoint, WalkForwardFold, WalkForwardResult
 from .screener_config import GROWTH_TICKERS, ScreenerConfig
 from .sector_strength import sector_relative_strength_series
@@ -642,7 +642,11 @@ def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTra
     bars_by_symbol: dict[str, pd.DataFrame] = {}
     delay = cfg.scan_request_delay_seconds
     for i, symbol in enumerate(_backtest_universe(cfg)):
-        if i > 0 and delay > 0:
+        # Misma pausa anti-rate-limit que el scan en vivo, salvo que el dato ya
+        # este cacheado (ver is_bars_cached): ahi no hay fetch real que
+        # espaciar -- tipico cuando este mismo universo ya se corrio para
+        # Momentum segundos antes con el mismo backtest_years.
+        if i > 0 and delay > 0 and not is_bars_cached(symbol, history_days):
             time.sleep(delay)
         try:
             bars = get_daily_bars(symbol, history_days)
@@ -1120,8 +1124,10 @@ def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], 
         # Misma pausa anti-rate-limit que el scan en vivo (ver
         # scan_request_delay_seconds): el backtest pega tantos pedidos como
         # simbolos tenga el universo configurado, y con el S&P 500 completo
-        # eso son varios cientos de requests seguidos a la API gratuita.
-        if i > 0 and delay > 0:
+        # eso son varios cientos de requests seguidos a la API gratuita. Salvo
+        # que el dato ya este cacheado (ver is_bars_cached), igual que en el
+        # scan en vivo: ahi no hay fetch real que espaciar.
+        if i > 0 and delay > 0 and not is_bars_cached(symbol, history_days):
             time.sleep(delay)
         try:
             bars = get_daily_bars(symbol, history_days)

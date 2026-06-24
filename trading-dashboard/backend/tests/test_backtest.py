@@ -161,6 +161,7 @@ def test_backtest_throttles_between_symbols_to_avoid_rate_limiting(monkeypatch, 
     pedidos seguidos a la API gratuita de datos sin esta pausa."""
     sleep_calls: list[float] = []
     monkeypatch.setattr(backtest_module.time, "sleep", lambda secs: sleep_calls.append(secs))
+    monkeypatch.setattr(backtest_module, "is_bars_cached", lambda symbol, lookback_days: False)
     config = ScreenerConfig(
         universe=["MOM", "FLAT"],
         benchmark_symbol="SPY",
@@ -179,6 +180,24 @@ def test_backtest_skips_throttle_when_delay_is_zero(monkeypatch, patched_market_
         benchmark_symbol="SPY",
         backtest_years=1,
         scan_request_delay_seconds=0.0,
+    )
+    run_backtest(config)
+    assert sleep_calls == []
+
+
+def test_backtest_skips_throttle_for_already_cached_symbol(monkeypatch, patched_market_data):
+    # Tipico cuando Momentum y Oportunista corren seguidos con el mismo
+    # backtest_years (misma history_days, misma clave de cache en
+    # market_data.get_daily_bars): la segunda pasada no deberia pagar la
+    # pausa anti-rate-limit por un simbolo que ya esta en cache.
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(backtest_module.time, "sleep", lambda secs: sleep_calls.append(secs))
+    monkeypatch.setattr(backtest_module, "is_bars_cached", lambda symbol, lookback_days: symbol == "FLAT")
+    config = ScreenerConfig(
+        universe=["MOM", "FLAT"],
+        benchmark_symbol="SPY",
+        backtest_years=1,
+        scan_request_delay_seconds=0.25,
     )
     run_backtest(config)
     assert sleep_calls == []
@@ -1469,6 +1488,41 @@ def test_opportunistic_backtest_produces_trades_and_metrics(monkeypatch):
     assert all(t.symbol in ("OPP", "OPP2") for t in summary.trades)
     assert 0 <= summary.win_rate_pct <= 100
     assert summary.start_date < summary.end_date
+
+
+def test_opportunistic_backtest_skips_throttle_for_already_cached_symbol(monkeypatch):
+    # Mismo fix que test_backtest_skips_throttle_for_already_cached_symbol,
+    # aplicado al loop de fetch de Oportunista (_collect_opportunistic_trades
+    # tiene su propio loop, separado del de Momentum).
+    bars = _opportunistic_oscillating_bars()
+    bench_bars = _bars([100.0] * len(bars))
+    buddy_bars = _opportunistic_buddy_bars(len(bars))
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol == "SPY":
+            return bench_bars
+        if symbol == "OPP":
+            return bars
+        if symbol == "OPP2":
+            return buddy_bars
+        raise MarketDataError("no data")
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(backtest_module.time, "sleep", lambda secs: sleep_calls.append(secs))
+    monkeypatch.setattr(backtest_module, "is_bars_cached", lambda symbol, lookback_days: symbol == "OPP2")
+    config = _opportunistic_cfg().model_copy(
+        update={
+            "benchmark_symbol": "SPY",
+            "backtest_years": 1,
+            "opportunistic_regime_filter_enabled": False,
+            "scan_request_delay_seconds": 0.25,
+        }
+    )
+
+    backtest_module.run_opportunistic_backtest(config)
+
+    assert sleep_calls == []
 
 
 def test_opportunistic_backtest_never_requests_market_data_for_growth_tickers(monkeypatch):
