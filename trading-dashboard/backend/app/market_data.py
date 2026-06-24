@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -75,6 +76,31 @@ class MarketDataError(RuntimeError):
 _MAX_FETCH_RETRIES = 3
 _RETRY_BACKOFF_BASE_SECONDS = 0.5
 
+# Limite duro de pared para una sola llamada de red a yfinance. yfinance
+# acepta su propio `timeout=` interno en algunos metodos, pero ese timeout es
+# "sin datos nuevos por N segundos" (se reinicia con cada byte recibido), no
+# un limite total de la operacion -- una conexion de Yahoo que va goteando
+# bytes sin terminar la respuesta nunca lo dispara. Peor aun, la negociacion
+# de cookie/crumb interna de yfinance esta protegida por un threading.Lock
+# compartido por TODOS los simbolos y threads del proceso (yfinance.Ticker
+# usa una unica sesion singleton): si esa llamada se cuelga, el lock queda
+# tomado para siempre y bloquea cualquier otro fetch, lo que a su vez deja
+# _market_scan_lock (ver main.py) tomado para siempre y tira abajo el
+# dashboard entero hasta reiniciar el servicio. Forzar un timeout de pared
+# con un thread separado evita que un solo simbolo cuelgue toda la app, aun
+# si yfinance internamente sigue trabado (ese thread de fetch queda huerfano
+# pero el resto de la app sigue funcionando).
+_FETCH_TIMEOUT_SECONDS = 45
+_fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="yfinance-fetch")
+
+
+def _fetch_with_timeout(fn):
+    future = _fetch_executor.submit(fn)
+    try:
+        return future.result(timeout=_FETCH_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        raise MarketDataError(f"Sin respuesta de Yahoo Finance tras {_FETCH_TIMEOUT_SECONDS}s") from None
+
 
 def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.DataFrame:
     """Barras diarias OHLCV ajustadas para `symbol`, cubriendo ~lookback_days dias de trading.
@@ -115,7 +141,9 @@ def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.D
         last_error: Exception | None = None
         for attempt in range(_MAX_FETCH_RETRIES):
             try:
-                df = yf.Ticker(symbol).history(start=start.date(), end=end.date(), interval="1d", auto_adjust=True)
+                df = _fetch_with_timeout(
+                    lambda: yf.Ticker(symbol).history(start=start.date(), end=end.date(), interval="1d", auto_adjust=True)
+                )
                 last_error = None
                 if df is not None and not df.empty:
                     break
@@ -176,7 +204,7 @@ def get_next_earnings_date(symbol: str, force: bool = False) -> "date | None":
             # YA PASADA y el blackout nunca se activaba (days_to_earnings quedaba
             # negativo). Se pide un lote mas grande y se filtra explicitamente por
             # la mas próxima que sea hoy o futura.
-            dates = yf.Ticker(symbol).get_earnings_dates(limit=12)
+            dates = _fetch_with_timeout(lambda: yf.Ticker(symbol).get_earnings_dates(limit=12))
             next_date = None
             if dates is not None and len(dates):
                 today = datetime.now(timezone.utc).date()
@@ -258,7 +286,7 @@ def get_fundamentals(symbol: str, force: bool = False) -> dict:
 
         ok = True
         try:
-            info = yf.Ticker(symbol).get_info() or {}
+            info = _fetch_with_timeout(lambda: yf.Ticker(symbol).get_info()) or {}
         except Exception:
             info = {}
             ok = False

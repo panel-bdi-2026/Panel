@@ -1,3 +1,5 @@
+import time
+
 import pandas as pd
 import pytest
 
@@ -173,6 +175,47 @@ def test_is_bars_cached_false_after_ttl_expires(monkeypatch):
     expired = timestamp - market_data_module._CACHE_TTL_SECONDS - 1
     market_data_module._cache[("AAPL", 100)] = (expired, df)
     assert is_bars_cached("AAPL", 100) is False
+
+
+# ---------------------------------------------------------------------------
+# _fetch_with_timeout: limite de pared ante una llamada de yfinance que se
+# cuelga (no lanza excepcion ni vuelve nunca) en vez de fallar rapido.
+# ---------------------------------------------------------------------------
+
+def test_fetch_with_timeout_raises_market_data_error_on_hang(monkeypatch):
+    monkeypatch.setattr(market_data_module, "_FETCH_TIMEOUT_SECONDS", 0.05)
+
+    def hangs():
+        time.sleep(0.3)
+        return "nunca deberia observarse"
+
+    with pytest.raises(MarketDataError):
+        market_data_module._fetch_with_timeout(hangs)
+
+
+def test_get_daily_bars_treats_hang_as_failure_and_retries(monkeypatch):
+    """Una llamada colgada en el primer intento no debe trabar el thread para
+    siempre: el watchdog la corta y el retry normal de get_daily_bars sigue
+    con el segundo intento como si hubiera sido una excepcion cualquiera."""
+    monkeypatch.setattr(market_data_module, "_FETCH_TIMEOUT_SECONDS", 0.05)
+    bars = _bars()
+    call_count = {"n": 0}
+
+    class _HangsOnFirstCallTicker:
+        def __init__(self, symbol):
+            pass
+
+        def history(self, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                time.sleep(0.3)
+            return bars
+
+    monkeypatch.setattr(market_data_module.yf, "Ticker", _HangsOnFirstCallTicker)
+
+    df = get_daily_bars("HUNG", 100)
+    assert len(df) == len(bars)
+    assert call_count["n"] == 2
 
 
 # ---------------------------------------------------------------------------
