@@ -479,6 +479,19 @@ class ScreenerConfig(BaseModel):
     # fuera del alcance de esta simulacion.
     invest_idle_cash_in_benchmark: bool = False
 
+    # Cuantas variantes de parametros/estrategias se probaron (en este backtest
+    # o en corridas previas) antes de quedarse con la configuracion actual:
+    # insumo del Deflated Sharpe Ratio (ver _compute_summary_stats en
+    # backtest.py), que penaliza el sharpe_ratio observado por el sesgo de
+    # seleccion de buscar entre muchas variantes y quedarse con la que mejor
+    # backtest dio (overfitting de backtest) -- un sharpe_ratio alto es mucho
+    # menos confiable si fue el mejor de 50 intentos que si fue el unico
+    # intento. 1 = sin ajuste por multiples pruebas (el valor por defecto, ya
+    # que esta cuenta no se rastrea automaticamente entre corridas: el usuario
+    # tiene que estimarla a mano segun cuantas configuraciones distintas probo
+    # antes de esta).
+    deflated_sharpe_num_trials: int = 1
+
     # Escaneo proactivo en background: si esta habilitado, el backend corre el
     # screener solo (sin que el usuario abra el dashboard) cada
     # auto_scan_interval_minutes y arma ordenes de compra en borrador para

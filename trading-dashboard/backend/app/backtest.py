@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import statistics
 import time
 from collections import Counter
@@ -81,6 +82,67 @@ def _trailing_stop_price(current_stop: float, price_today: float, atr_today: flo
     broker para adelante, nunca reabre la vela que ya paso."""
     candidate_stop = price_today - stop_loss_atr_multiplier * atr_today
     return max(current_stop, candidate_stop)
+
+
+_EULER_MASCHERONI = 0.5772156649015329
+
+
+def _deflated_sharpe_ratio_pct(daily_returns: list[float], num_trials: int) -> float | None:
+    """Probabilistic/Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014):
+    probabilidad (0-100) de que el Sharpe ratio verdadero (no observado) sea
+    mayor a cero, ajustada por dos sesgos que el sharpe_ratio crudo ignora:
+
+    1. No-normalidad de daily_returns (skewness/kurtosis): un sharpe_ratio
+       identico es menos confiable si viene de una distribucion con colas
+       pesadas o asimetria negativa (formula de la varianza del estimador de
+       Sharpe de Mertens 2002, el mismo ingrediente del Probabilistic Sharpe
+       Ratio).
+    2. Sesgo de seleccion de haber probado num_trials variantes de
+       parametros/estrategias antes de quedarse con esta (ver
+       ScreenerConfig.deflated_sharpe_num_trials): el umbral contra el que se
+       compara el sharpe_ratio observado sube con la cantidad de pruebas (el
+       maximo esperado entre num_trials sharpes con skill verdadero cero
+       crece con num_trials), penalizando el "probar muchas configuraciones y
+       quedarse con la que mejor backtest dio".
+
+    Usa momentos POBLACIONALES (entre n, no n-1) para mean/std/skew/kurtosis
+    de daily_returns, consistentes entre si (misma convencion que la formula
+    de Mertens). num_trials <= 1 deja el umbral de comparacion en 0 (sin
+    ajuste por multiples pruebas, equivalente al Probabilistic Sharpe Ratio
+    puro contra un benchmark de Sharpe cero).
+
+    None si no hay variacion en daily_returns (desvio poblacional 0, ej.
+    retornos diarios todos iguales) o si la varianza del estimador de Sharpe
+    resulta no positiva (kurtosis extrema en una muestra muy chica): en
+    ambos casos el cociente no esta definido, mismo criterio de "no
+    representable, no inventar un numero" que sharpe_ratio con desvio 0.
+    """
+    n = len(daily_returns)
+    mean_r = statistics.mean(daily_returns)
+    variance_pop = sum((r - mean_r) ** 2 for r in daily_returns) / n
+    std_pop = variance_pop**0.5
+    if std_pop == 0:
+        return None
+
+    sr_hat = mean_r / std_pop
+    skew = (sum((r - mean_r) ** 3 for r in daily_returns) / n) / std_pop**3
+    kurtosis = (sum((r - mean_r) ** 4 for r in daily_returns) / n) / std_pop**4
+
+    sr_variance = (1 - skew * sr_hat + (kurtosis - 1) / 4 * sr_hat**2) / (n - 1)
+    if sr_variance <= 0:
+        return None
+    sr_std = sr_variance**0.5
+
+    z = statistics.NormalDist()
+    if num_trials > 1:
+        benchmark_sr = sr_std * (
+            (1 - _EULER_MASCHERONI) * z.inv_cdf(1 - 1 / num_trials)
+            + _EULER_MASCHERONI * z.inv_cdf(1 - 1 / (num_trials * math.e))
+        )
+    else:
+        benchmark_sr = 0.0
+
+    return z.cdf((sr_hat - benchmark_sr) / sr_std) * 100
 
 
 def _trade_daily_marks(
@@ -636,6 +698,7 @@ def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     return _compute_summary_stats(
         all_trades, cfg.top_n, bench_bars, marks_by_trade_id,
         cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
+        cfg.deflated_sharpe_num_trials,
     )
 
 
@@ -879,6 +942,7 @@ def _compute_summary_stats(
     marks_by_trade_id: dict | None = None,
     invest_idle_cash_in_benchmark: bool = False,
     vol_weighting_enabled: bool = False,
+    deflated_sharpe_num_trials: int = 1,
 ) -> BacktestSummary:
     """Calcula las metricas resumen a partir de la lista final de operaciones
     (ya filtrada por cap_concurrent_positions). Separado de run_backtest para
@@ -927,11 +991,13 @@ def _compute_summary_stats(
     # sin importar cuantos puntos diarios genere esa unica operacion, asi que
     # se exige el mismo minimo de 2 operaciones que antes.
     sharpe_ratio = None
+    deflated_sharpe_ratio_pct = None
     if len(all_trades) >= 2 and len(daily_equity) >= 3:
         daily_returns = [daily_equity[i] / daily_equity[i - 1] - 1 for i in range(1, len(daily_equity))]
         std_r = statistics.stdev(daily_returns)
         if std_r > 0:
             sharpe_ratio = (statistics.mean(daily_returns) / std_r) * (252 ** 0.5)
+        deflated_sharpe_ratio_pct = _deflated_sharpe_ratio_pct(daily_returns, deflated_sharpe_num_trials)
 
     return BacktestSummary(
         start_date=all_trades[0].entry_date,
@@ -950,6 +1016,7 @@ def _compute_summary_stats(
         avg_alpha_pct=avg_alpha_pct,
         max_drawdown_pct=round(max_drawdown, 2),
         sharpe_ratio=round(sharpe_ratio, 2) if sharpe_ratio is not None else None,
+        deflated_sharpe_ratio_pct=round(deflated_sharpe_ratio_pct, 1) if deflated_sharpe_ratio_pct is not None else None,
         avg_exposure_pct=avg_exposure_pct,
         exit_reason_counts=dict(Counter(t.exit_reason for t in all_trades)),
         trades=trades_with_alpha[-50:],
@@ -1137,6 +1204,7 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
     return _compute_summary_stats(
         all_trades, cfg.top_n, bench_bars, marks_by_trade_id,
         cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
+        cfg.deflated_sharpe_num_trials,
     )
 
 

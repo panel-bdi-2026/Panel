@@ -268,6 +268,19 @@ class BacktestSummary(BaseModel):
     avg_alpha_pct: Optional[float] = None
     max_drawdown_pct: float
     sharpe_ratio: Optional[float] = None
+    # Probabilidad (0-100) de que el Sharpe ratio verdadero de la estrategia
+    # sea mayor a cero, ajustada por sesgo de seleccion
+    # (cfg.deflated_sharpe_num_trials variantes probadas) y por la
+    # no-normalidad de los retornos diarios (skewness/kurtosis), siguiendo
+    # Bailey & Lopez de Prado "The Deflated Sharpe Ratio" (2014). A diferencia
+    # de sharpe_ratio (un ratio, puede ser cualquier numero real, y no avisa
+    # si viene de pocas observaciones o de probar muchas variantes hasta
+    # encontrar una buena), esto es una PROBABILIDAD: un valor bajo (ej. <95)
+    # advierte que el sharpe_ratio observado podria ser puro azar/overfitting
+    # de backtest, incluso si el numero crudo se ve bien. None con menos datos
+    # de los que el calculo necesita para ser estable (ver
+    # _deflated_sharpe_ratio_pct en backtest.py), igual que sharpe_ratio.
+    deflated_sharpe_ratio_pct: Optional[float] = None
     # % promedio del capital asumido (backtest_assumed_capital_usd) que estuvo
     # efectivamente invertido en algun momento del periodo (1/top_n por cada
     # posicion abierta ese dia), no solo en los dias con una operacion activa

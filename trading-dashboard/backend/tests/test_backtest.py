@@ -707,6 +707,76 @@ def test_sharpe_uses_sample_stdev_not_population_stdev():
     assert summary.sharpe_ratio != expected_sharpe_population
 
 
+def test_deflated_sharpe_ratio_pct_matches_hand_computed_value_with_one_trial():
+    from app.backtest import _deflated_sharpe_ratio_pct
+    import statistics as _stats
+
+    daily_returns = [0.01, -0.005, 0.02, -0.01, 0.015, 0.0, 0.008, -0.003]
+    n = len(daily_returns)
+    mean_r = _stats.mean(daily_returns)
+    variance_pop = sum((r - mean_r) ** 2 for r in daily_returns) / n
+    std_pop = variance_pop**0.5
+    sr_hat = mean_r / std_pop
+    skew = (sum((r - mean_r) ** 3 for r in daily_returns) / n) / std_pop**3
+    kurtosis = (sum((r - mean_r) ** 4 for r in daily_returns) / n) / std_pop**4
+    sr_variance = (1 - skew * sr_hat + (kurtosis - 1) / 4 * sr_hat**2) / (n - 1)
+    sr_std = sr_variance**0.5
+    # num_trials=1 deja el benchmark en 0: Probabilistic Sharpe Ratio puro
+    # contra un Sharpe nulo, sin ajuste por multiples pruebas.
+    expected = _stats.NormalDist().cdf(sr_hat / sr_std) * 100
+
+    result = _deflated_sharpe_ratio_pct(daily_returns, num_trials=1)
+    assert result == pytest.approx(expected)
+
+
+def test_deflated_sharpe_ratio_pct_decreases_as_num_trials_increases():
+    # Mas variantes probadas -> el liston de comparacion (benchmark_sr, el
+    # maximo esperado entre num_trials sharpes con skill verdadero cero) sube,
+    # asi que la misma performance observada se vuelve menos creible.
+    from app.backtest import _deflated_sharpe_ratio_pct
+
+    daily_returns = [0.01, -0.005, 0.02, -0.01, 0.015, 0.0, 0.008, -0.003]
+    dsr_one_trial = _deflated_sharpe_ratio_pct(daily_returns, num_trials=1)
+    dsr_many_trials = _deflated_sharpe_ratio_pct(daily_returns, num_trials=50)
+    assert dsr_many_trials < dsr_one_trial
+
+
+def test_deflated_sharpe_ratio_pct_is_none_when_returns_have_no_variation():
+    # Desvio poblacional 0 (todos los retornos diarios iguales): el cociente
+    # sr_hat = mean/std no esta definido, mismo criterio de "no representable"
+    # que sharpe_ratio.
+    from app.backtest import _deflated_sharpe_ratio_pct
+
+    result = _deflated_sharpe_ratio_pct([0.01, 0.01, 0.01, 0.01], num_trials=1)
+    assert result is None
+
+
+def test_backtest_summary_includes_deflated_sharpe_ratio_pct_when_enough_trades(patched_market_data):
+    config = ScreenerConfig(universe=["MOM", "FLAT"], benchmark_symbol="SPY", backtest_years=1)
+    summary = run_backtest(config)
+    assert summary.total_trades >= 2
+    assert summary.deflated_sharpe_ratio_pct is not None
+
+
+def test_deflated_sharpe_ratio_pct_responds_to_deflated_sharpe_num_trials_config():
+    # Confirma que _compute_summary_stats efectivamente usa el parametro (y no
+    # solo lo recibe sin pasarlo a _deflated_sharpe_ratio_pct).
+    from app.backtest import _compute_summary_stats
+
+    returns_pct = [2.0, -1.0, 3.0, -0.5, 1.5, 2.5, -1.5, 1.0]
+    trades = [_trade(f"S{i}", i + 1, i + 2, return_pct=r) for i, r in enumerate(returns_pct)]
+
+    summary_one_trial = _compute_summary_stats(
+        trades, top_n=10, bench_bars=_bench_bars_for_stats(), deflated_sharpe_num_trials=1
+    )
+    summary_many_trials = _compute_summary_stats(
+        trades, top_n=10, bench_bars=_bench_bars_for_stats(), deflated_sharpe_num_trials=50
+    )
+    assert summary_one_trial.deflated_sharpe_ratio_pct is not None
+    assert summary_many_trials.deflated_sharpe_ratio_pct is not None
+    assert summary_many_trials.deflated_sharpe_ratio_pct < summary_one_trial.deflated_sharpe_ratio_pct
+
+
 def test_daily_equity_curve_reflects_overlapping_open_positions():
     from app.backtest import _compute_summary_stats
     # A queda abierta los dias 1-11 (ganadora, +10%) mientras B esta abierta
