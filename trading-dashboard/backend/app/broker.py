@@ -221,13 +221,20 @@ class IBKRBroker:
         de nuevo sobre el mismo contrato duplicaria la linea sin necesidad).
         No hay limite de "refrescos": una vez suscripto, Ticker.marketPrice()
         (ver get_live_price) se mantiene actualizado solo mientras dure la
-        conexion, ocupando una sola linea de market data por simbolo."""
+        conexion, ocupando una sola linea de market data por simbolo.
+
+        Si IBKR no puede calificar el contrato de algun simbolo (queda sin
+        conId), se lo omite en vez de pedirle reqMktData: ese contrato no se
+        puede hashear y aborta TODO el lote, dejando sin suscribir incluso a
+        los simbolos validos."""
         new_symbols = [s for s in symbols if s not in self._live_tickers]
         if not new_symbols:
             return
         contracts = [Stock(_to_ib_symbol(s), "SMART", "USD") for s in new_symbols]
         await self.ib.qualifyContractsAsync(*contracts)
         for symbol, contract in zip(new_symbols, contracts):
+            if not contract.conId:
+                continue
             self._live_tickers[symbol] = self.ib.reqMktData(contract, "", False, False)
 
     def stream_unsubscribe(self, symbols: list[str]) -> None:
@@ -254,11 +261,17 @@ class IBKRBroker:
         llega el snapshot, a diferencia de stream_subscribe). Pensado para
         rotar el resto del universo -- el que no esta en el hot-set -- con las
         lineas de market data que el hot-set deja libres (ver
-        _price_rotation_loop en main.py)."""
+        _price_rotation_loop en main.py). Si algun simbolo del lote no
+        califica en IBKR (sin conId), se lo descarta antes de pedir tickers:
+        un solo contrato sin conId no deberia tirar abajo el precio de todo
+        el resto del lote."""
         if not symbols:
             return {}
         contracts = [Stock(_to_ib_symbol(s), "SMART", "USD") for s in symbols]
         await self.ib.qualifyContractsAsync(*contracts)
+        contracts = [c for c in contracts if c.conId]
+        if not contracts:
+            return {}
         try:
             tickers = await self.ib.reqTickersAsync(*contracts)
         except Exception:

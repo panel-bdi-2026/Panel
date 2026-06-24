@@ -190,6 +190,11 @@ def test_modify_stop_price_returns_false_when_order_already_done(broker, monkeyp
 
 
 async def _noop_qualify(*contracts, **kwargs):
+    """Simula una calificacion exitosa: IBKR asigna un conId real a cada
+    contrato (a diferencia de un contrato recien construido, que arranca con
+    conId=0/sin calificar)."""
+    for i, c in enumerate(contracts, start=1):
+        c.conId = i
     return list(contracts)
 
 
@@ -209,6 +214,33 @@ def test_stream_subscribe_opens_streaming_only_for_new_symbols(broker, monkeypat
 
     assert len(req_calls) == 1  # AAPL ya estaba suscripto, no se vuelve a pedir
     assert req_calls[0].symbol == "MSFT"
+    assert set(broker._live_tickers.keys()) == {"AAPL", "MSFT"}
+
+
+def test_stream_subscribe_skips_symbols_that_fail_to_qualify(broker, monkeypatch):
+    """Un simbolo que IBKR no puede calificar (ej. TERN) queda con conId=0 y
+    no se le puede pedir reqMktData (revienta con un error de hash). Antes
+    esto abortaba la suscripcion de TODO el lote, incluidos los simbolos
+    validos; ahora se omite solo el que falla."""
+    async def qualify_all_but_bad(*contracts, **kwargs):
+        for i, c in enumerate(contracts, start=1):
+            if c.symbol != "BAD":
+                c.conId = i
+        return list(contracts)
+
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", qualify_all_but_bad)
+
+    req_calls = []
+
+    def fake_req_mkt_data(contract, generic_ticks, snapshot, regulatory):
+        req_calls.append(contract)
+        return FakeTicker(contract, None)
+
+    monkeypatch.setattr(broker.ib, "reqMktData", fake_req_mkt_data)
+
+    asyncio.run(broker.stream_subscribe(["AAPL", "BAD", "MSFT"]))
+
+    assert {c.symbol for c in req_calls} == {"AAPL", "MSFT"}
     assert set(broker._live_tickers.keys()) == {"AAPL", "MSFT"}
 
 
@@ -298,6 +330,49 @@ def test_get_snapshot_prices_filters_negative_prices(broker, monkeypatch):
 
     monkeypatch.setattr(broker.ib, "reqTickersAsync", fake_req_tickers)
     assert asyncio.run(broker.get_snapshot_prices(["AAPL"])) == {}
+
+
+def test_get_snapshot_prices_skips_symbols_that_fail_to_qualify(broker, monkeypatch):
+    """Mismo problema que en stream_subscribe: un simbolo sin conId no
+    deberia tirar abajo el precio de TODO el lote (ver
+    test_stream_subscribe_skips_symbols_that_fail_to_qualify)."""
+    async def qualify_all_but_bad(*contracts, **kwargs):
+        for i, c in enumerate(contracts, start=1):
+            if c.symbol != "BAD":
+                c.conId = i
+        return list(contracts)
+
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", qualify_all_but_bad)
+
+    seen_symbols = []
+
+    async def fake_req_tickers(*contracts, **kwargs):
+        seen_symbols.extend(c.symbol for c in contracts)
+        return [
+            FakeTicker(FakeContract(1, "AAPL"), 155.0),
+            FakeTicker(FakeContract(2, "MSFT"), 290.0),
+        ]
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", fake_req_tickers)
+
+    out = asyncio.run(broker.get_snapshot_prices(["AAPL", "BAD", "MSFT"]))
+
+    assert seen_symbols == ["AAPL", "MSFT"]  # BAD nunca se pide
+    assert out == {"AAPL": 155.0, "MSFT": 290.0}
+
+
+def test_get_snapshot_prices_returns_empty_dict_when_all_symbols_fail_to_qualify(broker, monkeypatch):
+    async def qualify_none(*contracts, **kwargs):
+        return list(contracts)  # ningun conId asignado
+
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", qualify_none)
+
+    async def fail_if_called(*contracts, **kwargs):
+        raise AssertionError("no deberia pedir tickers si ningun contrato califico")
+
+    monkeypatch.setattr(broker.ib, "reqTickersAsync", fail_if_called)
+
+    assert asyncio.run(broker.get_snapshot_prices(["BAD"])) == {}
 
 
 def test_get_snapshot_prices_handles_request_failure(broker, monkeypatch):
