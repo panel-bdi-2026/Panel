@@ -1356,29 +1356,37 @@ async def _scan_general(force: bool) -> tuple[datetime, bool, list[dict]]:
     return now, all(cached_flags), ranked
 
 
+def _live_overlay_for_symbol(symbol: str, fallback_as_of: datetime | None = None) -> dict:
+    """is_hot/last_price/price_as_of en vivo para un simbolo, leyendo solo
+    estado en memoria del radar (_hot_symbols/broker.get_live_price/
+    _live_prices) -- no escanea ni golpea la API de datos. is_hot solo es
+    true cuando ademas hay un precio en vivo real disponible (no alcanza con
+    que el simbolo este en el hot-set: justo despues de un reconnect del
+    broker, por ejemplo, todavia no hay un primer precio cacheado).
+    fallback_as_of se usa como price_as_of de un simbolo frio que todavia no
+    paso por ninguna rotacion (ver _overlay_live_data)."""
+    if symbol in _hot_symbols:
+        live_price = broker.get_live_price(symbol)
+        if live_price is not None:
+            return {"is_hot": True, "last_price": live_price, "price_as_of": datetime.now(timezone.utc)}
+        return {"is_hot": False}
+    live_price = _live_prices.get(symbol)
+    if live_price is not None:
+        return {
+            "is_hot": False,
+            "last_price": live_price,
+            "price_as_of": _live_prices_as_of.get(symbol, fallback_as_of),
+        }
+    return {"is_hot": False}
+
+
 def _overlay_live_data(results: list[dict]) -> list[dict]:
     """Pisa el precio mostrado (y marca is_hot) con datos del radar en vivo
     (ver _hot_set_loop / _price_rotation_loop), sin tocar score/RSI/etc, que
-    siguen siendo los del scan cacheado. is_hot solo es true cuando ademas hay
-    un precio en vivo real disponible (no alcanza con que el simbolo este en
-    el hot-set: justo despues de un reconnect del broker, por ejemplo, todavia
-    no hay un primer precio cacheado)."""
+    siguen siendo los del scan cacheado."""
     out = []
     for r in results:
-        symbol = r["symbol"]
-        overlay: dict = {}
-        if symbol in _hot_symbols:
-            live_price = broker.get_live_price(symbol)
-            overlay["is_hot"] = live_price is not None
-            if live_price is not None:
-                overlay["last_price"] = live_price
-                overlay["price_as_of"] = datetime.now(timezone.utc)
-        else:
-            overlay["is_hot"] = False
-            live_price = _live_prices.get(symbol)
-            if live_price is not None:
-                overlay["last_price"] = live_price
-                overlay["price_as_of"] = _live_prices_as_of.get(symbol, r["as_of"])
+        overlay = _live_overlay_for_symbol(r["symbol"], fallback_as_of=r["as_of"])
         out.append({**r, "price_as_of": r["as_of"], **overlay})
     return out
 
@@ -1452,6 +1460,27 @@ async def scan_signals_all_strategies(force: bool = False, _: None = Depends(req
             if entry["sector"] is None and r.get("sector") is not None:
                 entry["sector"] = r["sector"]
     return {"as_of": now, "results": list(merged.values())}
+
+
+@app.get("/api/signals/live-prices")
+def get_live_signal_prices(symbols: str = Query(..., max_length=3000), _: None = Depends(require_api_key)):
+    """Precios en vivo del radar para los simbolos ya visibles en la tabla de
+    senales (`symbols` separados por coma), sin re-escanear: solo lee el
+    estado en memoria que ya mantienen _hot_set_loop/_price_rotation_loop
+    (ver _live_overlay_for_symbol). Pensado para que el frontend lo polleé
+    cada pocos segundos -- a diferencia de /api/signals/scan, no toca
+    _market_scan_lock ni la API de datos de terceros, asi que no hay costo
+    ni rate-limit en pedirlo seguido."""
+    try:
+        symbol_list = [validate_symbol(s) for s in symbols.split(",") if s.strip()][:200]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    out: dict[str, dict] = {}
+    for symbol in symbol_list:
+        overlay = _live_overlay_for_symbol(symbol)
+        if "last_price" in overlay:
+            out[symbol] = overlay
+    return out
 
 
 class SectorRefreshRequest(BaseModel):

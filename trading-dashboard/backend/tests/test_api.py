@@ -1172,6 +1172,72 @@ def test_scan_signals_general_view_includes_live_overlay(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/signals/live-prices (refresco liviano de precios para filas ya
+# visibles del radar, ver _live_overlay_for_symbol en main.py)
+# ---------------------------------------------------------------------------
+
+def test_live_prices_rejects_missing_api_key():
+    resp = client.get("/api/signals/live-prices", params={"symbols": "AAPL"})
+    assert resp.status_code == 401
+
+
+def test_live_prices_returns_price_for_hot_symbol(monkeypatch):
+    main_module._hot_symbols.add("AAPL")
+    monkeypatch.setattr(main_module.broker, "get_live_price", lambda symbol: 123.45 if symbol == "AAPL" else None)
+
+    resp = client.get("/api/signals/live-prices", params={"symbols": "AAPL"}, headers={"X-API-Key": "test-key"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["AAPL"]["is_hot"] is True
+    assert body["AAPL"]["last_price"] == 123.45
+
+
+def test_live_prices_omits_hot_symbol_with_no_live_price_yet(monkeypatch):
+    main_module._hot_symbols.add("AAPL")
+    monkeypatch.setattr(main_module.broker, "get_live_price", lambda symbol: None)
+
+    resp = client.get("/api/signals/live-prices", params={"symbols": "AAPL"}, headers={"X-API-Key": "test-key"})
+    assert resp.json() == {}
+
+
+def test_live_prices_returns_rotation_price_for_cold_symbol():
+    rotated_at = datetime(2025, 6, 1, tzinfo=timezone.utc)
+    main_module._live_prices["AAPL"] = 111.11
+    main_module._live_prices_as_of["AAPL"] = rotated_at
+
+    resp = client.get("/api/signals/live-prices", params={"symbols": "AAPL"}, headers={"X-API-Key": "test-key"})
+    body = resp.json()
+    assert body["AAPL"]["is_hot"] is False
+    assert body["AAPL"]["last_price"] == 111.11
+    assert datetime.fromisoformat(body["AAPL"]["price_as_of"]) == rotated_at
+
+
+def test_live_prices_omits_cold_symbol_with_no_rotation_price_yet():
+    resp = client.get("/api/signals/live-prices", params={"symbols": "AAPL"}, headers={"X-API-Key": "test-key"})
+    assert resp.json() == {}
+
+
+def test_live_prices_only_includes_requested_symbols_that_have_data(monkeypatch):
+    main_module._hot_symbols.add("AAPL")
+    monkeypatch.setattr(main_module.broker, "get_live_price", lambda symbol: 123.45 if symbol == "AAPL" else None)
+    main_module._live_prices["MSFT"] = 222.22
+
+    resp = client.get(
+        "/api/signals/live-prices", params={"symbols": "AAPL,MSFT,XOM"}, headers={"X-API-Key": "test-key"}
+    )
+    body = resp.json()
+    assert set(body.keys()) == {"AAPL", "MSFT"}
+    assert body["MSFT"]["last_price"] == 222.22
+
+
+def test_live_prices_rejects_invalid_symbol_format():
+    resp = client.get(
+        "/api/signals/live-prices", params={"symbols": "AAPL,not-a-valid-symbol!!"}, headers={"X-API-Key": "test-key"}
+    )
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # lifespan: shutdown debe esperar a que las tareas de background terminen
 # ---------------------------------------------------------------------------
 

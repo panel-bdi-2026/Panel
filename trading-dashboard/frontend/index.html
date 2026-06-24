@@ -1607,6 +1607,37 @@ async function scanSignals(force=false){
   }
 }
 
+// scanSignals() solo trae precios frescos cuando el usuario escanea a mano:
+// el resto del tiempo last_price/price_as_of quedan congelados aunque el
+// simbolo este en streaming en vivo (tickPriceAges solo recalcula la edad
+// mostrada, no pide nada nuevo). Este poll aparte refresca solo el precio de
+// las filas visibles contra /api/signals/live-prices -- liviano, no
+// re-escanea ni toca la API de datos -- asi el "en vivo"/la edad reflejan
+// algo real en vez de quedar pegados al ultimo escaneo manual.
+async function pollLiveSignalPrices(){
+  if(!lastScanResults.length) return;
+  const targets = visibleSignalResults().slice(0, signalsDisplayCount);
+  if(!targets.length) return;
+  const symbols = targets.map(r => r.symbol).join(',');
+  try{
+    const prices = await api(`/api/signals/live-prices?symbols=${encodeURIComponent(symbols)}`, { auth:true });
+    let changed = false;
+    targets.forEach(r => {
+      const p = prices[r.symbol];
+      if(p){
+        r.last_price = p.last_price;
+        r.price_as_of = p.price_as_of;
+        r.is_hot = p.is_hot;
+        changed = true;
+      }
+    });
+    if(changed) renderSignalsTable();
+  }catch(e){
+    // silencioso: un refresh de precios fallido no debe interrumpir nada mas
+  }
+}
+setInterval(pollLiveSignalPrices, 5000);
+
 let STRATEGIES = [];
 let currentStrategyId = 'momentum';
 
