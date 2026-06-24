@@ -426,6 +426,80 @@ def test_stop_loss_triggers_on_intraday_low_not_close():
     assert bars["Close"].iloc[9] > trades[0].exit_price  # el cierre nunca perforo el stop, solo el minimo intradiario
 
 
+def test_trailing_stop_price_never_lowers_existing_stop():
+    from app.backtest import _trailing_stop_price
+
+    # candidate = 95 (100 - 1*5), por debajo del stop ya colocado en 98: se
+    # mantiene 98, el trailing nunca retrocede.
+    result = _trailing_stop_price(current_stop=98.0, price_today=100.0, atr_today=5.0, stop_loss_atr_multiplier=1.0)
+
+    assert result == 98.0
+
+
+def test_trailing_stop_price_raises_when_candidate_higher():
+    from app.backtest import _trailing_stop_price
+
+    # candidate = 108 (110 - 1*2), por encima del stop vigente en 98: sube.
+    result = _trailing_stop_price(current_stop=98.0, price_today=110.0, atr_today=2.0, stop_loss_atr_multiplier=1.0)
+
+    assert result == 108.0
+
+
+def test_trailing_stop_enabled_exits_earlier_than_static_stop():
+    # Misma serie de precios y mismo stop inicial (ver test_stop_loss_triggers_
+    # on_intraday_low_not_close): con stop_loss_atr_multiplier=1.0 y ATR
+    # constante en 2.0 (true range fijo en esta serie con paso +1/dia), el
+    # stop ESTATICO (entry_price=107 - 2 = 105) nunca lo alcanza el minimo
+    # intradiario organico (Low[i] = Close[i]-1 crece monotonicamente por
+    # encima de 105), asi que sin trailing la posicion nunca cierra en estos
+    # 30 dias. Con trailing_stop_enabled=True el stop ratchetea dia a dia
+    # hasta 112 en el indice 14 (Close[i]-2 desde el dia siguiente a la
+    # entrada): una mecha forzada en el indice 15 a 110 -- por debajo del
+    # stop trailing pero todavia por encima del estatico -- alcanza al
+    # trailing y no al estatico, demostrando que el trailing efectivamente
+    # adelanta la salida frente al mismo camino de precios.
+    from app.backtest import _simulate_symbol
+
+    closes = [100.0 + i for i in range(30)]
+    bars = _bars(closes)
+    bars.loc[bars.index[15], "Low"] = 110.0
+
+    base_kwargs = dict(
+        universe=["MOM"],
+        benchmark_symbol="SPY",
+        sma_fast=3,
+        sma_slow=5,
+        momentum_lookback_days=5,
+        momentum_short_days=2,
+        momentum_12_1_lookback_days=5,
+        momentum_12_1_skip_days=2,
+        rsi_period=3,
+        rsi_min=0,
+        rsi_max=100,
+        atr_period=3,
+        stop_loss_atr_multiplier=1.0,
+        max_holding_days=50,
+        regime_filter_enabled=False,
+        near_high_filter_enabled=False,
+        top_n=10,
+    )
+    cfg_static = ScreenerConfig(**base_kwargs, trailing_stop_enabled=False)
+    cfg_trailing = ScreenerConfig(**base_kwargs, trailing_stop_enabled=True)
+
+    score_series = pd.Series(1000.0, index=bars.index)
+    regime_ok = pd.Series(True, index=bars.index)
+
+    trades_static = _simulate_symbol("MOM", bars, cfg_static, score_series, regime_ok)
+    trades_trailing = _simulate_symbol("MOM", bars, cfg_trailing, score_series, regime_ok)
+
+    assert trades_static == []  # el stop fijo en 105 nunca lo perfora esta serie
+    assert len(trades_trailing) == 1
+    assert trades_trailing[0].exit_reason == "stop_loss"
+    assert trades_trailing[0].entry_date == bars.index[7]
+    assert trades_trailing[0].exit_date == bars.index[15]
+    assert trades_trailing[0].exit_price == pytest.approx(112.0)
+
+
 def test_entry_fills_at_next_day_open_not_signal_day_close():
     from app.backtest import _simulate_symbol
 

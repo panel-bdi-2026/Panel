@@ -70,6 +70,19 @@ def _effective_slippage_pct(
     return base_slippage_pct * multiplier
 
 
+def _trailing_stop_price(current_stop: float, price_today: float, atr_today: float, stop_loss_atr_multiplier: float) -> float:
+    """Replica _check_fund_trailing_stop (main.py): sube (nunca baja) el
+    stop-loss a candidate_stop = precio_de_hoy - ATR_de_hoy * multiplo, la
+    misma distancia en ATR que el stop inicial. Se llama con el cierre del
+    dia DESPUES de chequear el stop existente contra el minimo intradiario de
+    ese mismo dia (ver _simulate_symbol): el stop nuevo recien protege a
+    partir del dia siguiente, nunca retroactivamente contra el minimo de
+    hoy, igual que en vivo el trailing solo mueve el stop ya colocado en el
+    broker para adelante, nunca reabre la vela que ya paso."""
+    candidate_stop = price_today - stop_loss_atr_multiplier * atr_today
+    return max(current_stop, candidate_stop)
+
+
 def _trade_daily_marks(
     bars: pd.DataFrame, entry_idx: int, exit_idx: int, entry_fill: float, ret_pct: float
 ) -> dict:
@@ -192,7 +205,9 @@ def _simulate_symbol(
     la liquidez minima lo permiten -- esos tres NO son parte del score (son
     gates booleanos puros igual que en el scan en vivo, ver screener.py), asi
     que se siguen chequeando aparte. Sale por stop-loss (basado en el ATR del
-    dia de la senal, igual que la sugerencia en vivo), por tiempo maximo en la
+    dia de la senal, igual que la sugerencia en vivo, y si cfg.trailing_stop_enabled
+    el stop sube dia a dia con el ATR de cada dia en posicion -- nunca baja --
+    igual que _check_fund_trailing_stop en main.py), por tiempo maximo en la
     posicion, o por ruptura de tendencia (el cierre cae por debajo de la SMA
     rapida) -- igual que _check_fund_exit en main.py, que es la UNICA salida
     que el motor de auto-trading en vivo ejecuta hoy. No se modela una salida
@@ -318,6 +333,8 @@ def _simulate_symbol(
                 if marks_by_trade_id is not None:
                     marks_by_trade_id[id(trade)] = _trade_daily_marks(bars, entry_idx, i, entry_fill, ret_pct)
                 in_position = False
+            elif cfg.trailing_stop_enabled and not pd.isna(atr_s.iloc[i]):
+                stop_price = _trailing_stop_price(stop_price, price, float(atr_s.iloc[i]), cfg.stop_loss_atr_multiplier)
             continue
 
         if pd.isna(atr_s.iloc[i]):
@@ -506,6 +523,8 @@ def _simulate_symbol_opportunistic(
                 if marks_by_trade_id is not None:
                     marks_by_trade_id[id(trade)] = _trade_daily_marks(bars, entry_idx, i, entry_fill, ret_pct)
                 in_position = False
+            elif cfg.trailing_stop_enabled and not pd.isna(atr_s.iloc[i]):
+                stop_price = _trailing_stop_price(stop_price, price, float(atr_s.iloc[i]), cfg.stop_loss_atr_multiplier)
             continue
 
         if pd.isna(atr_s.iloc[i]):
