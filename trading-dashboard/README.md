@@ -225,13 +225,19 @@ la API gratuita de datos).
   `evaluate_symbol()` llamado de forma aislada (fuera de un `scan()`, ej. en
   tests) sigue siendo la suma cruda, ya que no hay un universo contra el cual
   calcular percentiles.
-- **Filtro de régimen** (`regime_filter_enabled`, `regime_sma_period`): no se
-  sugieren entradas nuevas si el benchmark (`SPY` por defecto) está por
-  debajo de su propia SMA de largo plazo (200 días por defecto) — evita
-  proponer compras "momentum" cuando el mercado de fondo está en tendencia
-  bajista. Si no hay suficiente historia para calcular la SMA, el filtro no
-  bloquea (asume régimen favorable en vez de fallar el scan por falta de
-  dato).
+- **Filtro de régimen** (`regime_filter_enabled` para Momentum,
+  `opportunistic_regime_filter_enabled` para Oportunista; comparten
+  `regime_sma_period`, `regime_slope_lookback_days`,
+  `regime_absolute_momentum_lookback_days`): no se sugieren entradas nuevas
+  si el benchmark (`SPY` por defecto) no está en régimen alcista de fondo
+  (pendiente positiva de su SMA de largo plazo + momentum absoluto positivo).
+  Son flags independientes por estrategia: un re-test del backtest
+  (2026-06-24) mostró que el filtro mejora a Momentum pero empeora a
+  Oportunista (que compra giros/reversiones, justo lo que aparece cuando el
+  mercado no está en tendencia alcista limpia) — por eso viene activado para
+  Momentum y desactivado para Oportunista. Si no hay suficiente historia para
+  calcularlo, el filtro no bloquea (asume régimen favorable en vez de fallar
+  el scan por falta de dato).
 - **Proximidad al máximo de 52 semanas** (`near_high_filter_enabled`,
   `max_pct_below_52w_high`): solo se consideran entradas en símbolos que
   cotizan a no más de ese % por debajo de su máximo de 52 semanas (15% por

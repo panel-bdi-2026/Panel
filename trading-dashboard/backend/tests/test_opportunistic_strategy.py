@@ -198,3 +198,59 @@ def test_evaluate_symbol_attaches_sector(strategy, monkeypatch):
     monkeypatch.setattr(opportunistic_module, "get_sector", lambda symbol: "Information Technology")
     result = strategy.evaluate_symbol("GROW")
     assert result.sector == "Information Technology"
+
+
+def _bearish_benchmark_bars(n=300):
+    idx = pd.date_range("2021-01-01", periods=n, freq="D")
+    close = pd.Series([200.0 - 0.3 * i for i in range(n)], index=idx)
+    return pd.DataFrame({"Close": close})
+
+
+def test_benchmark_regime_ok_ignores_benchmark_when_filter_disabled(monkeypatch):
+    # opportunistic_regime_filter_enabled=False (default desde el re-test del
+    # 2026-06-24): a diferencia de Momentum, Oportunista no consulta el
+    # regimen del benchmark en absoluto sin importar que tan bajista este.
+    bench_bars = _bearish_benchmark_bars()
+
+    def fake_get_daily_bars(symbol, lookback_days, force=False):
+        if symbol == "SPY":
+            return bench_bars
+        raise MarketDataError("sin datos sinteticos")
+
+    monkeypatch.setattr(opportunistic_module, "get_daily_bars", fake_get_daily_bars)
+    config = ScreenerConfig(universe=[], benchmark_symbol="SPY")
+    strategy = OpportunisticStrategy(config)
+    assert strategy._benchmark_regime_ok() is True
+
+
+def test_benchmark_regime_ok_false_when_filter_enabled_and_benchmark_bearish(monkeypatch):
+    bench_bars = _bearish_benchmark_bars()
+
+    def fake_get_daily_bars(symbol, lookback_days, force=False):
+        if symbol == "SPY":
+            return bench_bars
+        raise MarketDataError("sin datos sinteticos")
+
+    monkeypatch.setattr(opportunistic_module, "get_daily_bars", fake_get_daily_bars)
+    config = ScreenerConfig(
+        universe=[], benchmark_symbol="SPY",
+        opportunistic_regime_filter_enabled=True, regime_sma_period=50,
+    )
+    strategy = OpportunisticStrategy(config)
+    assert strategy._benchmark_regime_ok() is False
+
+
+def test_benchmark_regime_ok_is_independent_from_momentum_regime_flag(monkeypatch):
+    # regime_filter_enabled (Momentum) en su default True no deberia afectar
+    # a Oportunista: solo opportunistic_regime_filter_enabled lo hace.
+    bench_bars = _bearish_benchmark_bars()
+
+    def fake_get_daily_bars(symbol, lookback_days, force=False):
+        if symbol == "SPY":
+            return bench_bars
+        raise MarketDataError("sin datos sinteticos")
+
+    monkeypatch.setattr(opportunistic_module, "get_daily_bars", fake_get_daily_bars)
+    config = ScreenerConfig(universe=[], benchmark_symbol="SPY", regime_filter_enabled=True, regime_sma_period=50)
+    strategy = OpportunisticStrategy(config)
+    assert strategy._benchmark_regime_ok() is True

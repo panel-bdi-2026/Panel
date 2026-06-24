@@ -631,7 +631,7 @@ def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTra
     except MarketDataError as exc:
         raise BacktestError(str(exc)) from exc
 
-    if cfg.regime_filter_enabled:
+    if cfg.opportunistic_regime_filter_enabled:
         benchmark_regime_ok = market_regime_ok(
             bench_bars["Close"], cfg.regime_sma_period, cfg.regime_slope_lookback_days,
             cfg.regime_absolute_momentum_lookback_days,

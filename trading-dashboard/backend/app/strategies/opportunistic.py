@@ -47,12 +47,14 @@ class OpportunisticStrategy:
     def _benchmark_regime_ok(self, force: bool = False) -> bool:
         """Igual que MomentumScreener._benchmark_context, pero solo el
         booleano de regimen: Oportunista no usa el ROC del benchmark para
-        fuerza relativa (no tiene ese componente de score). Antes esta
-        estrategia no consultaba el regimen en absoluto -- comprar caidas
-        (su logica central) en un mercado en tendencia bajista de fondo es
-        comprar cuchillos cayendo."""
+        fuerza relativa (no tiene ese componente de score). Usa su propio
+        flag (opportunistic_regime_filter_enabled), no el de Momentum: un
+        re-test del filtro compartido (experimento P2, 2026-06-24) mostro que
+        ayuda a Momentum pero empeora a Oportunista, cuya logica central es
+        comprar giros/reversiones, que aparecen justo cuando el mercado no
+        esta en tendencia alcista limpia."""
         cfg = self.config
-        if not cfg.regime_filter_enabled:
+        if not cfg.opportunistic_regime_filter_enabled:
             return True
         try:
             bench_bars = get_daily_bars(cfg.benchmark_symbol, cfg.lookback_days, force=force)

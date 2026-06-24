@@ -650,7 +650,11 @@ max_holding_days: 20
 
 # Filtro de regimen: no se sugieren entradas largas si el benchmark esta por
 # debajo de su propia SMA de regimen (mercado en tendencia bajista de fondo).
+# Solo para Momentum -- ver opportunistic_regime_filter_enabled, que quedo
+# desactivado a proposito (el re-test del 2026-06-24 mostro que este filtro
+# ayuda a Momentum pero empeora a Oportunista).
 regime_filter_enabled: true
+opportunistic_regime_filter_enabled: false
 regime_sma_period: 200
 
 # Dias antes de earnings estimados en los que no se sugieren nuevas entradas

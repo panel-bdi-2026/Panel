@@ -394,20 +394,32 @@ class ScreenerConfig(BaseModel):
     # a la vez (no deberia superar 100 - live_hot_symbols_cap en la practica).
     live_rotation_batch_size: int = 25
 
-    # Filtro de regimen de mercado: no se sugieren entradas largas si el
-    # benchmark no esta en un regimen alcista de fondo. Antes era un cruce
-    # binario precio > SMA200, lento pero igual propenso a whipsaw cuando la
-    # SMA esta plana (cruces de ida y vuelta sin que cambie el regimen real).
-    # Ahora exige dos condiciones mas lentas a la vez (ver
+    # Filtro de regimen de mercado para Momentum: no se sugieren entradas
+    # largas si el benchmark no esta en un regimen alcista de fondo. Antes era
+    # un cruce binario precio > SMA200, lento pero igual propenso a whipsaw
+    # cuando la SMA esta plana (cruces de ida y vuelta sin que cambie el
+    # regimen real). Ahora exige dos condiciones mas lentas a la vez (ver
     # indicators.market_regime_ok): la SMA de regimen tiene que estar en
     # pendiente positiva (no solo el precio por encima de ella), y el
     # benchmark tiene que tener momentum absoluto positivo (dual
-    # momentum/Antonacci) en una ventana larga. Se aplica tanto a Momentum
-    # como a Oportunista (antes este ultimo no lo consultaba).
+    # momentum/Antonacci) en una ventana larga. Solo aplica a Momentum --
+    # ver opportunistic_regime_filter_enabled para Oportunista.
     regime_filter_enabled: bool = True
     regime_sma_period: int = 200
     regime_slope_lookback_days: int = 20
     regime_absolute_momentum_lookback_days: int = 252
+
+    # Mismo filtro de regimen (misma SMA/pendiente/momentum absoluto de
+    # arriba) pero para Oportunista, con flag propio porque responde al
+    # revés que Momentum: Oportunista compra giros/reversiones, que aparecen
+    # justamente cuando el mercado no esta en tendencia alcista limpia.
+    # Se agrego en commit f6ae7d3 (2026-06-23) compartiendo el flag de
+    # Momentum bajo la hipotesis de que el filtro tambien lo protegeria a el
+    # de "comprar cuchillos cayendo"; el re-test de ese cambio (experimento
+    # P2, 2026-06-24, ya con el universo de backtest corregido por sesgo de
+    # look-ahead) mostro lo opuesto: para Oportunista el filtro empeora
+    # retorno acumulado y Sharpe en vez de mejorarlos. Default False por eso.
+    opportunistic_regime_filter_enabled: bool = False
 
     # Dias antes de la fecha estimada de earnings en los que NO se sugieren
     # nuevas entradas: un gap por sorpresa de resultados puede saltarse un

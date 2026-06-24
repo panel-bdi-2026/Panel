@@ -624,6 +624,76 @@ def test_regime_filter_blocks_entries_when_benchmark_below_regime_sma(monkeypatc
         run_backtest(config)
 
 
+def test_opportunistic_regime_filter_blocks_entries_when_enabled_and_benchmark_below_regime_sma(monkeypatch):
+    # Mismo caso que test_regime_filter_blocks_entries_when_benchmark_below_
+    # regime_sma pero para Oportunista con su propio flag
+    # (opportunistic_regime_filter_enabled), que esta apagado por defecto.
+    n = 320
+    bars = _opportunistic_oscillating_bars(n=n)
+    buddy_bars = _opportunistic_buddy_bars(n=n)
+    bench_bars = _bars([200.0 - 0.3 * i for i in range(n)])
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol == "SPY":
+            return bench_bars
+        if symbol == "OPP":
+            return bars
+        if symbol == "OPP2":
+            return buddy_bars
+        raise MarketDataError("no data")
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+    config = _opportunistic_cfg().model_copy(
+        update={
+            "benchmark_symbol": "SPY",
+            "backtest_years": 1,
+            "opportunistic_regime_filter_enabled": True,
+            "regime_sma_period": 50,
+        }
+    )
+    with pytest.raises(BacktestError):
+        backtest_module.run_opportunistic_backtest(config)
+
+
+def test_regime_filter_is_independent_per_strategy(monkeypatch):
+    # Re-test del 2026-06-24 (experimento P2, ya con el universo corregido
+    # por sesgo de look-ahead): el filtro de regimen ayuda a Momentum pero
+    # empeora a Oportunista, asi que cada estrategia tiene su propio flag
+    # (regime_filter_enabled / opportunistic_regime_filter_enabled). Este
+    # test verifica el desacople: el mismo benchmark bajista bloquea TODAS
+    # las entradas de Momentum (filtro activo por defecto) pero ninguna de
+    # Oportunista (filtro desactivado por defecto).
+    n = 320
+    mom_closes = [100.0 + 0.12 * i + 4 * np.sin(i / 5) for i in range(n)]
+    mom2_closes = [120.0 + 0.08 * i + 3 * np.sin(i / 7) for i in range(n)]
+    bars_by_symbol = {
+        "SPY": _bars([200.0 - 0.3 * i for i in range(n)]),
+        "MOM": _bars(mom_closes),
+        "MOM2": _bars(mom2_closes),
+        "OPP": _opportunistic_oscillating_bars(n=n),
+        "OPP2": _opportunistic_buddy_bars(n=n),
+    }
+
+    def fake_get_daily_bars(symbol, lookback_days):
+        if symbol in bars_by_symbol:
+            return bars_by_symbol[symbol]
+        raise MarketDataError("no data")
+
+    monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
+
+    momentum_config = ScreenerConfig(
+        universe=["MOM", "MOM2"], benchmark_symbol="SPY", backtest_years=1, regime_sma_period=50,
+    )
+    with pytest.raises(BacktestError):
+        run_backtest(momentum_config)
+
+    opportunistic_config = _opportunistic_cfg().model_copy(
+        update={"benchmark_symbol": "SPY", "backtest_years": 1, "regime_sma_period": 50}
+    )
+    summary = backtest_module.run_opportunistic_backtest(opportunistic_config)
+    assert summary.total_trades > 0
+
+
 def _trade(symbol, entry_day, exit_day, return_pct=1.0, exit_reason="max_holding_days", entry_atr_pct=None):
     from datetime import datetime
     from app.models import BacktestTrade
@@ -1383,13 +1453,14 @@ def test_opportunistic_backtest_produces_trades_and_metrics(monkeypatch):
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
     config = _opportunistic_cfg()
-    # regime_filter_enabled=False: el benchmark sintetico de este test es
-    # plano (SMA de regimen sin pendiente y momentum absoluto en 0%), lo que
-    # bloquearia TODA entrada bajo el nuevo filtro de regimen sin whipsaw
-    # (ver indicators.market_regime_ok) -- irrelevante para lo que este test
+    # opportunistic_regime_filter_enabled ya es False por defecto, asi que no
+    # haria falta pasarlo, pero se deja explicito: el benchmark sintetico de
+    # este test es plano (SMA de regimen sin pendiente y momentum absoluto en
+    # 0%), lo que bloquearia TODA entrada si este flag estuviera en True (ver
+    # indicators.market_regime_ok) -- irrelevante para lo que este test
     # verifica (metricas del backtest de Oportunista).
     config = config.model_copy(
-        update={"benchmark_symbol": "SPY", "backtest_years": 1, "regime_filter_enabled": False}
+        update={"benchmark_symbol": "SPY", "backtest_years": 1, "opportunistic_regime_filter_enabled": False}
     )
 
     summary = backtest_module.run_opportunistic_backtest(config)
@@ -1423,7 +1494,7 @@ def test_opportunistic_backtest_never_requests_market_data_for_growth_tickers(mo
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
     config = _opportunistic_cfg()
-    # regime_filter_enabled=False: ver comentario equivalente en
+    # opportunistic_regime_filter_enabled=False: ver comentario equivalente en
     # test_opportunistic_backtest_produces_trades_and_metrics (benchmark
     # sintetico plano, irrelevante para lo que este test verifica).
     config = config.model_copy(
@@ -1431,7 +1502,7 @@ def test_opportunistic_backtest_never_requests_market_data_for_growth_tickers(mo
             "benchmark_symbol": "SPY",
             "backtest_years": 1,
             "universe": ["OPP", "OPP2", growth_symbol],
-            "regime_filter_enabled": False,
+            "opportunistic_regime_filter_enabled": False,
         }
     )
 
@@ -1547,11 +1618,11 @@ def test_opportunistic_backtest_walk_forward_partitions_all_trades_without_loss(
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
     config = _opportunistic_cfg()
-    # regime_filter_enabled=False: ver comentario equivalente en
+    # opportunistic_regime_filter_enabled=False: ver comentario equivalente en
     # test_opportunistic_backtest_produces_trades_and_metrics (benchmark
     # sintetico plano, irrelevante para lo que este test verifica).
     config = config.model_copy(
-        update={"benchmark_symbol": "SPY", "backtest_years": 1, "regime_filter_enabled": False}
+        update={"benchmark_symbol": "SPY", "backtest_years": 1, "opportunistic_regime_filter_enabled": False}
     )
 
     full_summary = backtest_module.run_opportunistic_backtest(config)
