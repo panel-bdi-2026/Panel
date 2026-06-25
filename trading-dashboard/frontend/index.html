@@ -9,7 +9,7 @@
   color-scheme:light;
   --primary:#2f5fa8;--primary-mid:#5b9bd5;--on-primary:#ffffff;
   --bg:#f2eee3;--card:#fffdf8;--card2:#ece4d1;--border:#dcd0b4;
-  --text:#262521;--muted:#766f5e;--sh:0 1px 3px rgba(40,32,16,.08),0 1px 2px rgba(40,32,16,.06);
+  --text:#262521;--muted:#615a49;--sh:0 1px 3px rgba(40,32,16,.08),0 1px 2px rgba(40,32,16,.06);
   --sh2:0 10px 30px rgba(40,32,16,.16),0 2px 8px rgba(40,32,16,.10);--r:10px;--r2:6px;
   --green:#1f6e44;--green-bg:rgba(31,110,68,.10);--red:#9c3b2e;--red-bg:rgba(156,59,46,.10);
   --amber:#a3700f;--amber-bg:rgba(163,112,15,.10);
@@ -83,12 +83,10 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .score-badge b{color:var(--text);font-weight:700}
 .score-badge.active{border-color:var(--primary);color:var(--primary-mid);background:rgba(47,95,168,0.10)}
 .score-badge.active b{color:var(--primary)}
-.badge-live{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;
-  background:var(--green-bg);color:var(--green);border:1px solid rgba(31,110,68,.35);
+.badge-tag{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;
   font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
-.badge-fail{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;
-  background:var(--red-bg);color:var(--red);border:1px solid rgba(156,59,46,.3);
-  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
+.badge-live{background:var(--green-bg);color:var(--green);border:1px solid rgba(31,110,68,.35)}
+.badge-fail{background:var(--red-bg);color:var(--red);border:1px solid rgba(156,59,46,.3)}
 .via-strategy{color:var(--muted);font-size:11px;margin-left:6px}
 .price-age{color:var(--muted);font-size:10px;margin-left:6px}
 .side-sel{display:flex;border:1.5px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:11px}
@@ -147,6 +145,110 @@ td{padding:8px;border-bottom:1px solid var(--border)}
   .kpis{grid-template-columns:1fr}
   .frow{grid-template-columns:1fr}
 }
+
+/* --- A: navegación por secciones (scrollspy) --- */
+.section-nav{position:sticky;top:0;z-index:600;background:var(--card);border-bottom:1px solid var(--border);
+  display:flex;gap:4px;padding:8px 28px;overflow-x:auto;box-shadow:0 1px 4px rgba(40,32,16,.06)}
+.section-nav a{padding:6px 12px;border-radius:var(--r2);font-size:12px;font-weight:700;color:var(--muted);
+  text-decoration:none;white-space:nowrap;flex-shrink:0}
+.section-nav a:hover{background:var(--card2);color:var(--text)}
+.section-nav a.active{background:var(--primary);color:var(--on-primary)}
+@media(max-width:560px){.section-nav{padding:8px 16px}}
+[id^="sec-"]{scroll-margin-top:54px}
+
+/* --- B: panel "Nueva orden" sticky + KPIs con icono --- */
+.order-panel{position:sticky;top:54px}
+@media(max-width:900px){.order-panel{position:static}}
+.kpi{display:flex;align-items:flex-start;gap:10px}
+.kpi-ico{display:inline-flex;color:var(--primary-mid);opacity:.85;margin-top:1px}
+.kpi-ico svg{display:block}
+.kpi-body{flex:1;min-width:0}
+.kpi-trend{font-size:11px;font-weight:700;margin-top:3px}
+.kpi-trend.pos{color:var(--green)}.kpi-trend.neg{color:var(--red)}
+
+/* --- C: popover de scores --- */
+.score-more-btn{display:inline-flex;align-items:center;padding:2px 6px;border-radius:5px;
+  background:var(--card2);border:1px solid var(--border);font-size:11px;color:var(--muted);
+  cursor:pointer;font-family:inherit}
+.score-more-btn:hover{background:var(--bg);color:var(--text)}
+.score-popover{position:fixed;background:var(--card);border:1px solid var(--border);border-radius:var(--r2);
+  box-shadow:var(--sh2);padding:8px;z-index:3500;display:none;flex-direction:column;gap:4px;min-width:140px}
+.score-popover.show{display:flex}
+
+/* --- D: skeletons de carga + indicador de escaneo pesado --- */
+@keyframes skel-shimmer{0%{background-position:-120px 0}100%{background-position:120px 0}}
+.skel{display:inline-block;height:12px;border-radius:4px;background:linear-gradient(90deg,var(--card2) 0%,var(--border) 50%,var(--card2) 100%);
+  background-size:240px 100%;animation:skel-shimmer 1.2s infinite linear}
+.skel-text{width:70%}
+.skel-row td{padding:10px 8px}
+.badge-busy{padding:3px 9px;border-radius:20px;gap:5px;margin-left:8px;
+  background:var(--amber-bg);color:var(--amber);border:1px solid rgba(163,112,15,.35)}
+.badge-busy .dot-spin{width:7px;height:7px;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;
+  animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* --- E: header mobile colapsado --- */
+.mobile-kebab{display:none}
+.hdr-more{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.lbl-short{display:none}
+@media(max-width:560px){
+  .mobile-kebab{display:inline-flex}
+  .hdr-more{position:absolute;top:100%;right:16px;margin-top:6px;background:var(--card2);
+    border:1px solid var(--border);border-radius:var(--r2);box-shadow:var(--sh2);padding:8px;
+    flex-direction:column;align-items:stretch;display:none;z-index:700}
+  .hdr-more.show{display:flex}
+  .hdr-r{position:relative}
+  .lbl-full{display:none}
+  .lbl-short{display:inline}
+}
+
+/* --- F: badges consolidados (icono+texto compartiendo estilo) --- */
+.icon-inline{display:inline-block;vertical-align:-2px;margin-right:3px}
+
+/* --- G: tarjeta de fondo con stat-grid + toggle switch --- */
+.fund-card{border:1px solid var(--border);background:var(--bg);border-radius:var(--r2);padding:11px;margin-bottom:10px}
+.fund-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:6px 14px;margin-top:8px;font-size:11.5px}
+@media(max-width:560px){.fund-stats{grid-template-columns:1fr}}
+.fund-stat-lbl{color:var(--muted);font-weight:600}
+.fund-stat-val{font-family:var(--mono);font-weight:700}
+.toggle-switch{position:relative;display:inline-block;width:32px;height:18px;flex-shrink:0}
+.toggle-switch input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;inset:0;background:var(--border);border-radius:18px;cursor:pointer;transition:.15s}
+.toggle-slider:before{content:'';position:absolute;width:14px;height:14px;left:2px;top:2px;background:#fff;
+  border-radius:50%;transition:.15s;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.toggle-switch input:checked + .toggle-slider{background:var(--green)}
+.toggle-switch input:checked + .toggle-slider:before{transform:translateX(14px)}
+.fund-create-toggle{display:flex;justify-content:space-between;align-items:center;cursor:pointer;
+  padding:8px 0;font-size:12px;font-weight:700;color:var(--primary)}
+.fund-create-body{display:none;margin-top:6px}
+.fund-create-body.show{display:block}
+
+/* --- H: tooltips propios accesibles --- */
+[title],[data-tip-text]{cursor:help}
+.tooltip-bubble{position:fixed;background:#1d1a14;color:#fdf9ee;font-size:11.5px;line-height:1.35;
+  padding:7px 10px;border-radius:6px;max-width:280px;z-index:5500;box-shadow:var(--sh2);
+  pointer-events:none;opacity:0;transition:opacity .1s}
+.tooltip-bubble.show{opacity:1}
+
+/* --- I: sub-secciones del modal de configuración --- */
+.cfg-section-title{font-size:11.5px;font-weight:800;color:var(--primary);text-transform:uppercase;
+  letter-spacing:.04em;margin:18px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--border)}
+.cfg-section-title:first-child{margin-top:0}
+
+/* --- J: jerarquía de botones por riesgo --- */
+.btn-ghost.btn-action-heavy{border-color:var(--primary-mid);color:var(--primary)}
+.btn-fund-add{background:var(--green-bg);color:var(--green);border:1px solid rgba(31,110,68,.35);
+  border-radius:var(--r2);padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-fund-remove{background:var(--card2);color:var(--text);border:1px solid var(--border);
+  border-radius:var(--r2);padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-fund-close{background:var(--red-bg);color:var(--red);border:1px solid rgba(156,59,46,.35);
+  border-radius:var(--r2);padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:6px}
+.btn-fund-close:disabled{opacity:.45;cursor:not-allowed}
+
+/* --- K: contraste y legibilidad de texto secundario --- */
+.muted-sm{font-size:12px}
+.via-strategy{font-size:11.5px}
+.price-age{font-size:11px}
 </style>
 </head>
 <body>
@@ -159,37 +261,49 @@ td{padding:8px;border-bottom:1px solid var(--border)}
   <div class="hdr-r">
     <span class="conn" id="connBadge"><span class="dot off" id="connDot"></span><span id="connTxt">sin datos</span></span>
     <span class="badge paper" id="modeBadge">PAPER</span>
-    <button class="btn btn-mode" id="modeBtn" onclick="toggleMode()">🔴 Activar modo LIVE</button>
-    <button class="btn btn-halt" id="haltBtn" onclick="toggleHalt()">⏸ Pausar trading</button>
-    <button class="btn btn-ghost" onclick="openConfigModal()">⚙️ Configuración</button>
-    <button class="btn btn-ghost" onclick="logout()">🚪 Salir</button>
+    <button class="btn btn-ghost mobile-kebab" onclick="toggleHdrMenu()" title="Más opciones">⋮</button>
+    <div class="hdr-more" id="hdrMore">
+      <button class="btn btn-mode" id="modeBtn" onclick="toggleMode()"><span class="lbl-full">🔴 Activar modo LIVE</span><span class="lbl-short">🔴 LIVE</span></button>
+      <button class="btn btn-halt" id="haltBtn" onclick="toggleHalt()"><span class="lbl-full">⏸ Pausar trading</span><span class="lbl-short">⏸ Pausar</span></button>
+      <button class="btn btn-ghost" onclick="openConfigModal()"><span class="lbl-full">⚙️ Configuración</span><span class="lbl-short">⚙️</span></button>
+      <button class="btn btn-ghost" onclick="logout()"><span class="lbl-full">🚪 Salir</span><span class="lbl-short">🚪</span></button>
+    </div>
   </div>
 </header>
+
+<nav class="section-nav" id="sectionNav">
+  <a href="#sec-posiciones">Posiciones</a>
+  <a href="#sec-fondos">Fondos</a>
+  <a href="#sec-radar">Radar</a>
+  <a href="#sec-pendientes">Pendientes</a>
+  <a href="#sec-auditoria">Auditoría</a>
+  <a href="#sec-orden">Nueva orden</a>
+</nav>
 
 <div class="main">
   <div class="banner live" id="bannerLive">⚠️ MODO LIVE — las órdenes usan dinero real.</div>
   <div class="banner halted" id="bannerHalted">⏸ Trading pausado manualmente (kill switch). No se ejecutarán nuevas órdenes.</div>
 
   <div class="kpis">
-    <div class="kpi"><div class="kpi-lbl" title="Valor total de la cuenta si se liquidaran todas las posiciones al precio de mercado actual: cash + valor de mercado de las posiciones.">Net Liquidation</div><div class="kpi-val" id="kv-netliq">—</div></div>
-    <div class="kpi"><div class="kpi-lbl" title="Efectivo disponible en la cuenta, sin contar el valor de las posiciones.">Cash</div><div class="kpi-val" id="kv-cash">—</div></div>
-    <div class="kpi"><div class="kpi-lbl" title="Poder de compra disponible (incluye margen si tu cuenta lo tiene habilitado): cuánto se podría comprar hoy sin aportar más fondos.">Buying Power</div><div class="kpi-val" id="kv-bp">—</div></div>
-    <div class="kpi"><div class="kpi-lbl" title="Ganancia o pérdida del día (realizada + no realizada) respecto al cierre anterior, según lo reporta IBKR.">P&L del día</div><div class="kpi-val" id="kv-pnl">—</div></div>
+    <div class="kpi"><span class="kpi-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 6v2m0 8v2"/></svg></span><div class="kpi-body"><div class="kpi-lbl" title="Valor total de la cuenta si se liquidaran todas las posiciones al precio de mercado actual: cash + valor de mercado de las posiciones.">Net Liquidation</div><div class="kpi-val" id="kv-netliq">—</div></div></div>
+    <div class="kpi"><span class="kpi-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-6 9 6"/><path d="M4 10v9M9 10v9M15 10v9M20 10v9"/><path d="M2 21h20"/></svg></span><div class="kpi-body"><div class="kpi-lbl" title="Efectivo disponible en la cuenta, sin contar el valor de las posiciones.">Cash</div><div class="kpi-val" id="kv-cash">—</div></div></div>
+    <div class="kpi"><span class="kpi-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" stroke="none"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span><div class="kpi-body"><div class="kpi-lbl" title="Poder de compra disponible (incluye margen si tu cuenta lo tiene habilitado): cuánto se podría comprar hoy sin aportar más fondos.">Buying Power</div><div class="kpi-val" id="kv-bp">—</div></div></div>
+    <div class="kpi"><span class="kpi-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></span><div class="kpi-body"><div class="kpi-lbl" title="Ganancia o pérdida del día (realizada + no realizada) respecto al cierre anterior, según lo reporta IBKR.">P&L del día</div><div class="kpi-val" id="kv-pnl">—</div><div class="kpi-trend" id="kv-pnl-trend"></div></div></div>
   </div>
 
   <div class="grid2">
     <div style="display:flex;flex-direction:column;gap:18px">
-      <div class="card">
+      <div class="card" id="sec-posiciones">
         <div class="card-hdr">Posiciones <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="refreshAll()">↻ Actualizar</button></div>
         <div class="card-body">
           <table id="posTable">
             <thead><tr><th>Símbolo</th><th>Cantidad</th><th title="Precio promedio de compra de la posición actual.">Costo prom.</th><th title="Último precio de mercado conocido para este símbolo.">Precio mkt.</th><th title="Ganancia o pérdida no realizada: (precio de mercado − costo promedio) × cantidad. No se concreta hasta vender.">P&L no real.</th></tr></thead>
-            <tbody id="posBody"><tr><td colspan="5" class="empty">Sin datos aún</td></tr></tbody>
+            <tbody id="posBody"><tr class="skel-row"><td colspan="5"><span class="skel skel-text"></span></td></tr></tbody>
           </table>
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="sec-fondos">
         <div class="card-hdr">Fondos
           <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="refreshFunds()">↻ Actualizar</button>
         </div>
@@ -199,36 +313,47 @@ td{padding:8px;border-bottom:1px solid var(--border)}
             IBKR y de otros fondos. Una venta atada a un fondo nunca puede superar lo que ese
             fondo registra como propio (protege holdings que no le pertenecen).
           </p>
-          <div id="fundsBody"><div class="empty">Sin fondos creados aún</div></div>
-          <div class="chart-wrap sm" id="roiChartWrap" style="display:none"><canvas id="roiChart"></canvas></div>
-          <div class="chart-wrap sm" id="roiHistoryChartWrap" style="display:none"><canvas id="roiHistoryChart"></canvas></div>
-          <div class="frow" style="margin-top:12px">
-            <div class="fg">
-              <label class="fl">Nombre del fondo</label>
-              <input id="fund-name" class="fi" type="text" placeholder="Ej: Test 1 semana">
-            </div>
-            <div class="fg">
-              <label class="fl">Capital inicial (USD)</label>
-              <input id="fund-capital" class="fi" type="number" min="0" step="any" placeholder="5000">
-            </div>
-            <div class="fg">
-              <label class="fl">Estrategia de auto-trading</label>
-              <select id="fund-strategy" class="fs">
-                <option value="">Sigue la estrategia activa global</option>
-              </select>
+          <div id="fundsBody">
+            <div class="skel-row" style="display:flex;flex-direction:column;gap:8px">
+              <span class="skel skel-text" style="width:55%"></span>
+              <span class="skel skel-text" style="width:80%"></span>
             </div>
           </div>
-          <button class="btn-submit" onclick="createFund()">+ Crear fondo</button>
+          <div class="chart-wrap sm" id="roiChartWrap" style="display:none"><canvas id="roiChart"></canvas></div>
+          <div class="chart-wrap sm" id="roiHistoryChartWrap" style="display:none"><canvas id="roiHistoryChart"></canvas></div>
+          <div class="fund-create-toggle" onclick="toggleFundCreateForm()">
+            <span>+ Crear fondo nuevo</span>
+            <span id="fundCreateChevron">▾</span>
+          </div>
+          <div class="fund-create-body" id="fundCreateBody">
+            <div class="frow" style="margin-top:6px">
+              <div class="fg">
+                <label class="fl">Nombre del fondo</label>
+                <input id="fund-name" class="fi" type="text" placeholder="Ej: Test 1 semana">
+              </div>
+              <div class="fg">
+                <label class="fl">Capital inicial (USD)</label>
+                <input id="fund-capital" class="fi" type="number" min="0" step="any" placeholder="5000">
+              </div>
+              <div class="fg">
+                <label class="fl">Estrategia de auto-trading</label>
+                <select id="fund-strategy" class="fs">
+                  <option value="">Sigue la estrategia activa global</option>
+                </select>
+              </div>
+            </div>
+            <button class="btn-submit" onclick="createFund()">+ Crear fondo</button>
+          </div>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-hdr"><span id="radarTitle">Radar de oportunidades</span>
+      <div class="card" id="sec-radar">
+        <div class="card-hdr"><span id="radarTitle">Radar de oportunidades</span><span class="badge-tag badge-busy" id="scanBusyBadge" style="display:none"><span class="dot-spin"></span> Escaneo pesado en curso</span>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
             <select id="strategySelect" class="fs" style="width:auto;padding:6px 8px;font-size:12px" onchange="onStrategyChange()"></select>
             <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="scanSignals(true)">↻ Escanear</button>
-            <button class="btn btn-ghost" id="backtestBtn" style="background:var(--bg);color:var(--muted)" onclick="runBacktest()" title="Simula la estrategia elegida sobre datos históricos para estimar cómo le habría ido en el pasado. No ejecuta órdenes reales ni usa dinero; resultados pasados no garantizan resultados futuros.">📊 Backtest</button>
-            <button class="btn btn-ghost" id="walkForwardBtn" style="background:var(--bg);color:var(--muted)" onclick="runWalkForward()" title="Corre el mismo backtest una sola vez y lo divide en tramos consecutivos, para ver si el resultado se sostiene en distintos períodos o se concentra en uno solo. No reajusta ningún parámetro por tramo.">🧪 Validación out-of-sample</button>
+            <button class="btn btn-ghost btn-action-heavy" id="backtestBtn" style="background:var(--bg)" onclick="runBacktest()" title="Simula la estrategia elegida sobre datos históricos para estimar cómo le habría ido en el pasado. No ejecuta órdenes reales ni usa dinero; resultados pasados no garantizan resultados futuros.">📊 Backtest</button>
+            <button class="btn btn-ghost btn-action-heavy" id="walkForwardBtn" style="background:var(--bg)" onclick="runWalkForward()" title="Corre el mismo backtest una sola vez y lo divide en tramos consecutivos, para ver si el resultado se sostiene en distintos períodos o se concentra en uno solo. No reajusta ningún parámetro por tramo.">🧪 Validación out-of-sample</button>
           </div>
         </div>
         <div class="card-body">
@@ -253,14 +378,14 @@ td{padding:8px;border-bottom:1px solid var(--border)}
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="sec-pendientes">
         <div class="card-hdr">Órdenes pendientes de aprobación manual</div>
         <div class="card-body" id="pendingBody">
           <div class="empty">No hay órdenes pendientes</div>
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="sec-auditoria">
         <div class="card-hdr">Bitácora de auditoría (últimas 25)</div>
         <div class="card-body">
           <table>
@@ -271,7 +396,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
       </div>
     </div>
 
-    <div class="card">
+    <div class="card order-panel" id="sec-orden">
       <div class="card-hdr">Nueva orden</div>
       <div class="card-body">
         <div class="side-sel">
@@ -477,6 +602,20 @@ function onTypeChange(){
   document.getElementById('limitPriceGroup').style.display = isLmt ? 'block' : 'none';
 }
 
+function setBtnLabel(btn, full, short){
+  btn.innerHTML = `<span class="lbl-full">${full}</span><span class="lbl-short">${short}</span>`;
+}
+
+function toggleHdrMenu(){
+  document.getElementById('hdrMore').classList.toggle('show');
+}
+document.addEventListener('click', (ev) => {
+  const menu = document.getElementById('hdrMore');
+  if(!menu || !menu.classList.contains('show')) return;
+  if(ev.target.closest('.hdr-more') || ev.target.closest('.mobile-kebab')) return;
+  menu.classList.remove('show');
+});
+
 // Ultimo /api/status conocido, para que scanSignals() pueda explicar un
 // "0/50 streaming en vivo" sin pedirlo de nuevo: a diferencia de
 // /api/signals/scan, /api/status nunca espera el lock de un backtest (ver
@@ -500,11 +639,16 @@ async function refreshStatus(){
     document.getElementById('connDot').className = 'dot ' + (s.connected ? 'on' : 'off');
     document.getElementById('connTxt').textContent = s.connected ? 'Conectado' : 'Desconectado';
     const haltBtn = document.getElementById('haltBtn');
-    haltBtn.textContent = s.halted ? '▶ Reanudar trading' : '⏸ Pausar trading';
+    setBtnLabel(haltBtn,
+      s.halted ? '▶ Reanudar trading' : '⏸ Pausar trading',
+      s.halted ? '▶ Reanudar' : '⏸ Pausar');
     haltBtn.classList.toggle('on', s.halted);
     const modeBtn = document.getElementById('modeBtn');
-    modeBtn.textContent = s.mode === 'live' ? '🔵 Volver a modo PAPER' : '🔴 Activar modo LIVE';
+    setBtnLabel(modeBtn,
+      s.mode === 'live' ? '🔵 Volver a modo PAPER' : '🔴 Activar modo LIVE',
+      s.mode === 'live' ? '🔵 PAPER' : '🔴 LIVE');
     modeBtn.classList.toggle('danger', s.mode !== 'live');
+    document.getElementById('scanBusyBadge').style.display = s.market_scan_busy ? 'inline-flex' : 'none';
     return s;
   }catch(e){
     document.getElementById('connBadge').className = 'conn off';
@@ -544,8 +688,12 @@ function renderAccount(a){
   document.getElementById('kv-cash').textContent = fmtUsd(a.cash);
   document.getElementById('kv-bp').textContent = fmtUsd(a.buying_power);
   const pnlEl = document.getElementById('kv-pnl');
-  pnlEl.textContent = `${fmtUsd(a.daily_pnl)} (${(a.daily_pnl_pct ?? 0).toFixed(2)}%)`;
-  pnlEl.className = 'kpi-val ' + ((a.daily_pnl || 0) >= 0 ? 'pos' : 'neg');
+  const pnlPos = (a.daily_pnl || 0) >= 0;
+  pnlEl.textContent = fmtUsd(a.daily_pnl);
+  pnlEl.className = 'kpi-val ' + (pnlPos ? 'pos' : 'neg');
+  const trendEl = document.getElementById('kv-pnl-trend');
+  trendEl.textContent = `${pnlPos ? '▲' : '▼'} ${(a.daily_pnl_pct ?? 0).toFixed(2)}% hoy`;
+  trendEl.className = 'kpi-trend ' + (pnlPos ? 'pos' : 'neg');
 }
 
 async function refreshAccount(){
@@ -615,16 +763,16 @@ function renderFunds(funds){
       const posCount = Object.keys(f.positions || {}).length;
       const canClose = Math.abs(f.cash_usd) < 0.005 && posCount === 0;
       return `
-      <div class="pending-item" style="border-color:var(--border);background:var(--bg)">
-        <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="fund-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
           <span>
             <b class="fund-name-link" onclick="openFundDetail('${f.id}')" title="Ver detalle del fondo">${esc(f.name)}</b>
             ${f.closed ? '<span class="muted-sm" style="margin-left:6px;font-weight:700;text-transform:uppercase">🔒 Cerrado</span>' : ''}
           </span>
           ${f.closed ? '' : `
-          <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:var(--muted)" title="Si está activo, el motor autónomo puede abrir y cerrar posiciones en este fondo sin aprobación manual (siempre en modo paper)">
+          <label class="toggle-switch" title="Si está activo, el motor autónomo puede abrir y cerrar posiciones en este fondo sin aprobación manual (siempre en modo paper)">
             <input type="checkbox" ${f.auto_trading_enabled ? 'checked' : ''} onchange="toggleFundAutoTrading('${f.id}', this.checked)">
-            Auto-trading
+            <span class="toggle-slider"></span>
           </label>`}
         </div>
         ${f.closed ? '' : `
@@ -634,21 +782,22 @@ function renderFunds(funds){
             ${STRATEGIES.map(s => `<option value="${esc(s.id)}" ${f.strategy_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
           </select>
         </div>`}
-        <div class="muted-sm" style="margin-top:4px">
-          <span title="Cash del fondo + valor de mercado estimado de sus posiciones (último precio conocido, o costo promedio si todavía no hay precio).">Valor estimado</span> ${fmtUsd(totalValue)} (cash ${fmtUsd(f.cash_usd)} · ${posCount} posición(es))
-          · <span title="Suma de aportes menos retiros de capital de este fondo, sin contar ganancias o pérdidas de trading.">Aportado neto</span> ${fmtUsd(netContributed)}
-          · <span title="Valor estimado del fondo menos lo aportado neto: ganancia o pérdida total (realizada + no realizada) desde su creación.">PnL total</span> <span style="color:${pnlTotal>=0?'var(--green)':'var(--red)'}">${fmtUsd(pnlTotal)} (${roiPct>=0?'+':''}${roiPct.toFixed(1)}%)</span>
-          · <span title="Ganancia o pérdida ya concretada por ventas cerradas en este fondo (no incluye posiciones abiertas).">PnL realizado</span> ${fmtUsd(f.realized_pnl_total)}
+        <div class="fund-stats">
+          <div><span class="fund-stat-lbl" title="Cash del fondo + valor de mercado estimado de sus posiciones (último precio conocido, o costo promedio si todavía no hay precio).">Valor estimado</span><br><span class="fund-stat-val">${fmtUsd(totalValue)}</span></div>
+          <div><span class="fund-stat-lbl">Cash / posiciones</span><br><span class="fund-stat-val">${fmtUsd(f.cash_usd)} · ${posCount}</span></div>
+          <div><span class="fund-stat-lbl" title="Suma de aportes menos retiros de capital de este fondo, sin contar ganancias o pérdidas de trading.">Aportado neto</span><br><span class="fund-stat-val">${fmtUsd(netContributed)}</span></div>
+          <div><span class="fund-stat-lbl" title="Valor estimado del fondo menos lo aportado neto: ganancia o pérdida total (realizada + no realizada) desde su creación.">PnL total</span><br><span class="fund-stat-val" style="color:${pnlTotal>=0?'var(--green)':'var(--red)'}">${fmtUsd(pnlTotal)} (${roiPct>=0?'+':''}${roiPct.toFixed(1)}%)</span></div>
+          <div><span class="fund-stat-lbl" title="Ganancia o pérdida ya concretada por ventas cerradas en este fondo (no incluye posiciones abiertas).">PnL realizado</span><br><span class="fund-stat-val">${fmtUsd(f.realized_pnl_total)}</span></div>
         </div>
         ${f.closed ? `
         <div class="muted-sm" style="margin-top:8px">Cerrado el ${new Date(f.closed_at).toLocaleDateString()}</div>` : `
-        <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
-          <input type="number" id="flow-amount-${f.id}" placeholder="Monto USD" style="flex:1;min-width:0" min="0" step="100">
-          <button onclick="adjustFundCapital('${f.id}', 1)" title="Aportar capital adicional a este fondo">+ Aportar</button>
-          <button onclick="adjustFundCapital('${f.id}', -1)" title="Retirar capital de este fondo (no puede superar el cash disponible)">− Retirar</button>
+        <div style="display:flex;gap:6px;margin-top:10px;align-items:center">
+          <input type="number" id="flow-amount-${f.id}" class="fi" style="flex:1;min-width:0;padding:6px 8px" placeholder="Monto USD" min="0" step="100">
+          <button class="btn-fund-add" onclick="adjustFundCapital('${f.id}', 1)" title="Aportar capital adicional a este fondo">+ Aportar</button>
+          <button class="btn-fund-remove" onclick="adjustFundCapital('${f.id}', -1)" title="Retirar capital de este fondo (no puede superar el cash disponible)">− Retirar</button>
         </div>
-        <div style="margin-top:6px">
-          <button onclick="closeFund('${f.id}')" ${canClose ? '' : 'disabled'} title="${canClose ? 'Cerrar este fondo de forma definitiva (no se puede reabrir)' : 'Para cerrar el fondo hay que retirar todo el cash y no tener posiciones abiertas'}">🔒 Cerrar fondo</button>
+        <div>
+          <button class="btn-fund-close" onclick="closeFund('${f.id}')" ${canClose ? '' : 'disabled'} title="${canClose ? 'Cerrar este fondo de forma definitiva (no se puede reabrir)' : 'Para cerrar el fondo hay que retirar todo el cash y no tener posiciones abiertas'}">🔒 Cerrar fondo</button>
         </div>`}
       </div>`;
     }).join('');
@@ -734,20 +883,20 @@ let modalCharts = [];
 // Field(...) de RulesConfig (rules.py) solo como ayuda visual: la validacion
 // real la sigue haciendo el backend al recibir el PUT.
 const RULES_FIELDS = [
-  { key:'symbol_whitelist', label:'Símbolos permitidos (whitelist)', type:'list',
+  { key:'symbol_whitelist', section:'Universo permitido', label:'Símbolos permitidos (whitelist)', type:'list',
     hint:'Lista vacía bloquea TODAS las órdenes por seguridad (ninguna whitelist = ningún símbolo autorizado).' },
-  { key:'max_order_value_usd', label:'Valor máximo por orden (USD)', type:'number', min:0.01, max:10000000 },
+  { key:'max_order_value_usd', section:'Límites de orden y posición', label:'Valor máximo por orden (USD)', type:'number', min:0.01, max:10000000 },
   { key:'max_position_pct_of_equity', label:'Máximo % del equity por posición', type:'number', min:0.01, max:100 },
   { key:'max_sector_concentration_pct', label:'Máxima concentración por sector GICS (%)', type:'number', min:0.01, max:100,
     hint:'Suma de posiciones existentes + la orden en evaluación en el mismo sector, como % del equity. Solo aplica si el sector del símbolo es conocido (botón "🌐 Refrescar sectores" en el Radar).' },
-  { key:'risk_per_trade_pct', label:'Riesgo por operación (% del equity, para sugerir tamaño)', type:'number', min:0.01, max:100 },
+  { key:'risk_per_trade_pct', section:'Riesgo y stop-loss', label:'Riesgo por operación (% del equity, para sugerir tamaño)', type:'number', min:0.01, max:100 },
   { key:'daily_loss_limit_pct', label:'Límite de pérdida diaria (%)', type:'number', min:0.01, max:100 },
   { key:'max_trades_per_day', label:'Máximo de operaciones por día', type:'number', min:1, max:1000, step:1, integer:true },
   { key:'require_stop_loss_on_buy', label:'Exigir stop-loss en toda compra', type:'checkbox' },
   { key:'max_stop_loss_pct', label:'Stop-loss máximo permitido (%)', type:'number', min:0.01, max:100 },
-  { key:'allow_short_selling', label:'Permitir short selling', type:'checkbox' },
+  { key:'allow_short_selling', section:'Aprobación y permisos', label:'Permitir short selling', type:'checkbox' },
   { key:'manual_approval_threshold_usd', label:'Umbral de aprobación manual (USD)', type:'number', min:0, max:100000000 },
-  { key:'allow_extended_hours', label:'Permitir horario extendido', type:'checkbox' },
+  { key:'allow_extended_hours', section:'Horario de trading', label:'Permitir horario extendido', type:'checkbox' },
   { key:'trading_hours_start', label:'Inicio horario de trading (HH:MM)', type:'text' },
   { key:'trading_hours_end', label:'Fin horario de trading (HH:MM)', type:'text' },
   { key:'trading_hours_timezone', label:'Zona horaria (IANA, ej. America/New_York)', type:'text' },
@@ -756,12 +905,12 @@ const RULES_FIELDS = [
 // Campos de screener.yaml. 'universe' se maneja aparte (puede tener cientos
 // de símbolos) en vez de mezclarse en esta grilla de 2 columnas.
 const SCREENER_FIELDS = [
-  { key:'strategy_id', label:'Estrategia activa (auto-trading / escaneo proactivo)', type:'select', optionsSource:'strategies',
+  { key:'strategy_id', section:'Estrategia y universo', label:'Estrategia activa (auto-trading / escaneo proactivo)', type:'select', optionsSource:'strategies',
     hint:'Estrategia usada por el ciclo de escaneo proactivo en background y el auto-trading. El selector del Radar puede explorar cualquier estrategia ad-hoc sin cambiar esto.' },
   { key:'benchmark_symbol', label:'Símbolo de referencia (benchmark)', type:'text' },
   { key:'lookback_days', label:'Días de histórico a descargar', type:'number', min:1, step:1, integer:true },
   { key:'scan_request_delay_seconds', label:'Pausa entre símbolos al escanear (seg.)', type:'number', min:0 },
-  { key:'sma_fast', label:'SMA rápida (días)', type:'number', min:1, step:1, integer:true },
+  { key:'sma_fast', section:'Tendencia y momentum', label:'SMA rápida (días)', type:'number', min:1, step:1, integer:true },
   { key:'sma_slow', label:'SMA lenta (días)', type:'number', min:1, step:1, integer:true },
   { key:'momentum_lookback_days', label:'Ventana de momentum (días)', type:'number', min:1, step:1, integer:true,
     hint:'Solo alimenta los campos de contexto momentum_3m_pct/momentum_1m_pct y la fuerza relativa vs. benchmark; no afecta el score de momentum (ver "momentum 12-1" abajo).' },
@@ -769,32 +918,32 @@ const SCREENER_FIELDS = [
   { key:'momentum_12_1_lookback_days', label:'Momentum 12-1: ventana total (días)', type:'number', min:1, step:1, integer:true,
     hint:'Retorno entre esta ventana y la ventana salteada (ver siguiente campo), saltando el tramo mas reciente para no premiar su reversion de corto plazo (Jegadeesh & Titman).' },
   { key:'momentum_12_1_skip_days', label:'Momentum 12-1: días salteados', type:'number', min:0, step:1, integer:true },
-  { key:'rsi_period', label:'Período del RSI', type:'number', min:1, step:1, integer:true },
+  { key:'rsi_period', section:'RSI y pesos del score', label:'Período del RSI', type:'number', min:1, step:1, integer:true },
   { key:'rsi_min', label:'RSI mínimo', type:'number' },
   { key:'rsi_max', label:'RSI máximo', type:'number' },
   { key:'score_weight_relative_strength', label:'Peso: fuerza relativa vs. benchmark', type:'number', min:0 },
   { key:'score_weight_momentum_12_1', label:'Peso: momentum 12-1', type:'number', min:0 },
   { key:'score_weight_trend', label:'Peso: tendencia (SMA)', type:'number', min:0 },
   { key:'score_weight_rsi', label:'Peso: RSI', type:'number', min:0 },
-  { key:'min_avg_dollar_volume', label:'Volumen promedio mínimo (USD)', type:'number', min:0 },
+  { key:'min_avg_dollar_volume', section:'Universo y candidatos', label:'Volumen promedio mínimo (USD)', type:'number', min:0 },
   { key:'top_n', label:'Cantidad de candidatos a rankear (top N)', type:'number', min:1, step:1, integer:true },
   { key:'max_concurrent_positions_per_sector', label:'Backtest: tope de posiciones concurrentes por sector', type:'number', min:0, step:1, integer:true,
     hint:'Además del tope general de top N, limita cuántas posiciones del mismo sector GICS pueden estar abiertas a la vez en el backtest (evita terminar con, por ejemplo, 10 semiconductoras a la vez). 0 = sin tope adicional, solo aplica el de top N.' },
-  { key:'atr_period', label:'Período del ATR', type:'number', min:1, step:1, integer:true },
+  { key:'atr_period', section:'Stops y holding', label:'Período del ATR', type:'number', min:1, step:1, integer:true },
   { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss sugerido', type:'number', min:0 },
   { key:'max_holding_days', label:'Máximo de días en una posición', type:'number', min:1, step:1, integer:true },
   { key:'trailing_stop_enabled', label:'Trailing stop activo (sube el stop-loss en posiciones de auto-trading)', type:'checkbox' },
-  { key:'regime_filter_enabled', label:'Filtro de régimen de mercado activo (Momentum)', type:'checkbox',
+  { key:'regime_filter_enabled', section:'Filtro de régimen de mercado', label:'Filtro de régimen de mercado activo (Momentum)', type:'checkbox',
     hint:'Exige pendiente positiva de la SMA de régimen y momentum absoluto positivo del benchmark (ver los dos campos siguientes), no solo precio > SMA: evita el whipsaw de un cruce binario en una SMA plana. Solo aplica a Momentum — ver el campo siguiente para Oportunista, que tiene su propio flag.' },
   { key:'opportunistic_regime_filter_enabled', label:'Filtro de régimen de mercado activo (Oportunista)', type:'checkbox',
     hint:'Mismo filtro que el de arriba (misma SMA/pendiente/momentum absoluto), pero para Oportunista. Apagado por defecto: a diferencia de Momentum, un re-test (2026-06-24) mostró que este filtro empeora el retorno y el Sharpe de Oportunista, cuya lógica central (comprar giros/reversiones) funciona mejor justo cuando el mercado no está en tendencia alcista limpia.' },
   { key:'regime_sma_period', label:'SMA de régimen (días)', type:'number', min:1, step:1, integer:true },
   { key:'regime_slope_lookback_days', label:'Pendiente de la SMA de régimen: ventana (días)', type:'number', min:1, step:1, integer:true },
   { key:'regime_absolute_momentum_lookback_days', label:'Momentum absoluto del benchmark: ventana (días)', type:'number', min:1, step:1, integer:true },
-  { key:'earnings_blackout_days', label:'Días de blackout antes de earnings', type:'number', min:0, step:1, integer:true },
+  { key:'earnings_blackout_days', section:'Filtros adicionales', label:'Días de blackout antes de earnings', type:'number', min:0, step:1, integer:true },
   { key:'near_high_filter_enabled', label:'Filtro de cercanía al máximo de 52 semanas activo', type:'checkbox' },
   { key:'max_pct_below_52w_high', label:'Máximo % por debajo del máximo de 52 semanas', type:'number', min:0 },
-  { key:'backtest_years', label:'Años de histórico para el backtest', type:'number', min:1, step:1, integer:true },
+  { key:'backtest_years', section:'Backtest: costos y ejecución', label:'Años de histórico para el backtest', type:'number', min:1, step:1, integer:true },
   { key:'backtest_assumed_capital_usd', label:'Capital asumido en el backtest (USD)', type:'number', min:0 },
   { key:'commission_per_trade_usd', label:'Comisión por operación (USD)', type:'number', min:0 },
   { key:'slippage_pct', label:'Slippage asumido (%)', type:'number', min:0 },
@@ -808,7 +957,7 @@ const SCREENER_FIELDS = [
     hint:'Si está activo, cada posición concurrente pesa ~1/ATR en vez de equiponderar (1/top N), igual criterio que el sizing por riesgo en vivo. Sube el Sharpe a retorno similar al dar menos peso a lo más volátil. Cambia los números históricos del backtest.' },
   { key:'deflated_sharpe_num_trials', label:'Backtest: cantidad de variantes probadas (Deflated Sharpe Ratio)', type:'number', min:1, step:1, integer:true,
     hint:'Cuántas configuraciones distintas de parámetros/estrategias probaste (en este backtest o en corridas previas) antes de quedarte con la actual. Se usa para penalizar el Sharpe ratio observado por sesgo de selección: 1 = sin ajuste (no se rastrea automáticamente, hay que estimarlo a mano).' },
-  { key:'auto_scan_enabled', label:'Escaneo proactivo en background activo', type:'checkbox' },
+  { key:'auto_scan_enabled', section:'Escaneo automático y sentimiento', label:'Escaneo proactivo en background activo', type:'checkbox' },
   { key:'auto_scan_interval_minutes', label:'Intervalo del escaneo proactivo (minutos)', type:'number', min:1, step:1, integer:true },
   { key:'max_auto_drafts_per_cycle', label:'Máx. borradores por ciclo de escaneo proactivo', type:'number', min:0, step:1, integer:true },
   { key:'news_sentiment_enabled', label:'Sentimiento de noticias activo (Claude Haiku 4.5)', type:'checkbox',
@@ -824,33 +973,33 @@ const SCREENER_FIELDS = [
 // readConfigFields que el valor vive en screener[group][key] en vez de
 // screener[key] directo.
 const OPPORTUNISTIC_FIELDS = [
-  { key:'momentum_lookback_days', label:'Ventana de momentum (días)', type:'number', min:1, step:1, integer:true, group:'opportunistic' },
+  { key:'momentum_lookback_days', section:'Entrada: momentum y RSI', label:'Ventana de momentum (días)', type:'number', min:1, step:1, integer:true, group:'opportunistic' },
   { key:'rsi_period', label:'Período del RSI', type:'number', min:1, step:1, integer:true, group:'opportunistic' },
   { key:'rsi_min', label:'RSI mínimo', type:'number', group:'opportunistic' },
   { key:'rsi_max', label:'RSI máximo', type:'number', group:'opportunistic' },
-  { key:'min_volatility_pct', label:'Volatilidad mínima (ATR % del precio)', type:'number', min:0, group:'opportunistic' },
+  { key:'min_volatility_pct', section:'Volatilidad y distancia a máximos', label:'Volatilidad mínima (ATR % del precio)', type:'number', min:0, group:'opportunistic' },
   { key:'min_pct_below_52w_high', label:'Mínimo % por debajo del máximo de 52 semanas', type:'number', min:0, group:'opportunistic' },
-  { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'opportunistic' },
+  { key:'stop_loss_atr_multiplier', section:'Salida', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'opportunistic' },
   { key:'max_holding_days', label:'Máximo de días en una posición', type:'number', min:1, step:1, integer:true, group:'opportunistic' },
-  { key:'max_volatility_pct', label:'Volatilidad máxima (ATR % del precio, solo score)', type:'number', min:0, group:'opportunistic',
+  { key:'max_volatility_pct', section:'Volatilidad y distancia (score)', label:'Volatilidad máxima (ATR % del precio, solo score)', type:'number', min:0, group:'opportunistic',
     hint:'No es un filtro (no descarta candidatos): más allá de este punto, más volatilidad ya no suma al score de "giro al alza", solo es más riesgo.' },
   { key:'max_pct_below_52w_high', label:'Máximo % por debajo del máximo de 52 sem. (solo score)', type:'number', min:0, group:'opportunistic',
     hint:'No es un filtro: más allá de este punto ya no se considera "espacio de crecimiento" sino una caída sostenida, y deja de sumar al score.' },
-  { key:'score_weight_momentum', label:'Peso: momentum', type:'number', min:0, group:'opportunistic' },
+  { key:'score_weight_momentum', section:'Pesos del score', label:'Peso: momentum', type:'number', min:0, group:'opportunistic' },
   { key:'score_weight_volatility', label:'Peso: volatilidad', type:'number', min:0, group:'opportunistic' },
   { key:'score_weight_rsi_recovery', label:'Peso: recuperación de RSI', type:'number', min:0, group:'opportunistic' },
   { key:'score_weight_room_to_grow', label:'Peso: espacio de crecimiento', type:'number', min:0, group:'opportunistic' },
   { key:'score_weight_macd_turn', label:'Peso: giro de MACD', type:'number', min:0, group:'opportunistic' },
   { key:'score_weight_sector_relative_strength', label:'Peso: fuerza relativa vs. sector', type:'number', min:0, group:'opportunistic' },
-  { key:'backtest_score_entry_threshold', label:'Umbral de score de entrada (backtest y auto-trading en vivo)', type:'number', min:0, max:100, group:'opportunistic',
+  { key:'backtest_score_entry_threshold', section:'Umbral de entrada', label:'Umbral de score de entrada (backtest y auto-trading en vivo)', type:'number', min:0, max:100, group:'opportunistic',
     hint:'Score (0-100 percentil) a partir del cual el backtest simula una entrada. También dispara el auto-trading en el escaneo en vivo si está activo. La salida no usa score: sale por stop-loss, tiempo máximo o ruptura de tendencia, igual que la cuenta en vivo.' },
 ];
 
 const LONG_TERM_FIELDS = [
-  { key:'max_pe_ratio', label:'P/E máximo', type:'number', min:0, group:'long_term' },
+  { key:'max_pe_ratio', section:'Valoración y crecimiento', label:'P/E máximo', type:'number', min:0, group:'long_term' },
   { key:'min_revenue_growth_pct', label:'Crecimiento de ingresos mínimo (%)', type:'number', group:'long_term' },
   { key:'min_earnings_growth_pct', label:'Crecimiento de ganancias mínimo (%)', type:'number', group:'long_term' },
-  { key:'min_return_on_equity_pct', label:'ROE mínimo (%)', type:'number', group:'long_term' },
+  { key:'min_return_on_equity_pct', section:'Calidad y solidez financiera', label:'ROE mínimo (%)', type:'number', group:'long_term' },
   { key:'max_debt_to_equity', label:'Deuda/Equity máxima', type:'number', min:0, group:'long_term' },
   { key:'min_profit_margin_pct', label:'Margen de ganancia mínimo (%)', type:'number', group:'long_term' },
   { key:'max_peg_ratio', label:'PEG máximo (solo score, no bloquea)', type:'number', min:0, group:'long_term',
@@ -859,36 +1008,36 @@ const LONG_TERM_FIELDS = [
     hint:'Volatilidad relativa al mercado (SPY). Solo genera una nota informativa, no bloquea ni puntúa.' },
   { key:'max_short_interest_pct', label:'Interés en corto máximo % (informativo)', type:'number', min:0, group:'long_term',
     hint:'% del float vendido en corto. Solo genera una nota informativa, no bloquea ni puntúa.' },
-  { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'long_term' },
-  { key:'score_weight_value', label:'Peso: valoración (P/E)', type:'number', min:0, group:'long_term' },
+  { key:'stop_loss_atr_multiplier', section:'Salida', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'long_term' },
+  { key:'score_weight_value', section:'Pesos del score', label:'Peso: valoración (P/E)', type:'number', min:0, group:'long_term' },
   { key:'score_weight_growth', label:'Peso: crecimiento', type:'number', min:0, group:'long_term' },
   { key:'score_weight_quality', label:'Peso: calidad (Piotroski-lite: ROE, margen, deuda)', type:'number', min:0, group:'long_term' },
   { key:'score_weight_peg', label:'Peso: PEG', type:'number', min:0, group:'long_term' },
   { key:'score_weight_safety', label:'Peso: solidez financiera (liquidez/FCF/beta)', type:'number', min:0, group:'long_term' },
   { key:'score_weight_ownership_alignment', label:'Peso: alineación de ownership (insiders/institucional)', type:'number', min:0, group:'long_term' },
-  { key:'live_score_entry_threshold', label:'Umbral de score para auto-trading en vivo', type:'number', min:0, max:100, group:'long_term',
+  { key:'live_score_entry_threshold', section:'Umbral de entrada en vivo', label:'Umbral de score para auto-trading en vivo', type:'number', min:0, max:100, group:'long_term',
     hint:'Score (0-100 percentil) a partir del cual el escaneo en vivo puede disparar una entrada de auto-trading. Largo Plazo no es backtesteable, por eso no reusa un umbral de backtest.' },
 ];
 
 const DIVIDEND_FIELDS = [
-  { key:'min_dividend_yield_pct', label:'Dividend yield mínimo (%)', type:'number', min:0, group:'dividend' },
+  { key:'min_dividend_yield_pct', section:'Yield y payout', label:'Dividend yield mínimo (%)', type:'number', min:0, group:'dividend' },
   { key:'max_dividend_yield_pct', label:'Dividend yield máximo (solo score, no bloquea)', type:'number', min:0, group:'dividend',
     hint:'Un yield muy por encima de este punto suele ser señal de "yield trap" (precio castigado por riesgo de recorte), no de mejor oportunidad: el score puntúa mejor cerca del centro del rango que en cualquiera de los dos extremos.' },
   { key:'min_payout_ratio_pct', label:'Payout ratio mínimo (%)', type:'number', min:0, group:'dividend' },
   { key:'max_payout_ratio_pct', label:'Payout ratio máximo (%)', type:'number', min:0, group:'dividend' },
-  { key:'min_return_on_equity_pct', label:'ROE mínimo (%)', type:'number', group:'dividend' },
+  { key:'min_return_on_equity_pct', section:'Calidad y solidez financiera', label:'ROE mínimo (%)', type:'number', group:'dividend' },
   { key:'min_profit_margin_pct', label:'Margen de ganancia mínimo (%)', type:'number', group:'dividend' },
   { key:'max_beta', label:'Beta máxima (informativo)', type:'number', min:0, group:'dividend',
     hint:'Volatilidad relativa al mercado (SPY). Solo genera una nota informativa, no bloquea ni puntúa.' },
   { key:'max_short_interest_pct', label:'Interés en corto máximo % (informativo)', type:'number', min:0, group:'dividend',
     hint:'% del float vendido en corto. Solo genera una nota informativa, no bloquea ni puntúa.' },
-  { key:'stop_loss_atr_multiplier', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'dividend' },
-  { key:'score_weight_yield', label:'Peso: yield', type:'number', min:0, group:'dividend' },
+  { key:'stop_loss_atr_multiplier', section:'Salida', label:'Múltiplo de ATR para el stop-loss', type:'number', min:0, group:'dividend' },
+  { key:'score_weight_yield', section:'Pesos del score', label:'Peso: yield', type:'number', min:0, group:'dividend' },
   { key:'score_weight_payout_quality', label:'Peso: calidad del payout', type:'number', min:0, group:'dividend' },
   { key:'score_weight_quality', label:'Peso: calidad (ROE/margen)', type:'number', min:0, group:'dividend' },
   { key:'score_weight_safety', label:'Peso: solidez financiera (liquidez/FCF/beta)', type:'number', min:0, group:'dividend' },
   { key:'score_weight_ownership_alignment', label:'Peso: alineación de ownership (insiders/institucional)', type:'number', min:0, group:'dividend' },
-  { key:'live_score_entry_threshold', label:'Umbral de score para auto-trading en vivo', type:'number', min:0, max:100, group:'dividend',
+  { key:'live_score_entry_threshold', section:'Umbral de entrada en vivo', label:'Umbral de score para auto-trading en vivo', type:'number', min:0, max:100, group:'dividend',
     hint:'Score (0-100 percentil) a partir del cual el escaneo en vivo puede disparar una entrada de auto-trading. Dividendos no es backtesteable, por eso no reusa un umbral de backtest.' },
 ];
 
@@ -935,7 +1084,21 @@ function renderConfigField(f, values){
 }
 
 function renderConfigFields(fields, values){
-  return fields.map(f => renderConfigField(f, values)).join('');
+  let html = '';
+  let gridOpen = false;
+  fields.forEach(f => {
+    if(f.section){
+      if(gridOpen) html += '</div>';
+      html += `<h4 class="cfg-section-title">${esc(f.section)}</h4><div class="modal-grid">`;
+      gridOpen = true;
+    } else if(!gridOpen){
+      html += '<div class="modal-grid">';
+      gridOpen = true;
+    }
+    html += renderConfigField(f, values);
+  });
+  if(gridOpen) html += '</div>';
+  return html;
 }
 
 function readConfigFields(fields){
@@ -1000,7 +1163,7 @@ async function loadConfigForms(){
   try{
     const rules = await api('/api/rules', { auth:true });
     document.getElementById('cfgRulesPane').innerHTML = `
-      <div class="modal-grid">${renderConfigFields(RULES_FIELDS, rules)}</div>
+      ${renderConfigFields(RULES_FIELDS, rules)}
       <div class="violations" id="cfgRulesErr"></div>
       <button class="btn-submit" onclick="saveRulesConfig()">Guardar reglas</button>
     `;
@@ -1013,7 +1176,7 @@ async function loadConfigForms(){
     try{ STRATEGIES = await api('/api/strategies', { auth:true }); }catch(e){ /* select usa lo que ya hubiera cargado */ }
     document.getElementById('cfgScreenerPane').innerHTML = `
       <p class="muted-sm" style="margin-bottom:10px">${esc(strategyDescription('momentum'))}</p>
-      <div class="modal-grid">${renderConfigFields(SCREENER_FIELDS, screener)}</div>
+      ${renderConfigFields(SCREENER_FIELDS, screener)}
       <div class="fg" style="margin-top:6px">
         <label class="fl">Universo de símbolos a escanear (${(screener.universe||[]).length} actualmente)</label>
         <textarea id="cfg-universe" class="fi" rows="6" style="resize:vertical;font-family:monospace;font-size:11px">${esc((screener.universe||[]).join(', '))}</textarea>
@@ -1024,19 +1187,19 @@ async function loadConfigForms(){
     `;
     document.getElementById('cfgOpportunisticPane').innerHTML = `
       <p class="muted-sm" style="margin-bottom:10px">${esc(strategyDescription('opportunistic'))}</p>
-      <div class="modal-grid">${renderConfigFields(OPPORTUNISTIC_FIELDS, screener)}</div>
+      ${renderConfigFields(OPPORTUNISTIC_FIELDS, screener)}
       <div class="violations" id="cfgOpportunisticErr"></div>
       <button class="btn-submit" onclick="saveStrategySubConfig(OPPORTUNISTIC_FIELDS, 'cfgOpportunisticErr', 'opportunistic')">Guardar Oportunista</button>
     `;
     document.getElementById('cfgLongTermPane').innerHTML = `
       <p class="muted-sm" style="margin-bottom:10px">${esc(strategyDescription('long_term'))}</p>
-      <div class="modal-grid">${renderConfigFields(LONG_TERM_FIELDS, screener)}</div>
+      ${renderConfigFields(LONG_TERM_FIELDS, screener)}
       <div class="violations" id="cfgLongTermErr"></div>
       <button class="btn-submit" onclick="saveStrategySubConfig(LONG_TERM_FIELDS, 'cfgLongTermErr', 'long_term')">Guardar Largo plazo</button>
     `;
     document.getElementById('cfgDividendPane').innerHTML = `
       <p class="muted-sm" style="margin-bottom:10px">${esc(strategyDescription('dividend'))}</p>
-      <div class="modal-grid">${renderConfigFields(DIVIDEND_FIELDS, screener)}</div>
+      ${renderConfigFields(DIVIDEND_FIELDS, screener)}
       <div class="violations" id="cfgDividendErr"></div>
       <button class="btn-submit" onclick="saveStrategySubConfig(DIVIDEND_FIELDS, 'cfgDividendErr', 'dividend')">Guardar Dividendos</button>
     `;
@@ -1454,6 +1617,18 @@ function strategyDescription(strategyId){
   return strat ? strat.description : '';
 }
 
+// Item C: en vez de mostrar las 4 estrategias siempre, resalta el score de la
+// estrategia activa y manda el resto a un popover ("ver N más") -- el dato
+// secundario dejaba de competir visualmente con el que de verdad importa al
+// mirar el ranking.
+function scoreBadgeHtml(id, value, highlightId){
+  const label = esc(strategyShortLabel(id));
+  const strat = STRATEGIES.find(s => s.id === id);
+  const title = strat ? esc(strat.name) : label;
+  const activeCls = id === highlightId ? ' active' : '';
+  return `<span class="score-badge${activeCls}" title="${title}">${label} <b>${value != null ? value.toFixed(1) : '—'}</b></span>`;
+}
+
 function scoresCellHtml(r){
   const scores = r.scores || {};
   const ids = STRATEGIES.length ? STRATEGIES.map(s => s.id) : [currentStrategyId];
@@ -1461,17 +1636,53 @@ function scoresCellHtml(r){
   // de la estrategia ganadora (r.winning_strategy_id), asi que el badge a
   // resaltar es ese en vez de currentStrategyId.
   const highlightId = currentStrategyId === 'general' ? r.winning_strategy_id : currentStrategyId;
-  return `<div class="scores-cell">${ids.map(id => {
-    // El score de la estrategia resaltada viene siempre de r.score (la fuente
-    // primaria de /api/signals/scan); el resto viene del merge de
-    // /api/signals/scan/all, que puede no haber resuelto todavia.
-    const value = id === highlightId ? r.score : scores[id];
-    const label = esc(strategyShortLabel(id));
-    const strat = STRATEGIES.find(s => s.id === id);
-    const title = strat ? esc(strat.name) : label;
-    const activeCls = id === highlightId ? ' active' : '';
-    return `<span class="score-badge${activeCls}" title="${title}">${label} <b>${value != null ? value.toFixed(1) : '—'}</b></span>`;
-  }).join('')}</div>`;
+  const others = ids.filter(id => id !== highlightId);
+  // El score de la estrategia resaltada viene siempre de r.score (la fuente
+  // primaria de /api/signals/scan); el resto viene del merge de
+  // /api/signals/scan/all, que puede no haber resuelto todavia.
+  const highlightHtml = highlightId
+    ? scoreBadgeHtml(highlightId, r.score, highlightId)
+    : ids.map(id => scoreBadgeHtml(id, scores[id], highlightId)).join('');
+  const moreBtn = others.length
+    ? `<button type="button" class="score-more-btn" onclick="event.stopPropagation();toggleScorePopover(event,'${esc(r.symbol)}')">ver ${others.length} más</button>`
+    : '';
+  return `<div class="scores-cell">${highlightHtml}${moreBtn}</div>`;
+}
+
+let scorePopoverEl = null;
+function ensureScorePopoverEl(){
+  if(!scorePopoverEl){
+    scorePopoverEl = document.createElement('div');
+    scorePopoverEl.className = 'score-popover';
+    document.body.appendChild(scorePopoverEl);
+    document.addEventListener('click', (ev) => {
+      if(!ev.target.closest('.score-popover') && !ev.target.closest('.score-more-btn')) closeScorePopover();
+    });
+    document.addEventListener('scroll', closeScorePopover, true);
+  }
+  return scorePopoverEl;
+}
+function closeScorePopover(){
+  if(scorePopoverEl) scorePopoverEl.classList.remove('show');
+}
+function toggleScorePopover(ev, symbol){
+  const el = ensureScorePopoverEl();
+  if(el.classList.contains('show') && el.dataset.symbol === symbol){
+    closeScorePopover();
+    return;
+  }
+  const r = lastSignals[symbol];
+  if(!r) return;
+  const scores = r.scores || {};
+  const ids = STRATEGIES.length ? STRATEGIES.map(s => s.id) : [currentStrategyId];
+  const highlightId = currentStrategyId === 'general' ? r.winning_strategy_id : currentStrategyId;
+  const others = ids.filter(id => id !== highlightId);
+  el.innerHTML = others.map(id => scoreBadgeHtml(id, scores[id], highlightId)).join('');
+  el.dataset.symbol = symbol;
+  el.classList.add('show');
+  const rect = ev.target.getBoundingClientRect();
+  el.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 160)) + 'px';
+  el.style.top = (rect.bottom + 4) + 'px';
 }
 
 function renderSignalsTable(){
@@ -1485,7 +1696,7 @@ function renderSignalsTable(){
   const visible = filtered.slice(0, signalsDisplayCount);
   let rowsHtml = visible.map(r => `
         <tr>
-          <td><b>${esc(r.symbol)}</b>${r.is_hot ? ' <span class="badge-live" title="Precio en vivo via streaming de IBKR">en vivo</span>' : ''}${currentStrategyId === 'general' && r.winning_strategy_id ? ` <span class="via-strategy">vía ${esc(strategyName(r.winning_strategy_id))}</span>` : ''}${r.passes_filters ? '' : ' <span class="badge-fail" title="No cumple todos los filtros configurados para esta estrategia. Ver más para el detalle.">no pasa filtros</span>'}<br><span class="price-age" data-price-as-of="${r.price_as_of || ''}" title="Hace cuánto se actualizó este precio (${r.price_as_of ? new Date(r.price_as_of).toLocaleString() : 'sin dato'})">🕐 ${fmtAge(r.price_as_of)}</span></td>
+          <td><b>${esc(r.symbol)}</b>${r.is_hot ? ' <span class="badge-tag badge-live" title="Precio en vivo via streaming de IBKR">en vivo</span>' : ''}${currentStrategyId === 'general' && r.winning_strategy_id ? ` <span class="via-strategy">vía ${esc(strategyName(r.winning_strategy_id))}</span>` : ''}${r.passes_filters ? '' : ' <span class="badge-tag badge-fail" title="No cumple todos los filtros configurados para esta estrategia. Ver más para el detalle.">no pasa filtros</span>'}<br><span class="price-age" data-price-as-of="${r.price_as_of || ''}" title="Hace cuánto se actualizó este precio (${r.price_as_of ? new Date(r.price_as_of).toLocaleString() : 'sin dato'})">🕐 ${fmtAge(r.price_as_of)}</span></td>
           <td>${esc(r.sector || '—')}</td>
           <td>${scoresCellHtml(r)}</td>
           <td>${fmtUsd(r.last_price)}</td>
@@ -1748,9 +1959,25 @@ async function refreshSectors(symbols=null){
 
 let signalsChart = null;
 
+// Item L: el color de cada barra ahora distingue 3 estados en vez de 2 --
+// las que tienen streaming en vivo (is_hot) se destacan en verde, ya que son
+// las que de verdad se están siguiendo en tiempo real -- con una leyenda
+// manual abajo (el gráfico no usa dataset por color, así que el legend
+// automático de Chart.js no sirve para esto).
+function barColorFor(r){
+  if(r.is_hot && r.passes_filters) return THEME.green;
+  if(r.passes_filters) return THEME.primary;
+  return THEME.muted;
+}
+
 function renderSignalsChart(results){
   const wrap = document.getElementById('signalsChartWrap');
-  if(!results.length){ wrap.style.display = 'none'; return; }
+  if(!results.length){
+    wrap.style.display = 'none';
+    const oldLegend = document.getElementById('signalsChartLegend');
+    if(oldLegend) oldLegend.style.display = 'none';
+    return;
+  }
   wrap.style.display = 'block';
   const sorted = [...results].sort((a, b) => b.score - a.score);
   if(signalsChart) signalsChart.destroy();
@@ -1758,7 +1985,7 @@ function renderSignalsChart(results){
     type: 'bar',
     data: {
       labels: sorted.map(r => r.symbol),
-      datasets: [{ label: 'Score', data: sorted.map(r => r.score), backgroundColor: sorted.map(r => r.passes_filters ? THEME.primary : THEME.muted) }],
+      datasets: [{ label: 'Score', data: sorted.map(r => r.score), backgroundColor: sorted.map(barColorFor) }],
     },
     options: {
       indexAxis: 'y',
@@ -1766,6 +1993,18 @@ function renderSignalsChart(results){
       plugins: { legend: { display: false }, title: { display: true, text: 'Ranking de señales por score', font: { size: 11 } } },
     },
   });
+  let legend = document.getElementById('signalsChartLegend');
+  if(!legend){
+    legend = document.createElement('div');
+    legend.id = 'signalsChartLegend';
+    legend.className = 'muted-sm';
+    legend.style.marginTop = '6px';
+    wrap.insertAdjacentElement('afterend', legend);
+  }
+  legend.style.display = 'block';
+  legend.innerHTML = `<span style="color:${THEME.green}">●</span> en vivo y pasa filtros &nbsp;
+    <span style="color:${THEME.primary}">●</span> pasa filtros &nbsp;
+    <span style="color:${THEME.muted}">●</span> no pasa filtros`;
 }
 
 // Unica estrategia que exige tendencia alcista para pasar sus filtros (ver
@@ -2071,6 +2310,86 @@ async function refreshAll(){
   await refreshFunds();
 }
 
+// --- A: scrollspy de la nav por secciones ---
+function setupScrollspy(){
+  const links = Array.from(document.querySelectorAll('.section-nav a'));
+  const sections = links.map(a => document.getElementById(a.getAttribute('href').slice(1))).filter(Boolean);
+  if(!sections.length) return;
+  const setActive = (id) => {
+    links.forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + id));
+  };
+  const observer = new IntersectionObserver((entries) => {
+    const visible = entries.filter(e => e.isIntersecting);
+    if(visible.length) setActive(visible[0].target.id);
+  }, { rootMargin: '-54px 0px -70% 0px', threshold: 0 });
+  sections.forEach(s => observer.observe(s));
+  links.forEach(a => a.addEventListener('click', () => setActive(a.getAttribute('href').slice(1))));
+}
+
+// --- H: tooltips propios (reemplazan el title= nativo lento, sin tocar el markup) ---
+let tooltipEl = null;
+function ensureTooltipEl(){
+  if(!tooltipEl){
+    tooltipEl = document.createElement('div');
+    tooltipEl.className = 'tooltip-bubble';
+    document.body.appendChild(tooltipEl);
+  }
+  return tooltipEl;
+}
+function positionTooltip(x, y){
+  const el = tooltipEl;
+  const margin = 10;
+  el.style.left = '0px'; el.style.top = '0px';
+  const rect = el.getBoundingClientRect();
+  let left = Math.min(x, window.innerWidth - rect.width - margin);
+  let top = y + 18;
+  if(top + rect.height + margin > window.innerHeight) top = y - rect.height - 10;
+  el.style.left = Math.max(margin, left) + 'px';
+  el.style.top = Math.max(margin, top) + 'px';
+}
+function showTooltip(target, x, y){
+  let text = target.getAttribute('data-tip-text');
+  if(!text){
+    text = target.getAttribute('title');
+    if(!text) return;
+    target.setAttribute('data-tip-text', text);
+    target.removeAttribute('title');
+  }
+  const el = ensureTooltipEl();
+  el.textContent = text;
+  el.classList.add('show');
+  positionTooltip(x, y);
+}
+function hideTooltip(){
+  if(tooltipEl) tooltipEl.classList.remove('show');
+  document.querySelectorAll('[data-tip-text]').forEach(el => {
+    el.setAttribute('title', el.getAttribute('data-tip-text'));
+    el.removeAttribute('data-tip-text');
+  });
+}
+function setupTooltips(){
+  document.addEventListener('mouseover', (ev) => {
+    const target = ev.target.closest('[title]');
+    if(target) showTooltip(target, ev.clientX, ev.clientY);
+  });
+  document.addEventListener('mousemove', (ev) => {
+    const target = ev.target.closest('[data-tip-text]');
+    if(target) positionTooltip(ev.clientX, ev.clientY);
+  });
+  document.addEventListener('mouseout', (ev) => {
+    const target = ev.target.closest('[data-tip-text]');
+    if(target && !target.contains(ev.relatedTarget)) hideTooltip();
+  });
+  document.addEventListener('scroll', hideTooltip, true);
+}
+
+// --- G: formulario de "crear fondo" colapsado por defecto ---
+function toggleFundCreateForm(){
+  const body = document.getElementById('fundCreateBody');
+  body.classList.toggle('show');
+  document.getElementById('fundCreateChevron').textContent = body.classList.contains('show') ? '▴' : '▾';
+}
+
 function boot(){
   onTypeChange();
   refreshAll();
@@ -2079,6 +2398,8 @@ function boot(){
   refreshFunds();
   loadStrategies();
   connectWs();
+  setupScrollspy();
+  setupTooltips();
 }
 
 boot();

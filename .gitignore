@@ -7,6 +7,8 @@ __pycache__/
 # Trading dashboard runtime/secret files
 trading-dashboard/backend/.env
 trading-dashboard/backend/audit.db
+trading-dashboard/backend/audit.db-shm
+trading-dashboard/backend/audit.db-wal
 trading-dashboard/backend/rules.local.yaml
 trading-dashboard/backend/state.json
 trading-dashboard/backend/funds.json
