@@ -4,6 +4,8 @@ from typing import Optional
 
 import yfinance as yf
 
+from .market_data import _fetch_with_timeout
+
 # Mapeo estatico ticker -> sector GICS (uno de los 11 sectores estandar).
 # Estatico (no se consulta por red) a proposito: RulesEngine.evaluate() es
 # sincrono y sin llamadas de red por diseno (ver rules.py), y el limite de
@@ -693,7 +695,7 @@ def refresh_sector(symbol: str) -> Optional[str]:
     sincrono que deba permanecer libre de red."""
     key = symbol.upper()
     try:
-        info = yf.Ticker(symbol).get_info() or {}
+        info = _fetch_with_timeout(lambda: yf.Ticker(symbol).get_info()) or {}
     except Exception:
         info = {}
     raw_sector = info.get("sector")

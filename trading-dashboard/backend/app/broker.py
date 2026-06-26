@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from ib_async import IB, LimitOrder, MarketOrder, Stock, StopOrder, Ticker
 
 from .models import AccountSummary, OrderRequest, OrderType, Position, Side
+
+logger = logging.getLogger(__name__)
 
 
 def _to_ib_symbol(symbol: str) -> str:
@@ -178,7 +181,8 @@ class IBKRBroker:
         # violations de IBKR a medida que crece la cantidad de posiciones.
         try:
             tickers = await self.ib.reqTickersAsync(*(p.contract for p in positions))
-        except Exception:
+        except Exception as exc:
+            logger.warning("No se pudo pedir precios de mercado para las posiciones abiertas: %s", exc)
             tickers = []
         price_by_conid: dict[int, float] = {}
         for t in tickers:
@@ -274,7 +278,8 @@ class IBKRBroker:
             return {}
         try:
             tickers = await self.ib.reqTickersAsync(*contracts)
-        except Exception:
+        except Exception as exc:
+            logger.warning("No se pudo pedir snapshot de precios para %s: %s", symbols, exc)
             return {}
         out: dict[str, float] = {}
         for t in tickers:

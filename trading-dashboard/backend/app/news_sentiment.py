@@ -8,6 +8,7 @@ import yfinance as yf
 from pydantic import BaseModel
 
 from .config import settings
+from .market_data import _fetch_with_timeout
 from .models import SignalResult
 
 # El sentimiento de un titular no cambia de un minuto a otro, y a diferencia
@@ -49,7 +50,7 @@ def _fetch_headlines(symbol: str) -> list[str]:
     formalmente y puede variar entre versiones de yfinance; probar ambos
     evita perder todos los titulares por un cambio de formato silencioso."""
     try:
-        items = yf.Ticker(symbol).news or []
+        items = _fetch_with_timeout(lambda: yf.Ticker(symbol).news) or []
     except Exception:
         return []
     headlines: list[str] = []

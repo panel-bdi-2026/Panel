@@ -40,6 +40,13 @@ from .strategies import STRATEGY_CLASSES, reload_strategy_registry
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
 
+# uvicorn (lanzado via su CLI, ver deploy/systemd/trading-dashboard.service) solo
+# configura sus propios loggers ("uvicorn", "uvicorn.access", etc.), no el root
+# logger. Sin este basicConfig, logger.info() de este modulo y de app/broker.py
+# no llegarian a ningun handler (el root logger por defecto solo emite WARNING+
+# via su lastResort handler) y quedarian invisibles en journalctl pese a llamar
+# al logger correctamente.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 # Este modulo asume UN SOLO proceso worker. screener_config, state, clients,
@@ -250,9 +257,31 @@ async def _broadcast(payload: dict) -> None:
             clients.remove(ws)
 
 
+def _sync_connection_state() -> None:
+    """Sincroniza state["connected"] con el estado real del socket de IBKR.
+
+    Sin esto, una desconexion a mitad de sesion (TWS/IB Gateway cerrado, caida
+    de red) dejaba state["connected"] en True para siempre: lo unico que lo
+    escribia era el connect/reconnect inicial y el endpoint /api/mode, nunca
+    un chequeo periodico. Como casi todo el resto del backend (auto-trading,
+    auto-exit, trailing stop, hot-set, escaneo de señales) usa ese flag como
+    circuit breaker antes de llamar al broker, quedaba "conectado" en el
+    estado compartido mucho despues de que la conexion real habia muerto."""
+    actually_connected = broker.is_connected()
+    if actually_connected == state["connected"]:
+        return
+    state["connected"] = actually_connected
+    if actually_connected:
+        logger.warning("Conexion a IBKR restablecida (detectado en broadcast_loop)")
+    else:
+        logger.warning("Conexion a IBKR perdida a mitad de sesion (detectado en broadcast_loop)")
+        audit.record("ibkr_disconnected", {}, {})
+
+
 async def _broadcast_loop() -> None:
     while True:
         await asyncio.sleep(settings.poll_interval_seconds)
+        _sync_connection_state()
         if not clients or not state["connected"]:
             continue
         try:
@@ -265,7 +294,7 @@ async def _broadcast_loop() -> None:
             # No se reenvia str(exc) crudo a todos los clientes conectados: el
             # detalle (puede incluir trazas/info interna de ib_async) queda en
             # el log del servidor, el cliente solo recibe un mensaje generico.
-            print(f"[WARN] Error en broadcast_loop al leer cuenta/posiciones: {exc}")
+            logger.warning("Error en broadcast_loop al leer cuenta/posiciones: %s", exc)
             payload = {"type": "error", "message": "No se pudieron obtener los datos de cuenta/posiciones."}
         await _broadcast(payload)
 
@@ -661,14 +690,15 @@ async def _risk_monitor_loop() -> None:
         try:
             account = await broker.get_account_summary()
         except Exception:
+            logger.exception("Kill switch: no se pudo leer el resumen de cuenta, se reintenta en el proximo ciclo")
             continue
         if account.daily_pnl_pct <= -abs(rules_config.daily_loss_limit_pct):
             state["halted"] = True
             _persist_state()
             audit.record("auto_halt_daily_loss_limit", {}, {"daily_pnl_pct": account.daily_pnl_pct})
-            print(
-                f"[KILL SWITCH] Perdida diaria {account.daily_pnl_pct:.2f}% "
-                "alcanzo el limite. Trading pausado automaticamente."
+            logger.warning(
+                "[KILL SWITCH] Perdida diaria %.2f%% alcanzo el limite. Trading pausado automaticamente.",
+                account.daily_pnl_pct,
             )
 
 
@@ -943,7 +973,7 @@ async def _run_hot_set_cycle() -> None:
     try:
         _, _, ranked = await _scan_general(force=False)
     except Exception as exc:
-        print(f"[WARN] No se pudo recalcular el hot-set del radar en vivo: {exc}")
+        logger.warning("No se pudo recalcular el hot-set del radar en vivo: %s", exc)
         return
     cap = max(0, screener_config.live_hot_symbols_cap)
     new_hot = {r["symbol"] for r in ranked[:cap]}
@@ -953,7 +983,7 @@ async def _run_hot_set_cycle() -> None:
         try:
             await broker.stream_subscribe(list(to_add))
         except Exception as exc:
-            print(f"[WARN] No se pudo suscribir streaming de IBKR para {sorted(to_add)}: {exc}")
+            logger.warning("No se pudo suscribir streaming de IBKR para %s: %s", sorted(to_add), exc)
             return
     if to_remove:
         broker.stream_unsubscribe(list(to_remove))
@@ -993,7 +1023,7 @@ async def _run_price_rotation_cycle() -> None:
     try:
         prices = await broker.get_snapshot_prices(batch)
     except Exception as exc:
-        print(f"[WARN] Error al rotar precios en vivo del radar: {exc}")
+        logger.warning("Error al rotar precios en vivo del radar: %s", exc)
         return
     _live_prices.update(prices)
     now = datetime.now(timezone.utc)
@@ -1023,8 +1053,8 @@ async def _restore_persisted_mode() -> None:
     if not state["connected"] or state["mode"] == settings.trading_mode:
         return
     if state["mode"] == "live" and not settings.live_confirm:
-        print(
-            "[WARN] El estado persistido indica modo live pero LIVE_CONFIRM no "
+        logger.warning(
+            "El estado persistido indica modo live pero LIVE_CONFIRM no "
             "esta definido en este arranque. Se mantiene modo paper."
         )
         state["mode"] = settings.trading_mode
@@ -1041,12 +1071,12 @@ async def _restore_persisted_mode() -> None:
         if state["mode"] == "live":
             state["halted"] = True
         _persist_state()
-        print(f"[INFO] Modo restaurado desde estado persistido: {state['mode']}")
+        logger.info("Modo restaurado desde estado persistido: %s", state["mode"])
     except IBKRConnectionError as exc:
         state["connected"] = False
         state["mode"] = settings.trading_mode
         _persist_state()
-        print(f"[WARN] No se pudo restaurar el modo persistido tras el reinicio: {exc}")
+        logger.warning("No se pudo restaurar el modo persistido tras el reinicio: %s", exc)
 
 
 @asynccontextmanager
@@ -1056,7 +1086,7 @@ async def lifespan(app: FastAPI):
         state["connected"] = True
     except IBKRConnectionError as exc:
         state["connected"] = False
-        print(f"[WARN] {exc}")
+        logger.warning("%s", exc)
     await _restore_persisted_mode()
     task = asyncio.create_task(_broadcast_loop())
     risk_task = asyncio.create_task(_risk_monitor_loop())
@@ -1422,7 +1452,7 @@ async def scan_signals(force: bool = False, strategy_id: str | None = None, _: N
         else:
             as_of, cached, results = await _get_or_scan(resolved_id, force)
     except Exception as exc:
-        print(f"[WARN] Error al escanear el mercado ({resolved_id}): {exc}")
+        logger.warning("Error al escanear el mercado (%s): %s", resolved_id, exc)
         raise HTTPException(status_code=502, detail="Error al escanear el mercado. Revisa los logs del servidor.")
     return {
         "as_of": as_of,
@@ -1450,7 +1480,7 @@ async def scan_signals_all_strategies(force: bool = False, _: None = Depends(req
         try:
             _, _, results = await _get_or_scan(strategy_id, force)
         except Exception as exc:
-            print(f"[WARN] Error al escanear el mercado ({strategy_id}): {exc}")
+            logger.warning("Error al escanear el mercado (%s): %s", strategy_id, exc)
             raise HTTPException(
                 status_code=502, detail=f"Error al escanear el mercado ({strategy_id}). Revisa los logs del servidor."
             )
