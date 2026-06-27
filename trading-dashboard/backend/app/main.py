@@ -1124,6 +1124,17 @@ if settings.allowed_origins:
     )
 
 
+@app.get("/healthz")
+def healthz():
+    """Liveness check sin autenticacion: solo confirma que el proceso
+    responde, sin exponer ningun dato de cuenta/posiciones/ordenes (eso
+    requiere API key, ver require_api_key). Pensado para un monitor externo
+    (uptime checks, watchdog) o un readiness probe -- no es informacion
+    sensible, asi que dejarlo sin autenticar no es un vector de fuga de
+    datos como lo seria cualquier otro endpoint de /api."""
+    return {"status": "ok"}
+
+
 class LoginRequest(BaseModel):
     password: str
 
@@ -1598,7 +1609,7 @@ async def backtest_strategy(strategy_id: str | None = None, _: None = Depends(re
     runner = _BACKTEST_RUNNERS[resolved_id]
     try:
         async with _market_scan_lock:
-            return await asyncio.to_thread(runner, screener_config)
+            return await asyncio.to_thread(runner, screener_config, rules_config)
     except BacktestError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except MarketDataError as exc:
@@ -1626,7 +1637,7 @@ async def backtest_strategy_walk_forward(
     runner = _WALK_FORWARD_RUNNERS[resolved_id]
     try:
         async with _market_scan_lock:
-            return await asyncio.to_thread(runner, screener_config, n_folds)
+            return await asyncio.to_thread(runner, screener_config, n_folds, rules_config)
     except BacktestError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except MarketDataError as exc:

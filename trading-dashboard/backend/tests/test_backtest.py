@@ -713,7 +713,10 @@ def test_regime_filter_is_independent_per_strategy(monkeypatch):
     assert summary.total_trades > 0
 
 
-def _trade(symbol, entry_day, exit_day, return_pct=1.0, exit_reason="max_holding_days", entry_atr_pct=None):
+def _trade(
+    symbol, entry_day, exit_day, return_pct=1.0, exit_reason="max_holding_days",
+    entry_atr_pct=None, stop_loss_pct=None,
+):
     from datetime import datetime
     from app.models import BacktestTrade
     return BacktestTrade(
@@ -725,6 +728,7 @@ def _trade(symbol, entry_day, exit_day, return_pct=1.0, exit_reason="max_holding
         return_pct=return_pct,
         exit_reason=exit_reason,
         entry_atr_pct=entry_atr_pct,
+        stop_loss_pct=stop_loss_pct,
     )
 
 
@@ -954,6 +958,171 @@ def test_vol_weighting_overweights_lower_volatility_winner_in_summary_stats():
     weighted = _compute_summary_stats(trades, top_n=2, bench_bars=bench_bars, vol_weighting_enabled=True)
     assert equal.strategy_cumulative_return_pct == pytest.approx(-0.25)
     assert weighted.strategy_cumulative_return_pct == pytest.approx(5.3)
+
+
+def test_simulate_symbol_populates_stop_loss_pct_from_entry_atr():
+    # Mismo escenario que test_stop_loss_triggers_on_intraday_low_not_close:
+    # stop_loss_pct debe quedar en stop_loss_atr_multiplier * entry_atr_pct,
+    # calculado una sola vez al momento de la entrada.
+    from app.backtest import _simulate_symbol
+
+    closes = [100.0 + i for i in range(30)]
+    bars = _bars(closes)
+
+    cfg = ScreenerConfig(
+        universe=["MOM"],
+        benchmark_symbol="SPY",
+        sma_fast=3,
+        sma_slow=5,
+        momentum_lookback_days=5,
+        momentum_short_days=2,
+        momentum_12_1_lookback_days=5,
+        momentum_12_1_skip_days=2,
+        rsi_period=3,
+        rsi_min=0,
+        rsi_max=100,
+        atr_period=3,
+        stop_loss_atr_multiplier=1.5,
+        max_holding_days=10,
+        regime_filter_enabled=False,
+        near_high_filter_enabled=False,
+        top_n=10,
+    )
+    score_series = pd.Series(1000.0, index=bars.index)
+    regime_ok = pd.Series(True, index=bars.index)
+
+    trades = _simulate_symbol("MOM", bars, cfg, score_series, regime_ok)
+
+    assert trades[0].exit_reason == "max_holding_days"
+    assert trades[0].entry_atr_pct is not None
+    assert trades[0].stop_loss_pct == pytest.approx(
+        cfg.stop_loss_atr_multiplier * trades[0].entry_atr_pct
+    )
+
+
+def test_simulate_symbol_opportunistic_populates_stop_loss_pct_from_entry_atr():
+    # Mismo escenario que test_opportunistic_stop_loss_triggers_on_intraday_
+    # low_not_close: stop_loss_pct debe usar opp.stop_loss_atr_multiplier (no
+    # cfg.stop_loss_atr_multiplier, que es el de Momentum).
+    from app.backtest import _simulate_symbol_opportunistic
+
+    bars = _opportunistic_uptrend_bars()
+    bars.loc[bars.index[264], "Low"] = 50.0
+    cfg = _opportunistic_cfg(max_holding_days=30)
+    opp = cfg.opportunistic
+
+    score_series = pd.Series(opp.backtest_score_entry_threshold - 1, index=bars.index)
+    score_series.iloc[262:] = opp.backtest_score_entry_threshold + 1
+
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series, pd.Series(True, index=bars.index))
+
+    assert trades[0].entry_atr_pct is not None
+    assert trades[0].stop_loss_pct == pytest.approx(
+        opp.stop_loss_atr_multiplier * trades[0].entry_atr_pct
+    )
+
+
+def test_risk_based_trade_weight_dominated_by_risk_formula():
+    from app.backtest import _risk_based_trade_weight
+    from app.rules import RulesConfig
+
+    # weight_by_risk = 1/5 = 0.2, bien por debajo de los otros dos clamps
+    # (0.5 y 10): gana el formula de riesgo.
+    rules_config = RulesConfig(risk_per_trade_pct=1, max_position_pct_of_equity=50, max_order_value_usd=1_000_000)
+    trade = _trade("A", 1, 2, stop_loss_pct=5.0)
+    weight = _risk_based_trade_weight(trade, prior_equity_factor=1.0, assumed_capital_usd=100_000, rules_config=rules_config)
+    assert weight == pytest.approx(0.2)
+
+
+def test_risk_based_trade_weight_dominated_by_max_position_pct():
+    from app.backtest import _risk_based_trade_weight
+    from app.rules import RulesConfig
+
+    # weight_by_risk = 10/2 = 5.0 y weight_by_order_value = 10, ambos muy por
+    # encima de max_position_pct_of_equity/100 = 0.08: gana ese clamp.
+    rules_config = RulesConfig(risk_per_trade_pct=10, max_position_pct_of_equity=8, max_order_value_usd=1_000_000)
+    trade = _trade("A", 1, 2, stop_loss_pct=2.0)
+    weight = _risk_based_trade_weight(trade, prior_equity_factor=1.0, assumed_capital_usd=100_000, rules_config=rules_config)
+    assert weight == pytest.approx(0.08)
+
+
+def test_risk_based_trade_weight_dominated_by_max_order_value():
+    from app.backtest import _risk_based_trade_weight
+    from app.rules import RulesConfig
+
+    # weight_by_risk = 5.0 y weight_by_position_pct = 0.5 quedan muy por
+    # encima de max_order_value_usd/equity_usd = 5000/100_000 = 0.05: gana
+    # ese clamp.
+    rules_config = RulesConfig(risk_per_trade_pct=10, max_position_pct_of_equity=50, max_order_value_usd=5_000)
+    trade = _trade("A", 1, 2, stop_loss_pct=2.0)
+    weight = _risk_based_trade_weight(trade, prior_equity_factor=1.0, assumed_capital_usd=100_000, rules_config=rules_config)
+    assert weight == pytest.approx(0.05)
+
+
+def test_risk_based_trade_weight_zero_when_equity_non_positive():
+    from app.backtest import _risk_based_trade_weight
+    from app.rules import RulesConfig
+
+    rules_config = RulesConfig()
+    trade = _trade("A", 1, 2, stop_loss_pct=5.0)
+    weight = _risk_based_trade_weight(trade, prior_equity_factor=0.0, assumed_capital_usd=100_000, rules_config=rules_config)
+    assert weight == 0.0
+
+
+def test_risk_based_trade_weight_zero_when_stop_loss_pct_missing():
+    from app.backtest import _risk_based_trade_weight
+    from app.rules import RulesConfig
+
+    rules_config = RulesConfig()
+    trade = _trade("A", 1, 2, stop_loss_pct=None)
+    weight = _risk_based_trade_weight(trade, prior_equity_factor=1.0, assumed_capital_usd=100_000, rules_config=rules_config)
+    assert weight == 0.0
+
+
+def test_risk_based_sizing_falls_back_to_equal_weight_when_stop_loss_pct_missing():
+    from app.backtest import _compute_summary_stats
+    from app.rules import RulesConfig
+
+    # Una de las dos operaciones no tiene stop_loss_pct (ej. trade sintetico
+    # o dato historico previo a este campo): todo el conjunto cae a
+    # equiponderado, misma filosofia "todo o nada" que vol_weighting_enabled
+    # con entry_atr_pct faltante.
+    trades = [
+        _trade("A", 1, 2, return_pct=10.0, stop_loss_pct=5.0),
+        _trade("B", 1, 2, return_pct=-10.0, stop_loss_pct=None),
+    ]
+    bench_bars = _bench_bars_for_stats()
+    rules_config = RulesConfig()
+    equal = _compute_summary_stats(trades, top_n=2, bench_bars=bench_bars)
+    fallback = _compute_summary_stats(
+        trades, top_n=2, bench_bars=bench_bars,
+        risk_based_sizing_enabled=True, rules_config=rules_config,
+    )
+    assert fallback.strategy_cumulative_return_pct == pytest.approx(equal.strategy_cumulative_return_pct)
+
+
+def test_risk_based_sizing_changes_equity_curve_vs_equal_weight():
+    from app.backtest import _compute_summary_stats
+    from app.rules import RulesConfig
+
+    # A tiene un stop angosto (5%) y B uno 4 veces mas ancho (20%): con
+    # sizing por riesgo A queda acotado por max_position_pct_of_equity (10%
+    # de equity) y B por la formula de riesgo (1%/20% = 5% de equity) -- ya
+    # no equiponderan 50/50 como con el sizing por defecto.
+    trades = [
+        _trade("A", 1, 2, return_pct=8.0, stop_loss_pct=5.0),
+        _trade("B", 1, 2, return_pct=8.0, stop_loss_pct=20.0),
+    ]
+    bench_bars = _bench_bars_for_stats()
+    rules_config = RulesConfig(risk_per_trade_pct=1, max_position_pct_of_equity=10, max_order_value_usd=1_000_000)
+    equal = _compute_summary_stats(trades, top_n=2, bench_bars=bench_bars)
+    risk_based = _compute_summary_stats(
+        trades, top_n=2, bench_bars=bench_bars,
+        risk_based_sizing_enabled=True, rules_config=rules_config, assumed_capital_usd=100_000,
+    )
+    assert equal.strategy_cumulative_return_pct == pytest.approx(8.16)
+    assert risk_based.strategy_cumulative_return_pct == pytest.approx(1.2)
+    assert risk_based.strategy_cumulative_return_pct != equal.strategy_cumulative_return_pct
 
 
 def test_trade_alpha_pct_subtracts_benchmark_return_over_same_window():

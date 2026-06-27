@@ -229,6 +229,16 @@ class BacktestTrade(BaseModel):
     # rules.suggested_quantity) en vez de equiponderar. None si no se pudo
     # calcular (compatibilidad con datos historicos sin este campo).
     entry_atr_pct: Optional[float] = None
+    # Distancia del stop-loss INICIAL como % del precio de entrada (stop_loss_
+    # atr_multiplier * entry_atr_pct, calculado una sola vez al momento de la
+    # entrada, sin reflejar ajustes posteriores del trailing stop). Insumo de
+    # _risk_based_trade_weight en backtest.py para replicar el sizing por
+    # riesgo de RulesEngine.suggested_quantity() (rules.py) dentro del
+    # backtest: ese sizing usa el stop SUBMITIDO al colocar la orden, no uno
+    # que despues trailea. None para operaciones sinteticas de test o datos
+    # historicos guardados antes de este campo, igual criterio que
+    # entry_atr_pct.
+    stop_loss_pct: Optional[float] = None
 
 
 class EquityCurvePoint(BaseModel):

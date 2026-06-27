@@ -476,6 +476,26 @@ class ScreenerConfig(BaseModel):
     # que nunca lo tuvo.
     backtest_vol_weighting_enabled: bool = False
 
+    # Mismo problema que backtest_vol_weighting_enabled (el backtest no
+    # replica el sizing real), pero resuelto de forma exacta en vez de
+    # aproximada: si esta activo, cada posicion simulada se dimensiona con la
+    # MISMA formula que RulesEngine.suggested_quantity() (rules.py) usa en
+    # vivo -- risk_per_trade_pct de la equity simulada / distancia al stop
+    # (BacktestTrade.stop_loss_pct), acotado por max_position_pct_of_equity y
+    # por max_order_value_usd convertido a fraccion de la equity simulada ese
+    # dia (ver _risk_based_trade_weight en backtest.py) -- en vez de
+    # equiponderar o ponderar por inversa de ATR. Los 3 parametros de riesgo
+    # se leen de la config de RulesEngine YA EXISTENTE (pasada como argumento
+    # a run_backtest/run_opportunistic_backtest), no de una copia duplicada
+    # aca: asi no hay drift entre "lo que el backtest asume que se arriesga"
+    # y lo que el motor de auto-trading en vivo arriesgaria realmente. Tiene
+    # PRECEDENCIA sobre backtest_vol_weighting_enabled si los dos estan
+    # activos (es la aproximacion mas fiel a lo que en realidad se operaria).
+    # Apagado por defecto, mismo motivo que backtest_vol_weighting_enabled:
+    # cambia los numeros historicos de equity/Sharpe/drawdown de cualquier
+    # backtest ya corrido, asi que es una decision explicita del usuario.
+    backtest_risk_based_sizing_enabled: bool = False
+
     # "Core+satelite" en el backtest: por defecto, el cash no invertido cada
     # dia (1 - exposicion, ver _daily_equity_curve en backtest.py) se asume
     # quieto, sin generar nada. Si esta activo, ese cash ocioso se simula

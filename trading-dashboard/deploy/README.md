@@ -197,6 +197,17 @@ sudo systemctl enable --now trading-dashboard
 > guarda config/órdenes pendientes/locks de validación en memoria de un solo
 > proceso; con más de un worker dejarían de sincronizarse entre procesos.
 
+El unit incluye un `ExecStartPre` ([`scripts/wait_for_ibgateway.sh`](scripts/wait_for_ibgateway.sh))
+que espera a que IB Gateway acepte conexiones en `IB_HOST:IB_PORT` antes de
+arrancar uvicorn — IB Gateway puede tardar 30-90+ segundos en levantar (Xvfb +
+Java + login automático vía IBC), y el backend solo intenta conectar una vez
+al arrancar, sin reintento automático. Si todavía no está listo, el script
+falla rápido y `Restart=always`/`RestartSec` reintentan el arranque completo;
+`StartLimitIntervalSec`/`StartLimitBurst` están ajustados para soportar varios
+minutos de reintentos sin que systemd agote su budget de reinicios. No
+requiere ningún paso manual extra: el script ya viene con permiso de
+ejecución en el repo.
+
 ## Paso 6 — Acceder desde tu celular/laptop
 
 Instalá Tailscale también en tu celular/laptop (mismo login de Tailscale que

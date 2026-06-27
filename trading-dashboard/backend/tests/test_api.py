@@ -89,6 +89,15 @@ def reset_state(monkeypatch, tmp_path):
     main_module._sessions.clear()
 
 
+def test_healthz_does_not_require_api_key():
+    # A diferencia de todo lo demas bajo /api, /healthz es un liveness check
+    # publico (ver docstring en main.py): no expone datos de cuenta/broker,
+    # asi que no exige X-API-Key ni cookie de sesion.
+    resp = client.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
 # ---------------------------------------------------------------------------
 # Autenticacion por API key (require_api_key)
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from .indicators import (
 )
 from .market_data import MarketDataError, get_daily_bars, is_bars_cached
 from .models import BacktestSummary, BacktestTrade, EquityCurvePoint, WalkForwardFold, WalkForwardResult
+from .rules import RulesConfig
 from .screener_config import GROWTH_TICKERS, ScreenerConfig
 from .sector_strength import sector_relative_strength_series
 from .sectors import get_sector
@@ -381,6 +382,7 @@ def _simulate_symbol(
                 )
                 ret_pct = (exit_fill - entry_fill) / entry_fill * 100 - commission_pct
 
+                entry_atr_pct = round(entry_atr / entry_price * 100, 4) if entry_price else None
                 trade = BacktestTrade(
                     symbol=symbol,
                     entry_date=entry_date,
@@ -389,7 +391,10 @@ def _simulate_symbol(
                     exit_price=round(raw_exit_price, 2),
                     return_pct=round(ret_pct, 2),
                     exit_reason=exit_reason,
-                    entry_atr_pct=round(entry_atr / entry_price * 100, 4) if entry_price else None,
+                    entry_atr_pct=entry_atr_pct,
+                    stop_loss_pct=(
+                        round(cfg.stop_loss_atr_multiplier * entry_atr_pct, 4) if entry_atr_pct is not None else None
+                    ),
                 )
                 trades.append(trade)
                 if marks_by_trade_id is not None:
@@ -571,6 +576,7 @@ def _simulate_symbol_opportunistic(
                 )
                 ret_pct = (exit_fill - entry_fill) / entry_fill * 100 - commission_pct
 
+                entry_atr_pct = round(entry_atr / entry_price * 100, 4) if entry_price else None
                 trade = BacktestTrade(
                     symbol=symbol,
                     entry_date=entry_date,
@@ -579,7 +585,10 @@ def _simulate_symbol_opportunistic(
                     exit_price=round(raw_exit_price, 2),
                     return_pct=round(ret_pct, 2),
                     exit_reason=exit_reason,
-                    entry_atr_pct=round(entry_atr / entry_price * 100, 4) if entry_price else None,
+                    entry_atr_pct=entry_atr_pct,
+                    stop_loss_pct=(
+                        round(opp.stop_loss_atr_multiplier * entry_atr_pct, 4) if entry_atr_pct is not None else None
+                    ),
                 )
                 trades.append(trade)
                 if marks_by_trade_id is not None:
@@ -692,7 +701,7 @@ def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTra
     return all_trades, marks_by_trade_id, bench_bars
 
 
-def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
+def run_opportunistic_backtest(cfg: ScreenerConfig, rules_config: RulesConfig | None = None) -> BacktestSummary:
     """Backtest de la estrategia Oportunista, en paralelo a run_backtest
     (Momentum). Misma estructura y mismas simplificaciones documentadas ahi
     (curva de equity diaria real con cupo top_n, sin supervivencia historica
@@ -703,10 +712,15 @@ def run_opportunistic_backtest(cfg: ScreenerConfig) -> BacktestSummary:
         all_trades, cfg.top_n, bench_bars, marks_by_trade_id,
         cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
         cfg.deflated_sharpe_num_trials,
+        risk_based_sizing_enabled=cfg.backtest_risk_based_sizing_enabled,
+        rules_config=rules_config,
+        assumed_capital_usd=cfg.backtest_assumed_capital_usd,
     )
 
 
-def run_opportunistic_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 3) -> WalkForwardResult:
+def run_opportunistic_backtest_walk_forward(
+    cfg: ScreenerConfig, n_folds: int = 3, rules_config: RulesConfig | None = None
+) -> WalkForwardResult:
     """Validacion out-of-sample de la estrategia Oportunista. Ver docstring de
     run_backtest_walk_forward (Momentum) para el alcance y las limitaciones:
     misma logica, solo cambia la simulacion subyacente."""
@@ -714,6 +728,9 @@ def run_opportunistic_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 
     return _build_walk_forward_result(
         all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds,
         cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
+        risk_based_sizing_enabled=cfg.backtest_risk_based_sizing_enabled,
+        rules_config=rules_config,
+        assumed_capital_usd=cfg.backtest_assumed_capital_usd,
     )
 
 
@@ -790,6 +807,53 @@ def _trade_weights(all_trades: list[BacktestTrade], top_n: int, vol_weighting_en
     return weights
 
 
+def _risk_based_trade_weight(
+    trade: BacktestTrade,
+    prior_equity_factor: float,
+    assumed_capital_usd: float,
+    rules_config: RulesConfig,
+) -> float:
+    """Fraccion de la equity simulada que esta operacion ocuparia si se
+    hubiera dimensionado con la MISMA formula que RulesEngine.suggested_
+    quantity() (rules.py) usa en vivo, expresada como peso (fraccion de
+    equity) en vez de cantidad de acciones -- el backtest ya trabaja en %
+    continuos, nunca en acciones discretas, asi que se omite unicamente el
+    math.floor() final a acciones enteras de la version en vivo.
+
+    Mismos 3 ingredientes, derivados de forma que entry_price se cancela:
+      - weight_by_risk = risk_per_trade_pct / trade.stop_loss_pct (ambos en
+        %, ya que risk_budget_usd / (stop_loss_pct/100 * entry_price) /
+        equity_usd = risk_per_trade_pct / stop_loss_pct).
+      - weight_by_position_pct = max_position_pct_of_equity / 100 (igual que
+        en vivo con current_position_qty=0: el backtest nunca tiene mas de
+        una posicion abierta por simbolo a la vez).
+      - weight_by_order_value = max_order_value_usd / equity_usd.
+    El minimo de los tres (nunca negativo) es el mismo "el clamp mas
+    restrictivo gana" que la version en vivo.
+
+    prior_equity_factor es la equity simulada AL CIERRE DEL DIA ANTERIOR (no
+    de hoy: la entrada se simula a la apertura, antes de conocerse el cierre
+    de hoy -- usar el cierre de hoy para dimensionar la entrada de hoy seria
+    mirar al futuro, igual motivo que el fill de entrada al open del dia
+    siguiente a la senal). assumed_capital_usd convierte ese factor (1.0 =
+    capital inicial) a un monto en dolares, unico punto donde
+    max_order_value_usd (que esta en USD, no en %) se vuelve comparable.
+
+    0.0 si la equity simulada ya cayo a 0 o por debajo (guard numerico
+    minimo contra division por cero en escenarios extremos, no logica de
+    producto nueva) o si stop_loss_pct no esta definido o no es positivo
+    (deberia evitarse aguas arriba por el chequeo de "todas las operaciones
+    tienen stop_loss_pct" antes de optar por este camino, ver
+    _daily_equity_curve)."""
+    equity_usd = prior_equity_factor * assumed_capital_usd
+    if equity_usd <= 0 or trade.stop_loss_pct is None or trade.stop_loss_pct <= 0:
+        return 0.0
+    weight_by_risk = rules_config.risk_per_trade_pct / trade.stop_loss_pct
+    weight_by_position_pct = rules_config.max_position_pct_of_equity / 100
+    weight_by_order_value = rules_config.max_order_value_usd / equity_usd
+    return max(0.0, min(weight_by_risk, weight_by_position_pct, weight_by_order_value))
+
+
 def _daily_equity_curve(
     all_trades: list[BacktestTrade],
     top_n: int,
@@ -797,6 +861,9 @@ def _daily_equity_curve(
     marks_by_trade_id: dict | None = None,
     invest_idle_cash_in_benchmark: bool = False,
     vol_weighting_enabled: bool = False,
+    risk_based_sizing_enabled: bool = False,
+    rules_config: RulesConfig | None = None,
+    assumed_capital_usd: float = 100_000.0,
 ) -> tuple[list[EquityCurvePoint], list[float], float, float]:
     """Construye la curva de equity dia por dia (no solo en cada evento de
     salida): cada operacion abierta aporta un retorno NO realizado, ponderado
@@ -847,10 +914,30 @@ def _daily_equity_curve(
     sizing por riesgo ATR que usa el sizing en vivo (rules.suggested_quantity),
     en vez de equiponderar una cartera que en la realidad nunca se opera asi.
 
+    Si risk_based_sizing_enabled esta activo Y rules_config esta presente Y
+    TODAS las operaciones tienen stop_loss_pct definido (mismo criterio
+    "todo o nada" que vol_weighting_enabled con entry_atr_pct: una sola
+    operacion sin el dato, tipicamente sintetica de test, hace caer a
+    vol_weighting_enabled/equiponderado para el conjunto completo en vez de
+    mezclar criterios de sizing distintos dentro de la misma curva), el peso
+    de cada operacion NO se precalcula de una vez al principio: se calcula
+    recien al entrar, dentro del loop dia por dia de mas abajo (ver
+    _risk_based_trade_weight), porque depende de la equity simulada ACUMULADA
+    hasta ese punto -- algo que todavia no existe en el resto de los caminos
+    de ponderacion (1/top_n y 1/ATR son independientes de como vino
+    resultando el backtest hasta esa fecha).
+
     Devuelve (equity_curve, equity_diaria_en_factor, avg_exposure_pct,
     exposure_adjusted_benchmark_return_pct).
     """
-    weights = _trade_weights(all_trades, top_n, vol_weighting_enabled)
+    dynamic_sizing = (
+        risk_based_sizing_enabled
+        and rules_config is not None
+        and all(t.stop_loss_pct is not None and t.stop_loss_pct > 0 for t in all_trades)
+    )
+    weights: dict[int, float] = (
+        {} if dynamic_sizing else _trade_weights(all_trades, top_n, vol_weighting_enabled)
+    )
     bench_close = bench_bars["Close"]
     start, end = all_trades[0].entry_date, all_trades[-1].exit_date
     calendar = sorted(
@@ -870,10 +957,21 @@ def _daily_equity_curve(
     bench_factor = 1.0
     idle_cash_factor = 1.0
     prev_bench_price = None
+    # Equity simulada (en factor, 1.0 = capital inicial) al cierre del dia
+    # ANTERIOR al que esta procesando el loop. Solo se usa con dynamic_sizing:
+    # el peso de una operacion que recien entra hoy se calcula contra esto, no
+    # contra `equity` de hoy (que todavia no existe cuando la operacion entra
+    # a la apertura). Se actualiza al final de cada iteracion del loop.
+    prior_equity_factor = 1.0
 
     for day_idx, date in enumerate(calendar):
         while next_entry_idx < len(trades_by_entry) and trades_by_entry[next_entry_idx].entry_date <= date:
-            open_trades.append(trades_by_entry[next_entry_idx])
+            trade = trades_by_entry[next_entry_idx]
+            if dynamic_sizing:
+                weights[id(trade)] = _risk_based_trade_weight(
+                    trade, prior_equity_factor, assumed_capital_usd, rules_config
+                )
+            open_trades.append(trade)
             next_entry_idx += 1
 
         still_open = []
@@ -912,6 +1010,7 @@ def _daily_equity_curve(
         daily_equity.append(equity)
 
         equity_curve.append(EquityCurvePoint(date=date, equity_pct=round((equity - 1) * 100, 2)))
+        prior_equity_factor = equity
 
     avg_exposure_pct = round(exposure_sum / len(calendar) * 100, 1)
     exposure_adjusted_benchmark_return_pct = round((bench_factor - 1) * 100, 2)
@@ -947,6 +1046,9 @@ def _compute_summary_stats(
     invest_idle_cash_in_benchmark: bool = False,
     vol_weighting_enabled: bool = False,
     deflated_sharpe_num_trials: int = 1,
+    risk_based_sizing_enabled: bool = False,
+    rules_config: RulesConfig | None = None,
+    assumed_capital_usd: float = 100_000.0,
 ) -> BacktestSummary:
     """Calcula las metricas resumen a partir de la lista final de operaciones
     (ya filtrada por cap_concurrent_positions). Separado de run_backtest para
@@ -969,7 +1071,15 @@ def _compute_summary_stats(
     expectancy = sum(returns) / len(returns)
 
     equity_curve, daily_equity, avg_exposure_pct, exposure_adjusted_benchmark_return_pct = _daily_equity_curve(
-        all_trades, top_n, bench_bars, marks_by_trade_id, invest_idle_cash_in_benchmark, vol_weighting_enabled
+        all_trades,
+        top_n,
+        bench_bars,
+        marks_by_trade_id,
+        invest_idle_cash_in_benchmark,
+        vol_weighting_enabled,
+        risk_based_sizing_enabled,
+        rules_config,
+        assumed_capital_usd,
     )
 
     bench_close = bench_bars["Close"]
@@ -1036,6 +1146,9 @@ def _build_walk_forward_result(
     n_folds: int,
     invest_idle_cash_in_benchmark: bool = False,
     vol_weighting_enabled: bool = False,
+    risk_based_sizing_enabled: bool = False,
+    rules_config: RulesConfig | None = None,
+    assumed_capital_usd: float = 100_000.0,
 ) -> WalkForwardResult:
     """Particiona [primera_entrada, ultima_salida] del benchmark en n_folds
     ventanas consecutivas de igual duracion calendario (no de igual cantidad
@@ -1067,7 +1180,15 @@ def _build_walk_forward_result(
             folds.append(WalkForwardFold(start_date=fold_start, end_date=fold_end, total_trades=len(fold_trades)))
             continue
         summary = _compute_summary_stats(
-            fold_trades, top_n, fold_bench_bars, marks_by_trade_id, invest_idle_cash_in_benchmark, vol_weighting_enabled
+            fold_trades,
+            top_n,
+            fold_bench_bars,
+            marks_by_trade_id,
+            invest_idle_cash_in_benchmark,
+            vol_weighting_enabled,
+            risk_based_sizing_enabled=risk_based_sizing_enabled,
+            rules_config=rules_config,
+            assumed_capital_usd=assumed_capital_usd,
         )
         folds.append(
             WalkForwardFold(
@@ -1180,7 +1301,7 @@ def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], 
     return all_trades, marks_by_trade_id, bench_bars
 
 
-def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
+def run_backtest(cfg: ScreenerConfig, rules_config: RulesConfig | None = None) -> BacktestSummary:
     """Backtest simplificado de la estrategia momentum sobre el universo configurado.
 
     La curva de equity, el max_drawdown_pct y el sharpe_ratio se calculan dia
@@ -1211,10 +1332,15 @@ def run_backtest(cfg: ScreenerConfig) -> BacktestSummary:
         all_trades, cfg.top_n, bench_bars, marks_by_trade_id,
         cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
         cfg.deflated_sharpe_num_trials,
+        risk_based_sizing_enabled=cfg.backtest_risk_based_sizing_enabled,
+        rules_config=rules_config,
+        assumed_capital_usd=cfg.backtest_assumed_capital_usd,
     )
 
 
-def run_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 3) -> WalkForwardResult:
+def run_backtest_walk_forward(
+    cfg: ScreenerConfig, n_folds: int = 3, rules_config: RulesConfig | None = None
+) -> WalkForwardResult:
     """Validacion out-of-sample de los thresholds configurados (RSI, SMAs,
     ATR, filtros de regimen/52 semanas, etc.): particiona el periodo operado
     en n_folds ventanas consecutivas de igual duracion calendario y calcula
@@ -1237,4 +1363,7 @@ def run_backtest_walk_forward(cfg: ScreenerConfig, n_folds: int = 3) -> WalkForw
     return _build_walk_forward_result(
         all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds,
         cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
+        risk_based_sizing_enabled=cfg.backtest_risk_based_sizing_enabled,
+        rules_config=rules_config,
+        assumed_capital_usd=cfg.backtest_assumed_capital_usd,
     )

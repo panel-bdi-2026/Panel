@@ -2,6 +2,16 @@
 Description=Trading dashboard (backend FastAPI)
 After=network-online.target ibgateway.service
 Wants=network-online.target
+# IB Gateway (Xvfb + Java + login automatico via IBC) puede tardar 30-90+
+# segundos en aceptar conexiones, mas todavia tras el reinicio forzado
+# semanal de IBKR los domingos. ExecStartPre (wait_for_ibgateway.sh) falla
+# rapido si todavia no esta listo, y Restart=always + RestartSec reintentan
+# el arranque completo. Este budget (10 minutos, 30 reintentos) le da margen
+# de sobra para esos arranques lentos sin que systemd llegue a "start-limit-
+# hit" (que dejaria el servicio en failed hasta un `systemctl reset-failed`
+# manual).
+StartLimitIntervalSec=600
+StartLimitBurst=30
 
 [Service]
 Type=simple
@@ -9,6 +19,7 @@ User=trading
 Group=trading
 WorkingDirectory=/opt/panel/trading-dashboard/backend
 EnvironmentFile=/opt/panel/trading-dashboard/backend/.env
+ExecStartPre=/opt/panel/trading-dashboard/deploy/scripts/wait_for_ibgateway.sh
 # No agregar --workers: el backend guarda config/ordenes pendientes/locks de
 # validacion en memoria de un solo proceso (ver comentario en app/main.py).
 ExecStart=/opt/panel/trading-dashboard/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
