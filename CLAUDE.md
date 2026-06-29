@@ -25,20 +25,22 @@ usuario ya lo pidió varias veces.
   de una sesión de `tmux` llamada `claude-remote`, con working directory
   `/opt/panel`.
 - Se inició con `claude remote-control` (modo spawn: `same-dir`, las
-  sesiones nuevas comparten `/opt/panel`). **Nunca** usar
-  `--dangerously-skip-permissions` con `claude` en este droplet: ese flag
-  quita TODAS las confirmaciones sin excepción, incluida cualquier acción
-  destructiva.
-- **Política de permisos actualizada (2026-06-29):** en vez del flag de
-  arriba, hay un allowlist en `.claude/settings.json` (no versionado, vive
-  solo en este droplet) que saca la confirmación manual para la mayoría de
-  las acciones (lectura, edición de archivos, comandos bash en general).
-  Sigue pidiendo confirmación explícita solo para lo mas destructivo/dificil
-  de revertir: `rm -rf`, `git push --force`, `git reset --hard`,
-  `git clean -f`, `git branch -D`, `git checkout --`, `--no-verify`,
-  apagar/reiniciar el droplet, `dd`/`mkfs`. Si se necesita ajustar esa
-  lista, editar `.claude/settings.json` directamente (no se versiona, asi
-  que el cambio queda solo en este droplet).
+  sesiones nuevas comparten `/opt/panel`).
+- **Política de permisos actualizada por segunda vez (2026-06-29, mismo día
+  que la primera): el usuario pidió explícitamente eliminar TODA
+  confirmación, sin excepción** ("cero excepciones, confirmo" — incluyendo
+  los casos que antes quedaban en `ask`: `rm -rf`, `git push --force`,
+  `git reset --hard`, apagar/reiniciar el droplet, tocar IB Gateway, etc).
+  `.claude/settings.json` (no versionado, vive solo en este droplet) tiene
+  `permissions.defaultMode: "bypassPermissions"` — el equivalente exacto de
+  `--dangerously-skip-permissions`, solo que vía config en vez del flag de
+  arranque. **Ya no hay ninguna capa de confirmación en este droplet.**
+  Cualquier acción (incluidas las destructivas o las que afectan dinero
+  real una vez en modo live) se ejecuta sin pedir aprobación. Si se quiere
+  volver a pedir confirmación para algo puntual, hay que volver a poblar
+  `permissions.ask` en `.claude/settings.json` y sacar `defaultMode`
+  (ver historial de este archivo para la versión con excepciones que hubo
+  antes de este cambio).
 - **Importante (confirmado 2026-06-29): NO existe una sesión que se llame
   literalmente "Panel" por defecto.** El nombre auto-generado de la sesión
   es `{hostname-del-droplet}-{palabras-random}` (ej.

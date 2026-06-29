@@ -13,6 +13,14 @@ import yfinance as yf
 _CACHE_TTL_SECONDS = 900  # 15 min
 _cache: dict[tuple[str, int], tuple[float, pd.DataFrame]] = {}
 
+# Simbolos que fallan de forma persistente (deslistados, ticker invalido) no
+# tenian cache de fallo a diferencia de earnings/fundamentals: cada scan
+# volvia a gastar los _MAX_FETCH_RETRIES completos en el mismo simbolo
+# muerto, ciclo tras ciclo, para siempre. Mismo TTL que el cache de exito:
+# si el simbolo vuelve a cotizar dentro de esos 15 min no vale la pena
+# reintentar antes.
+_bars_failure_cache: dict[tuple[str, int], tuple[float, str]] = {}
+
 # La fecha de earnings no cambia de un minuto a otro: cache mas largo que el
 # de las barras de precio para no consumir cuota de la API en cada scan.
 _EARNINGS_CACHE_TTL_SECONDS = 24 * 3600
@@ -122,6 +130,9 @@ def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.D
     cached = _cache.get(key)
     if not force and cached and now - cached[0] < _CACHE_TTL_SECONDS:
         return cached[1]
+    failed = _bars_failure_cache.get(key)
+    if not force and failed and now - failed[0] < _CACHE_TTL_SECONDS:
+        raise MarketDataError(failed[1])
 
     with _bars_locks.get(key):
         # Re-chequea el cache bajo el lock: mientras se esperaba para entrar
@@ -131,6 +142,9 @@ def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.D
         cached = _cache.get(key)
         if not force and cached and now - cached[0] < _CACHE_TTL_SECONDS:
             return cached[1]
+        failed = _bars_failure_cache.get(key)
+        if not force and failed and now - failed[0] < _CACHE_TTL_SECONDS:
+            raise MarketDataError(failed[1])
 
         end = datetime.now(timezone.utc)
         # *1.6 para convertir dias de trading aproximados a dias calendario (fines de
@@ -155,25 +169,36 @@ def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.D
 
         if df is None or df.empty:
             detail = f" ({last_error})" if last_error else ""
-            raise MarketDataError(
+            message = (
                 f"Sin datos para {symbol} tras {_MAX_FETCH_RETRIES} intentos{detail}: "
                 f"simbolo invalido o limite de la API gratuita alcanzado."
             )
+            _bars_failure_cache[key] = (now, message)
+            raise MarketDataError(message)
 
         df = df.rename(columns=str.title)
         _cache[key] = (now, df)
+        _bars_failure_cache.pop(key, None)
         return df
 
 
 def is_bars_cached(symbol: str, lookback_days: int) -> bool:
-    """True si get_daily_bars(symbol, lookback_days) devolveria el cache sin
-    pegarle a la red ahora mismo. Le permite a cada estrategia saltear la
-    pausa entre simbolos (pensada para no rafagar la API gratuita) cuando el
-    dato ya esta cacheado -- tipicamente porque otra estrategia ya escaneo
-    este mismo simbolo en este ciclo, ya que las 4 estrategias comparten
-    lookback_days y por lo tanto la misma entrada de cache."""
-    cached = _cache.get((symbol.upper(), lookback_days))
-    return cached is not None and time.time() - cached[0] < _CACHE_TTL_SECONDS
+    """True si get_daily_bars(symbol, lookback_days) devolveria el cache (o el
+    fallo cacheado) sin pegarle a la red ahora mismo. Le permite a cada
+    estrategia saltear la pausa entre simbolos (pensada para no rafagar la
+    API gratuita) cuando el dato ya esta cacheado -- tipicamente porque otra
+    estrategia ya escaneo este mismo simbolo en este ciclo, ya que las 4
+    estrategias comparten lookback_days y por lo tanto la misma entrada de
+    cache. Un simbolo con fallo cacheado (ver _bars_failure_cache) tampoco
+    necesita la pausa: get_daily_bars va a relanzar la excepcion cacheada sin
+    tocar la red."""
+    key = (symbol.upper(), lookback_days)
+    now = time.time()
+    cached = _cache.get(key)
+    if cached is not None and now - cached[0] < _CACHE_TTL_SECONDS:
+        return True
+    failed = _bars_failure_cache.get(key)
+    return failed is not None and now - failed[0] < _CACHE_TTL_SECONDS
 
 
 def _earnings_cache_ttl(ok: bool) -> float:

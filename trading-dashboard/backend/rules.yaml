@@ -1,639 +1,602 @@
-# Reglas de riesgo para el motor de trading.
-# Una orden solo se ejecuta si pasa TODAS las reglas. Ver README.md del proyecto
-# para el detalle de cada una y como ajustarlas con criterio.
-
-# Simbolos permitidos. Vacio = no se permite NINGUN simbolo (seguro por
-# defecto). El backend SOBRESCRIBE esta lista automaticamente para que
-# siempre sea igual al `universe` de screener.yaml (el radar de oportunidades
-# ya elige ese universo de forma autonoma): no la edites a mano aqui, edita
-# `universe` en screener.yaml. Esto pasa al arrancar el backend y cada vez
-# que se actualiza la config del screener via PUT /api/signals/config.
 symbol_whitelist:
-  - A
-  - AAPL
-  - ABBV
-  - ABNB
-  - ABT
-  - ACGL
-  - ACN
-  - ADBE
-  - ADI
-  - ADM
-  - ADP
-  - ADSK
-  - AEE
-  - AEP
-  - AES
-  - AFL
-  - AIG
-  - AIZ
-  - AJG
-  - AKAM
-  - ALB
-  - ALGN
-  - ALL
-  - ALLE
-  - AMAT
-  - AMCR
-  - AMD
-  - AME
-  - AMGN
-  - AMP
-  - AMT
-  - AMZN
-  - ANET
-  - AON
-  - AOS
-  - APA
-  - APD
-  - APH
-  - APO
-  - APP
-  - APTV
-  - ARE
-  - ARES
-  - ATO
-  - AVB
-  - AVGO
-  - AVY
-  - AWK
-  - AXON
-  - AXP
-  - AZO
-  - BA
-  - BAC
-  - BALL
-  - BAX
-  - BBY
-  - BDX
-  - BEN
-  - BF-B
-  - BG
-  - BIIB
-  - BKNG
-  - BKR
-  - BLDR
-  - BLK
-  - BMY
-  - BNY
-  - BR
-  - BRK-B
-  - BRO
-  - BSX
-  - BX
-  - BXP
-  - C
-  - CAG
-  - CAH
-  - CARR
-  - CASY
-  - CAT
-  - CB
-  - CBOE
-  - CBRE
-  - CCI
-  - CCL
-  - CDNS
-  - CDW
-  - CEG
-  - CF
-  - CFG
-  - CHD
-  - CHRW
-  - CHTR
-  - CI
-  - CIEN
-  - CINF
-  - CL
-  - CLX
-  - CMCSA
-  - CME
-  - CMG
-  - CMI
-  - CMS
-  - CNC
-  - CNP
-  - COF
-  - COHR
-  - COIN
-  - COO
-  - COP
-  - COR
-  - COST
-  - CPAY
-  - CPB
-  - CPRT
-  - CPT
-  - CRH
-  - CRL
-  - CRM
-  - CRWD
-  - CSCO
-  - CSGP
-  - CSX
-  - CTAS
-  - CTSH
-  - CTVA
-  - CVNA
-  - CVS
-  - CVX
-  - D
-  - DAL
-  - DASH
-  - DD
-  - DDOG
-  - DE
-  - DECK
-  - DELL
-  - DG
-  - DGX
-  - DHI
-  - DHR
-  - DIS
-  - DLR
-  - DLTR
-  - DOC
-  - DOV
-  - DOW
-  - DPZ
-  - DRI
-  - DTE
-  - DUK
-  - DVA
-  - DVN
-  - DXCM
-  - EA
-  - EBAY
-  - ECL
-  - ED
-  - EFX
-  - EG
-  - EIX
-  - EL
-  - ELV
-  - EME
-  - EMR
-  - EOG
-  - EQIX
-  - EQR
-  - EQT
-  - ERIE
-  - ES
-  - ESS
-  - ETN
-  - ETR
-  - EVRG
-  - EW
-  - EXC
-  - EXE
-  - EXPD
-  - EXPE
-  - EXR
-  - F
-  - FANG
-  - FAST
-  - FCX
-  - FDS
-  - FDX
-  - FDXF
-  - FE
-  - FFIV
-  - FICO
-  - FIS
-  - FISV
-  - FITB
-  - FIX
-  - FOX
-  - FOXA
-  - FRT
-  - FSLR
-  - FTNT
-  - FTV
-  - GD
-  - GDDY
-  - GE
-  - GEHC
-  - GEN
-  - GEV
-  - GILD
-  - GIS
-  - GL
-  - GLW
-  - GM
-  - GNRC
-  - GOOG
-  - GOOGL
-  - GPC
-  - GPN
-  - GRMN
-  - GS
-  - GWW
-  - HAL
-  - HAS
-  - HBAN
-  - HCA
-  - HD
-  - HIG
-  - HII
-  - HLT
-  - HON
-  - HOOD
-  - HPE
-  - HPQ
-  - HRL
-  - HSIC
-  - HST
-  - HSY
-  - HUBB
-  - HUM
-  - HWM
-  - IBKR
-  - IBM
-  - ICE
-  - IDXX
-  - IEX
-  - IFF
-  - INCY
-  - INTC
-  - INTU
-  - INVH
-  - IP
-  - IQV
-  - IR
-  - IRM
-  - ISRG
-  - IT
-  - ITW
-  - IVZ
-  - J
-  - JBHT
-  - JBL
-  - JCI
-  - JKHY
-  - JNJ
-  - JPM
-  - KDP
-  - KEY
-  - KEYS
-  - KHC
-  - KIM
-  - KKR
-  - KLAC
-  - KMB
-  - KMI
-  - KO
-  - KR
-  - KVUE
-  - L
-  - LDOS
-  - LEN
-  - LH
-  - LHX
-  - LII
-  - LIN
-  - LITE
-  - LLY
-  - LMT
-  - LNT
-  - LOW
-  - LRCX
-  - LULU
-  - LUV
-  - LVS
-  - LYB
-  - LYV
-  - MA
-  - MAA
-  - MAR
-  - MAS
-  - MCD
-  - MCHP
-  - MCK
-  - MCO
-  - MDLZ
-  - MDT
-  - MET
-  - META
-  - MGM
-  - MKC
-  - MLM
-  - MMM
-  - MNST
-  - MO
-  - MOS
-  - MPC
-  - MPWR
-  - MRK
-  - MRNA
-  - MRSH
-  - MS
-  - MSCI
-  - MSFT
-  - MSI
-  - MTB
-  - MTD
-  - MU
-  - NCLH
-  - NDAQ
-  - NDSN
-  - NEE
-  - NEM
-  - NFLX
-  - NI
-  - NKE
-  - NOC
-  - NOW
-  - NRG
-  - NSC
-  - NTAP
-  - NTRS
-  - NUE
-  - NVDA
-  - NVR
-  - NWS
-  - NWSA
-  - NXPI
-  - O
-  - ODFL
-  - OKE
-  - OMC
-  - "ON"
-  - ORCL
-  - ORLY
-  - OTIS
-  - OXY
-  - PANW
-  - PAYX
-  - PCAR
-  - PCG
-  - PEG
-  - PEP
-  - PFE
-  - PFG
-  - PG
-  - PGR
-  - PH
-  - PHM
-  - PKG
-  - PLD
-  - PLTR
-  - PM
-  - PNC
-  - PNR
-  - PNW
-  - PODD
-  - POOL
-  - PPG
-  - PPL
-  - PRU
-  - PSA
-  - PSKY
-  - PSX
-  - PTC
-  - PWR
-  - PYPL
-  - Q
-  - QCOM
-  - RCL
-  - REG
-  - REGN
-  - RF
-  - RJF
-  - RL
-  - RMD
-  - ROK
-  - ROL
-  - ROP
-  - ROST
-  - RSG
-  - RTX
-  - RVTY
-  - SATS
-  - SBAC
-  - SBUX
-  - SCHW
-  - SHW
-  - SJM
-  - SLB
-  - SMCI
-  - SNA
-  - SNDK
-  - SNPS
-  - SO
-  - SOLV
-  - SPG
-  - SPGI
-  - SRE
-  - STE
-  - STLD
-  - STT
-  - STX
-  - STZ
-  - SW
-  - SWK
-  - SWKS
-  - SYF
-  - SYK
-  - SYY
-  - T
-  - TAP
-  - TDG
-  - TDY
-  - TECH
-  - TEL
-  - TER
-  - TFC
-  - TGT
-  - TJX
-  - TKO
-  - TMO
-  - TMUS
-  - TPL
-  - TPR
-  - TRGP
-  - TRMB
-  - TROW
-  - TRV
-  - TSCO
-  - TSLA
-  - TSN
-  - TT
-  - TTD
-  - TTWO
-  - TXN
-  - TXT
-  - TYL
-  - UAL
-  - UBER
-  - UDR
-  - UHS
-  - ULTA
-  - UNH
-  - UNP
-  - UPS
-  - URI
-  - USB
-  - V
-  - VEEV
-  - VICI
-  - VLO
-  - VLTO
-  - VMC
-  - VRSK
-  - VRSN
-  - VRT
-  - VRTX
-  - VST
-  - VTR
-  - VTRS
-  - VZ
-  - WAB
-  - WAT
-  - WBD
-  - WDAY
-  - WDC
-  - WEC
-  - WELL
-  - WFC
-  - WM
-  - WMB
-  - WMT
-  - WRB
-  - WSM
-  - WST
-  - WTW
-  - WY
-  - WYNN
-  - XEL
-  - XOM
-  - XYL
-  - XYZ
-  - YUM
-  - ZBH
-  - ZBRA
-  - ZTS
-  - ABAT
-  - ACHR
-  - ACMR
-  - ADMA
-  - AEHR
-  - ALRM
-  - AMBA
-  - AMPX
-  - AMRC
-  - AOSL
-  - ASYS
-  - ATLX
-  - AVAV
-  - BB
-  - BKSY
-  - CAMT
-  - CEVA
-  - CHYM
-  - COHU
-  - CRBU
-  - CRCL
-  - CRML
-  - CRNX
-  - CRWV
-  - CURO
-  - ELVA
-  - EOSE
-  - FIVN
-  - FLNC
-  - GDOT
-  - GRC
-  - GWH
-  - ICHR
-  - INO
-  - INOD
-  - IONQ
-  - JOBY
-  - KLIC
-  - KRMD
-  - KTOS
-  - LC
-  - LUNR
-  - MAMA
-  - MDXH
-  - MP
-  - MUX
-  - MWA
-  - NAK
-  - NG
-  - OKLO
-  - OMCL
-  - ONDS
-  - OTLY
-  - OUST
-  - PATH
-  - PVLA
-  - QBTS
-  - QFIN
-  - QLYS
-  - QS
-  - QUBT
-  - RDW
-  - RDWR
-  - RGTI
-  - RKLB
-  - RPAY
-  - RR
-  - RUN
-  - S
-  - SCWX
-  - SERV
-  - SEZL
-  - SGMO
-  - SIDU
-  - SLDP
-  - SOFI
-  - SOUN
-  - STEM
-  - TDC
-  - TERN
-  - TMC
-  - USAR
-  - VKTX
-  - VRNS
-  - WTTR
-  - ZS
-
-# Valor maximo en USD de una sola orden.
-max_order_value_usd: 5000
-
-# Tamano maximo de una posicion como % del equity total (NetLiquidation).
-max_position_pct_of_equity: 10
-
-# Riesgo maximo a arriesgar por operacion, como % del equity, si se toca el
-# stop-loss. Solo se usa para sugerir un tamano de posicion (boton "Sugerir"
-# en el ticket de orden); el tamano sugerido igual queda recortado por
-# max_position_pct_of_equity y max_order_value_usd.
-risk_per_trade_pct: 1
-
-# Si la perdida del dia alcanza este % del equity, se bloquean nuevas ordenes (kill switch).
-daily_loss_limit_pct: 2
-
-# Maximo de operaciones ejecutadas por dia.
+- A
+- AAPL
+- ABBV
+- ABNB
+- ABT
+- ACGL
+- ACN
+- ADBE
+- ADI
+- ADM
+- ADP
+- ADSK
+- AEE
+- AEP
+- AES
+- AFL
+- AIG
+- AIZ
+- AJG
+- AKAM
+- ALB
+- ALGN
+- ALL
+- ALLE
+- AMAT
+- AMCR
+- AMD
+- AME
+- AMGN
+- AMP
+- AMT
+- AMZN
+- ANET
+- AON
+- AOS
+- APA
+- APD
+- APH
+- APO
+- APP
+- APTV
+- ARE
+- ARES
+- ATO
+- AVB
+- AVGO
+- AVY
+- AWK
+- AXON
+- AXP
+- AZO
+- BA
+- BAC
+- BALL
+- BAX
+- BBY
+- BDX
+- BEN
+- BF-B
+- BG
+- BIIB
+- BKNG
+- BKR
+- BLDR
+- BLK
+- BMY
+- BNY
+- BR
+- BRK-B
+- BRO
+- BSX
+- BX
+- BXP
+- C
+- CAG
+- CAH
+- CARR
+- CASY
+- CAT
+- CB
+- CBOE
+- CBRE
+- CCI
+- CCL
+- CDNS
+- CDW
+- CEG
+- CF
+- CFG
+- CHD
+- CHRW
+- CHTR
+- CI
+- CIEN
+- CINF
+- CL
+- CLX
+- CMCSA
+- CME
+- CMG
+- CMI
+- CMS
+- CNC
+- CNP
+- COF
+- COHR
+- COIN
+- COO
+- COP
+- COR
+- COST
+- CPAY
+- CPB
+- CPRT
+- CPT
+- CRH
+- CRL
+- CRM
+- CRWD
+- CSCO
+- CSGP
+- CSX
+- CTAS
+- CTSH
+- CTVA
+- CVNA
+- CVS
+- CVX
+- D
+- DAL
+- DASH
+- DD
+- DDOG
+- DE
+- DECK
+- DELL
+- DG
+- DGX
+- DHI
+- DHR
+- DIS
+- DLR
+- DLTR
+- DOC
+- DOV
+- DOW
+- DPZ
+- DRI
+- DTE
+- DUK
+- DVA
+- DVN
+- DXCM
+- EA
+- EBAY
+- ECL
+- ED
+- EFX
+- EG
+- EIX
+- EL
+- ELV
+- EME
+- EMR
+- EOG
+- EQIX
+- EQR
+- EQT
+- ERIE
+- ES
+- ESS
+- ETN
+- ETR
+- EVRG
+- EW
+- EXC
+- EXE
+- EXPD
+- EXPE
+- EXR
+- F
+- FANG
+- FAST
+- FCX
+- FDS
+- FDX
+- FDXF
+- FE
+- FFIV
+- FICO
+- FIS
+- FISV
+- FITB
+- FIX
+- FOX
+- FOXA
+- FRT
+- FSLR
+- FTNT
+- FTV
+- GD
+- GDDY
+- GE
+- GEHC
+- GEN
+- GEV
+- GILD
+- GIS
+- GL
+- GLW
+- GM
+- GNRC
+- GOOG
+- GOOGL
+- GPC
+- GPN
+- GRMN
+- GS
+- GWW
+- HAL
+- HAS
+- HBAN
+- HCA
+- HD
+- HIG
+- HII
+- HLT
+- HON
+- HOOD
+- HPE
+- HPQ
+- HRL
+- HSIC
+- HST
+- HSY
+- HUBB
+- HUM
+- HWM
+- IBKR
+- IBM
+- ICE
+- IDXX
+- IEX
+- IFF
+- INCY
+- INTC
+- INTU
+- INVH
+- IP
+- IQV
+- IR
+- IRM
+- ISRG
+- IT
+- ITW
+- IVZ
+- J
+- JBHT
+- JBL
+- JCI
+- JKHY
+- JNJ
+- JPM
+- KDP
+- KEY
+- KEYS
+- KHC
+- KIM
+- KKR
+- KLAC
+- KMB
+- KMI
+- KO
+- KR
+- KVUE
+- L
+- LDOS
+- LEN
+- LH
+- LHX
+- LII
+- LIN
+- LITE
+- LLY
+- LMT
+- LNT
+- LOW
+- LRCX
+- LULU
+- LUV
+- LVS
+- LYB
+- LYV
+- MA
+- MAA
+- MAR
+- MAS
+- MCD
+- MCHP
+- MCK
+- MCO
+- MDLZ
+- MDT
+- MET
+- META
+- MGM
+- MKC
+- MLM
+- MMM
+- MNST
+- MO
+- MOS
+- MPC
+- MPWR
+- MRK
+- MRNA
+- MRSH
+- MS
+- MSCI
+- MSFT
+- MSI
+- MTB
+- MTD
+- MU
+- NCLH
+- NDAQ
+- NDSN
+- NEE
+- NEM
+- NFLX
+- NI
+- NKE
+- NOC
+- NOW
+- NRG
+- NSC
+- NTAP
+- NTRS
+- NUE
+- NVDA
+- NVR
+- NWS
+- NWSA
+- NXPI
+- O
+- ODFL
+- OKE
+- OMC
+- 'ON'
+- ORCL
+- ORLY
+- OTIS
+- OXY
+- PANW
+- PAYX
+- PCAR
+- PCG
+- PEG
+- PEP
+- PFE
+- PFG
+- PG
+- PGR
+- PH
+- PHM
+- PKG
+- PLD
+- PLTR
+- PM
+- PNC
+- PNR
+- PNW
+- PODD
+- POOL
+- PPG
+- PPL
+- PRU
+- PSA
+- PSKY
+- PSX
+- PTC
+- PWR
+- PYPL
+- Q
+- QCOM
+- RCL
+- REG
+- REGN
+- RF
+- RJF
+- RL
+- RMD
+- ROK
+- ROL
+- ROP
+- ROST
+- RSG
+- RTX
+- RVTY
+- SATS
+- SBAC
+- SBUX
+- SCHW
+- SHW
+- SJM
+- SLB
+- SMCI
+- SNA
+- SNDK
+- SNPS
+- SO
+- SOLV
+- SPG
+- SPGI
+- SRE
+- STE
+- STLD
+- STT
+- STX
+- STZ
+- SW
+- SWK
+- SWKS
+- SYF
+- SYK
+- SYY
+- T
+- TAP
+- TDG
+- TDY
+- TECH
+- TEL
+- TER
+- TFC
+- TGT
+- TJX
+- TKO
+- TMO
+- TMUS
+- TPL
+- TPR
+- TRGP
+- TRMB
+- TROW
+- TRV
+- TSCO
+- TSLA
+- TSN
+- TT
+- TTD
+- TTWO
+- TXN
+- TXT
+- TYL
+- UAL
+- UBER
+- UDR
+- UHS
+- ULTA
+- UNH
+- UNP
+- UPS
+- URI
+- USB
+- V
+- VEEV
+- VICI
+- VLO
+- VLTO
+- VMC
+- VRSK
+- VRSN
+- VRT
+- VRTX
+- VST
+- VTR
+- VTRS
+- VZ
+- WAB
+- WAT
+- WBD
+- WDAY
+- WDC
+- WEC
+- WELL
+- WFC
+- WM
+- WMB
+- WMT
+- WRB
+- WSM
+- WST
+- WTW
+- WY
+- WYNN
+- XEL
+- XOM
+- XYL
+- XYZ
+- YUM
+- ZBH
+- ZBRA
+- ZTS
+- ABAT
+- ACHR
+- ACMR
+- ADMA
+- AEHR
+- ALRM
+- AMBA
+- AMPX
+- AMRC
+- AOSL
+- ASYS
+- ATLX
+- AVAV
+- BB
+- BKSY
+- CAMT
+- CEVA
+- CHYM
+- COHU
+- CRBU
+- CRCL
+- CRML
+- CRNX
+- CRWV
+- ELVA
+- EOSE
+- FIVN
+- FLNC
+- GDOT
+- GRC
+- GWH
+- ICHR
+- INO
+- INOD
+- IONQ
+- JOBY
+- KLIC
+- KRMD
+- KTOS
+- LC
+- LUNR
+- MAMA
+- MDXH
+- MP
+- MUX
+- MWA
+- NAK
+- NG
+- OKLO
+- OMCL
+- ONDS
+- OTLY
+- OUST
+- PATH
+- PVLA
+- QBTS
+- QFIN
+- QLYS
+- QS
+- QUBT
+- RDW
+- RDWR
+- RGTI
+- RKLB
+- RPAY
+- RR
+- RUN
+- S
+- SERV
+- SEZL
+- SGMO
+- SIDU
+- SLDP
+- SOFI
+- SOUN
+- STEM
+- TDC
+- TERN
+- TMC
+- USAR
+- VKTX
+- VRNS
+- WTTR
+- ZS
+max_order_value_usd: 5000.0
+max_position_pct_of_equity: 10.0
+max_sector_concentration_pct: 30
+risk_per_trade_pct: 1.0
+daily_loss_limit_pct: 2.0
 max_trades_per_day: 10
-
-# Toda compra debe llevar un stop-loss adjunto.
 require_stop_loss_on_buy: true
-
-# Riesgo maximo permitido en el stop-loss, como % por debajo del precio de entrada.
-max_stop_loss_pct: 5
-
-# Si es false (default), se rechaza cualquier orden que dejaria una posicion
-# en negativo (venta sin tener antes la cantidad equivalente en cartera).
-# Evita quedar corto por error de cantidad/simbolo.
+max_stop_loss_pct: 5.0
 allow_short_selling: false
-
-# Ordenes con valor estimado mayor a este monto requieren aprobacion manual en el
-# dashboard, aunque el modo "automatico" este activo.
-manual_approval_threshold_usd: 1000
-
-# Si es false, solo se opera dentro del horario regular del mercado.
+manual_approval_threshold_usd: 1000.0
 allow_extended_hours: false
-trading_hours_start: "09:30"
-trading_hours_end: "16:00"
-trading_hours_timezone: "America/New_York"
+trading_hours_start: 09:30
+trading_hours_end: '16:00'
+trading_hours_timezone: America/New_York
