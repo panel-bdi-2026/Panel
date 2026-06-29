@@ -681,7 +681,7 @@ slippage_pct: 0.05
 # screener solo cada auto_scan_interval_minutes y arma ordenes de compra en
 # borrador para simbolos que recien empiezan a pasar los filtros. Esas
 # ordenes quedan pendientes de aprobacion manual, nunca se ejecutan solas.
-auto_scan_enabled: false
+auto_scan_enabled: true
 auto_scan_interval_minutes: 30
 
 # Tope de ordenes en borrador que el escaneo proactivo puede crear por ciclo
