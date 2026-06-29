@@ -26,8 +26,19 @@ usuario ya lo pidió varias veces.
   `/opt/panel`.
 - Se inició con `claude remote-control` (modo spawn: `same-dir`, las
   sesiones nuevas comparten `/opt/panel`). **Nunca** usar
-  `--dangerously-skip-permissions` con `claude` en este droplet —
-  confirmación obligatoria para cada acción, siempre.
+  `--dangerously-skip-permissions` con `claude` en este droplet: ese flag
+  quita TODAS las confirmaciones sin excepción, incluida cualquier acción
+  destructiva.
+- **Política de permisos actualizada (2026-06-29):** en vez del flag de
+  arriba, hay un allowlist en `.claude/settings.json` (no versionado, vive
+  solo en este droplet) que saca la confirmación manual para la mayoría de
+  las acciones (lectura, edición de archivos, comandos bash en general).
+  Sigue pidiendo confirmación explícita solo para lo mas destructivo/dificil
+  de revertir: `rm -rf`, `git push --force`, `git reset --hard`,
+  `git clean -f`, `git branch -D`, `git checkout --`, `--no-verify`,
+  apagar/reiniciar el droplet, `dd`/`mkfs`. Si se necesita ajustar esa
+  lista, editar `.claude/settings.json` directamente (no se versiona, asi
+  que el cambio queda solo en este droplet).
 - **Importante (confirmado 2026-06-29): NO existe una sesión que se llame
   literalmente "Panel" por defecto.** El nombre auto-generado de la sesión
   es `{hostname-del-droplet}-{palabras-random}` (ej.
