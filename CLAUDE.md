@@ -19,6 +19,43 @@ usuario ya lo pidió varias veces.
 - Repo clonado en `/opt/panel` en el servidor.
 - Servicio systemd del backend: `trading-dashboard`.
 
+## Acceso remoto vía Claude Code (Remote Control)
+
+- Hay una sesión persistente de Claude Code corriendo en el droplet, dentro
+  de una sesión de `tmux` llamada `claude-remote`, con working directory
+  `/opt/panel`.
+- Se inició con `claude remote-control` (modo spawn: `same-dir`, las
+  sesiones nuevas comparten `/opt/panel`). **Nunca** usar
+  `--dangerously-skip-permissions` con `claude` en este droplet —
+  confirmación obligatoria para cada acción, siempre.
+- Formas de conectarse a esa sesión:
+  - App de Claude en el celular → pestaña "Code" → sesión "Panel"
+    (cuenta `alejandrortega75@gmail.com`).
+  - `https://claude.ai/code` en cualquier navegador, misma cuenta.
+  - Directo por SSH: `ssh root@100.92.236.44` y luego
+    `tmux attach -t claude-remote`.
+- Login OAuth hecho con la cuenta de Google `alejandrortega75@gmail.com`
+  (la misma de claude.ai, con 2FA activado vía Google).
+- Si la sesión de tmux se pierde (verificar con `tmux ls`; si da error
+  "No such file or directory" no hay servidor de tmux corriendo), recrearla:
+  ```bash
+  tmux new -s claude-remote
+  cd /opt/panel
+  claude remote-control
+  ```
+  Responder `y` a "Enable Remote Control?" y `1` (same-dir) si pregunta el
+  modo de spawn. Para dejarla corriendo basta cerrar la ventana de la
+  terminal (tmux sobrevive a la desconexión SSH) — el atajo Ctrl+B+D resultó
+  poco confiable en la práctica (una vez mató la sesión completa en vez de
+  solo desconectarla), no depender de él.
+- Acceso SSH por llave configurado además de lo anterior: llave generada en
+  la laptop (`laptop-panel`, ed25519) agregada a `~/.ssh/authorized_keys`
+  del droplet. El sshd del droplet acepta **solo autenticación por llave
+  pública** (`PasswordAuthentication no`), no hay fallback de password.
+- Pendiente (diferido a propósito hasta estar más cerca de operar en vivo):
+  crear un usuario Linux sin privilegios de root para correr Remote
+  Control, en vez de usar `root` directamente.
+
 ## Pasos para desplegar un cambio ya pusheado a la rama
 
 ```bash
