@@ -66,12 +66,12 @@ FAKE_BARS = {
 
 @pytest.fixture
 def patched_market_data(monkeypatch):
-    def fake_get_daily_bars(symbol, lookback_days, force=False):
+    def fake_get_daily_bars(symbol, lookback_days, force=False, cache_only=False):
         if symbol not in FAKE_BARS:
             raise MarketDataError(f"sin datos sinteticos para {symbol}")
         return FAKE_BARS[symbol]
 
-    def fake_get_next_earnings_date(symbol, force=False):
+    def fake_get_next_earnings_date(symbol, force=False, cache_only=False):
         return None
 
     monkeypatch.setattr(opportunistic_module, "get_daily_bars", fake_get_daily_bars)
@@ -151,7 +151,7 @@ def test_unknown_symbol_is_skipped(patched_market_data):
 
 
 def test_scan_raises_when_no_symbol_has_data(monkeypatch):
-    def always_fails(symbol, lookback_days, force=False):
+    def always_fails(symbol, lookback_days, force=False, cache_only=False):
         raise MarketDataError("sin red en este entorno")
 
     monkeypatch.setattr(opportunistic_module, "get_daily_bars", always_fails)
@@ -163,7 +163,7 @@ def test_scan_raises_when_no_symbol_has_data(monkeypatch):
 
 def test_earnings_blackout_blocks_symbol_when_earnings_within_window(monkeypatch, patched_market_data):
     soon = date.today() + timedelta(days=2)
-    monkeypatch.setattr(common_module, "get_next_earnings_date", lambda symbol, force=False: soon)
+    monkeypatch.setattr(common_module, "get_next_earnings_date", lambda symbol, force=False, cache_only=False: soon)
     config = ScreenerConfig(universe=["GROW"], earnings_blackout_days=5)
     s = OpportunisticStrategy(config)
     result = s.evaluate_symbol("GROW")
@@ -173,7 +173,7 @@ def test_earnings_blackout_blocks_symbol_when_earnings_within_window(monkeypatch
 
 def test_earnings_blackout_does_not_block_when_earnings_outside_window(monkeypatch, patched_market_data):
     far = date.today() + timedelta(days=30)
-    monkeypatch.setattr(common_module, "get_next_earnings_date", lambda symbol, force=False: far)
+    monkeypatch.setattr(common_module, "get_next_earnings_date", lambda symbol, force=False, cache_only=False: far)
     config = ScreenerConfig(universe=["GROW"], earnings_blackout_days=5)
     s = OpportunisticStrategy(config)
     result = s.evaluate_symbol("GROW")
@@ -183,7 +183,7 @@ def test_earnings_blackout_does_not_block_when_earnings_outside_window(monkeypat
 def test_earnings_lookup_is_skipped_for_symbols_that_already_fail_other_filters(monkeypatch, patched_market_data):
     calls: list[str] = []
 
-    def tracking_get_next_earnings_date(symbol, force=False):
+    def tracking_get_next_earnings_date(symbol, force=False, cache_only=False):
         calls.append(symbol)
         return None
 
@@ -212,7 +212,7 @@ def test_benchmark_regime_ok_ignores_benchmark_when_filter_disabled(monkeypatch)
     # regimen del benchmark en absoluto sin importar que tan bajista este.
     bench_bars = _bearish_benchmark_bars()
 
-    def fake_get_daily_bars(symbol, lookback_days, force=False):
+    def fake_get_daily_bars(symbol, lookback_days, force=False, cache_only=False):
         if symbol == "SPY":
             return bench_bars
         raise MarketDataError("sin datos sinteticos")
@@ -226,7 +226,7 @@ def test_benchmark_regime_ok_ignores_benchmark_when_filter_disabled(monkeypatch)
 def test_benchmark_regime_ok_false_when_filter_enabled_and_benchmark_bearish(monkeypatch):
     bench_bars = _bearish_benchmark_bars()
 
-    def fake_get_daily_bars(symbol, lookback_days, force=False):
+    def fake_get_daily_bars(symbol, lookback_days, force=False, cache_only=False):
         if symbol == "SPY":
             return bench_bars
         raise MarketDataError("sin datos sinteticos")
@@ -245,7 +245,7 @@ def test_benchmark_regime_ok_is_independent_from_momentum_regime_flag(monkeypatc
     # a Oportunista: solo opportunistic_regime_filter_enabled lo hace.
     bench_bars = _bearish_benchmark_bars()
 
-    def fake_get_daily_bars(symbol, lookback_days, force=False):
+    def fake_get_daily_bars(symbol, lookback_days, force=False, cache_only=False):
         if symbol == "SPY":
             return bench_bars
         raise MarketDataError("sin datos sinteticos")

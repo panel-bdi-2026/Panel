@@ -93,11 +93,11 @@ def avg_volume(bars: pd.DataFrame) -> float:
     return float(bars["Volume"].rolling(20, min_periods=1).mean().iloc[-1])
 
 
-def earnings_blackout_ok(symbol: str, blackout_days: int, force: bool = False) -> tuple[bool, "int | None"]:
+def earnings_blackout_ok(symbol: str, blackout_days: int, force: bool = False, cache_only: bool = False) -> tuple[bool, "int | None"]:
     """(ok, dias_a_earnings). ok=False solo si hay una fecha de earnings
     conocida dentro de la ventana de blackout; sin dato, no bloquea (ver
     razonamiento en get_next_earnings_date)."""
-    earnings_date = get_next_earnings_date(symbol, force=force)
+    earnings_date = get_next_earnings_date(symbol, force=force, cache_only=cache_only)
     days = (earnings_date - datetime.now(timezone.utc).date()).days if earnings_date else None
     ok = days is None or not (0 <= days <= blackout_days)
     return ok, days

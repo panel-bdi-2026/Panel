@@ -29,7 +29,7 @@ from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
 from .funds import FundsStore, FundValidationError
 from .indicators import atr, sma
-from .market_data import MarketDataError, get_daily_bars
+from .market_data import MarketDataError, get_daily_bars, is_bars_cached
 from .models import OrderRequest, OrderType, PendingOrder, Position, SignalResult, Side, validate_symbol
 from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
@@ -172,6 +172,7 @@ _hot_symbols: set[str] = set()
 _live_prices: dict[str, float] = {}
 _live_prices_as_of: dict[str, datetime] = {}
 _rotation_cursor = 0
+_data_refresh_cursor = 0
 
 
 def _persist_state() -> None:
@@ -523,23 +524,35 @@ def _live_score_entry_threshold(strategy_id: str) -> float:
     raise ValueError(f"strategy_id desconocido: {strategy_id!r}")
 
 
-async def _run_signal_scan_cycle() -> None:
-    """Un ciclo del escaneo proactivo: corre el screener, detecta simbolos que
-    recien empiezan a pasar los filtros (transicion no-pasa -> pasa) y les
-    arma una orden de compra en borrador (ver _draft_order_from_signal).
+async def _run_score_recompute_cycle() -> None:
+    """Un ciclo de recalculo de scores sobre el cache de datos: lee el cache de
+    market_data.py (sin tocar la red), detecta simbolos que recien empiezan a
+    pasar los filtros (transicion no-pasa -> pasa) y les arma una orden de
+    compra en borrador. El refresco de datos lo hace _run_data_refresh_cycle
+    por separado. No toma _market_scan_lock: no hay I/O de red de por medio.
 
-    Separado de _signal_scan_loop (que solo aporta el sleep + while True) para
-    poder testear un ciclo de una sola vez sin lidiar con un loop infinito.
+    Separado de _score_recompute_loop (que solo aporta el sleep + while True)
+    para poder testear un ciclo de una sola vez sin lidiar con un loop infinito.
     """
     if not screener_config.auto_scan_enabled or state["halted"] or not state["connected"]:
         return
     active_strategy = strategy_registry[screener_config.strategy_id]
     try:
-        async with _market_scan_lock:
-            results = await asyncio.to_thread(active_strategy.scan)
+        results = await asyncio.to_thread(active_strategy.scan, cache_only=True)
+    except MarketDataError:
+        # Cache todavia frio (ej. justo tras un restart, antes de que
+        # _data_refresh_loop complete su primera pasada): reintentar en el
+        # proximo ciclo sin loguear error -- es un estado transitorio normal.
+        return
     except Exception as exc:
         audit.record("signal_scan_failed", {}, {"error": str(exc)})
         return
+
+    now = datetime.now(timezone.utc)
+    signal_cache[screener_config.strategy_id] = {
+        "as_of": now,
+        "results": [r.model_dump() for r in results],
+    }
 
     top_results = results[: screener_config.top_n]
     # Gatillo de auto-trading: score >= umbral en vivo Y gates operativos
@@ -623,23 +636,26 @@ async def _run_signal_scan_cycle() -> None:
 
 
 async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
-    """Mismo patron de deteccion de transiciones que _run_signal_scan_cycle,
+    """Mismo patron de deteccion de transiciones que _run_score_recompute_cycle,
     pero para una estrategia que ningun fondo usa como estrategia activa
     global: solo se llega aca cuando al menos un fondo en auto-trading elige
     explicitamente esta estrategia (fund.strategy_id), distinta de
     screener_config.strategy_id.
 
-    A diferencia de _run_signal_scan_cycle, nunca arma borradores manuales
+    A diferencia de _run_score_recompute_cycle, nunca arma borradores manuales
     (_draft_order_from_signal): esos quedan reservados a la estrategia activa
     global, que es la unica que se muestra en el Radar para revision humana.
     Lleva su propio "previously_passing" por estrategia (ver
     _signal_state["previously_passing_by_strategy"]) para no compartir base
     con la estrategia activa global ni con otras estrategias de otros fondos.
+    No toma _market_scan_lock: igual que _run_score_recompute_cycle, usa solo
+    el cache de datos.
     """
     active_strategy = strategy_registry[strategy_id]
     try:
-        async with _market_scan_lock:
-            results = await asyncio.to_thread(active_strategy.scan)
+        results = await asyncio.to_thread(active_strategy.scan, cache_only=True)
+    except MarketDataError:
+        return
     except Exception as exc:
         audit.record("signal_scan_failed", {"strategy_id": strategy_id}, {"error": str(exc)})
         return
@@ -669,13 +685,12 @@ async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
         await _try_auto_trade_entry(r, strategy_id)
 
 
-async def _signal_scan_loop() -> None:
-    """Escaneo proactivo en background: a diferencia de /api/signals/scan (que
-    solo corre cuando alguien abre el dashboard), este loop corre solo cada
-    auto_scan_interval_minutes."""
+async def _score_recompute_loop() -> None:
+    """Recalculo de scores en background: corre cache_only (sin red) cada
+    auto_scan_interval_minutes. El refresco de datos lo hace _data_refresh_loop."""
     while True:
         await asyncio.sleep(screener_config.auto_scan_interval_minutes * 60)
-        await _run_signal_scan_cycle()
+        await _run_score_recompute_cycle()
 
 
 async def _risk_monitor_loop() -> None:
@@ -1037,6 +1052,46 @@ async def _price_rotation_loop() -> None:
         await asyncio.sleep(settings.poll_interval_seconds)
 
 
+async def _run_data_refresh_cycle() -> None:
+    """Refresco trickle de datos de yfinance: recorre el universo en lotes
+    chicos round-robin, manteniendo caliente el cache de market_data.py para
+    que _run_score_recompute_cycle pueda correr siempre con cache_only=True.
+    Modelado sobre _run_price_rotation_cycle: lotes chicos, cursor propio,
+    bajo _market_scan_lock solo durante el fetch real (no durante el sleep
+    entre simbolos)."""
+    global _data_refresh_cursor
+    universe = screener_config.universe
+    if not universe:
+        return
+    n = len(universe)
+    batch_size = screener_config.data_refresh_batch_size
+    start = _data_refresh_cursor % n
+    batch = [universe[(start + i) % n] for i in range(min(batch_size, n))]
+    _data_refresh_cursor = (start + len(batch)) % n
+    delay = screener_config.scan_request_delay_seconds
+    first_fetch = True
+    for symbol in batch:
+        if is_bars_cached(symbol, screener_config.lookback_days):
+            continue
+        if not first_fetch and delay > 0:
+            await asyncio.sleep(delay)
+        first_fetch = False
+        try:
+            async with _market_scan_lock:
+                await asyncio.to_thread(get_daily_bars, symbol, screener_config.lookback_days)
+        except Exception:
+            pass  # fallo cacheado por get_daily_bars; no reintentar hasta que expire el TTL
+
+
+async def _data_refresh_loop() -> None:
+    """Trickle feed de yfinance en background: mantiene caliente el cache de
+    barras de precio para que _score_recompute_loop nunca tenga que esperar a
+    la red."""
+    while True:
+        await _run_data_refresh_cycle()
+        await asyncio.sleep(settings.poll_interval_seconds)
+
+
 async def _restore_persisted_mode() -> None:
     """Si el estado persistido indica un modo distinto al que arranco el
     broker (ej. el backend se reinicio mientras estaba en modo live), reconecta
@@ -1090,15 +1145,16 @@ async def lifespan(app: FastAPI):
     await _restore_persisted_mode()
     task = asyncio.create_task(_broadcast_loop())
     risk_task = asyncio.create_task(_risk_monitor_loop())
-    signal_task = asyncio.create_task(_signal_scan_loop())
+    score_recompute_task = asyncio.create_task(_score_recompute_loop())
+    data_refresh_task = asyncio.create_task(_data_refresh_loop())
     exit_monitor_task = asyncio.create_task(_auto_exit_monitor_loop())
     trailing_stop_task = asyncio.create_task(_trailing_stop_loop())
     hot_set_task = asyncio.create_task(_hot_set_loop())
     price_rotation_task = asyncio.create_task(_price_rotation_loop())
     yield
     background_tasks = [
-        task, risk_task, signal_task, exit_monitor_task,
-        trailing_stop_task, hot_set_task, price_rotation_task,
+        task, risk_task, score_recompute_task, data_refresh_task,
+        exit_monitor_task, trailing_stop_task, hot_set_task, price_rotation_task,
     ]
     for background_task in background_tasks:
         background_task.cancel()
@@ -1362,14 +1418,25 @@ async def _get_or_scan(strategy_id: str, force: bool) -> tuple[datetime, bool, l
     esta fresco, corriendo el scan si no. Comun a /api/signals/scan y
     /api/signals/scan/all para que ambos compartan el mismo cache por
     estrategia (ver SIGNAL_CACHE_TTL_SECONDS) en vez de pagar la cuota de la
-    API de datos dos veces por lo mismo."""
+    API de datos dos veces por lo mismo.
+
+    force=True: refresca datos de red para esta estrategia bajo _market_scan_lock.
+    force=False con cache miss: intenta primero cache_only (barato, sin red); si
+    el cache esta frio (justo tras restart), cae al camino lento bajo lock."""
     now = datetime.now(timezone.utc)
     cached = signal_cache.get(strategy_id)
     if not force and cached and (now - cached["as_of"]).total_seconds() < SIGNAL_CACHE_TTL_SECONDS:
         return cached["as_of"], True, cached["results"]
     strategy = strategy_registry[strategy_id]
-    async with _market_scan_lock:
-        results = await asyncio.to_thread(strategy.scan, force=force)
+    if force:
+        async with _market_scan_lock:
+            results = await asyncio.to_thread(strategy.scan, force=True)
+    else:
+        try:
+            results = await asyncio.to_thread(strategy.scan, cache_only=True)
+        except MarketDataError:
+            async with _market_scan_lock:
+                results = await asyncio.to_thread(strategy.scan)
     signal_cache[strategy_id] = {"as_of": now, "results": [r.model_dump() for r in results]}
     return now, False, signal_cache[strategy_id]["results"]
 

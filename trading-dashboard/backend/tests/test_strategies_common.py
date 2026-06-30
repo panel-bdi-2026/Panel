@@ -69,7 +69,7 @@ def test_avg_volume_is_rolling_mean_of_last_20_days():
 
 
 def test_earnings_blackout_ok_when_no_earnings_date_known(monkeypatch):
-    monkeypatch.setattr(common_module, "get_next_earnings_date", lambda symbol, force=False: None)
+    monkeypatch.setattr(common_module, "get_next_earnings_date", lambda symbol, force=False, cache_only=False: None)
     ok, days = earnings_blackout_ok("AAPL", blackout_days=5)
     assert ok is True
     assert days is None
@@ -77,7 +77,7 @@ def test_earnings_blackout_ok_when_no_earnings_date_known(monkeypatch):
 
 def test_earnings_blackout_blocks_when_within_window(monkeypatch):
     soon = date.today() + timedelta(days=2)
-    monkeypatch.setattr(common_module, "get_next_earnings_date", lambda symbol, force=False: soon)
+    monkeypatch.setattr(common_module, "get_next_earnings_date", lambda symbol, force=False, cache_only=False: soon)
     ok, days = earnings_blackout_ok("AAPL", blackout_days=5)
     assert ok is False
     assert days == 2
@@ -85,7 +85,7 @@ def test_earnings_blackout_blocks_when_within_window(monkeypatch):
 
 def test_earnings_blackout_does_not_block_outside_window(monkeypatch):
     far = date.today() + timedelta(days=30)
-    monkeypatch.setattr(common_module, "get_next_earnings_date", lambda symbol, force=False: far)
+    monkeypatch.setattr(common_module, "get_next_earnings_date", lambda symbol, force=False, cache_only=False: far)
     ok, days = earnings_blackout_ok("AAPL", blackout_days=5)
     assert ok is True
     assert days == 30

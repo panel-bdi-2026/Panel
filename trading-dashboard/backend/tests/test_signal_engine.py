@@ -165,7 +165,7 @@ def test_signal_scan_cycle_skips_when_auto_scan_disabled(monkeypatch):
         raise AssertionError("no deberia escanear si auto_scan_enabled=False")
 
     monkeypatch.setattr(main_module.screener, "scan", fail_if_called)
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
 
 def test_signal_scan_cycle_skips_when_halted(monkeypatch):
@@ -176,7 +176,7 @@ def test_signal_scan_cycle_skips_when_halted(monkeypatch):
         raise AssertionError("no deberia escanear si esta halted")
 
     monkeypatch.setattr(main_module.screener, "scan", fail_if_called)
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
 
 def test_signal_scan_cycle_skips_when_disconnected(monkeypatch):
@@ -187,19 +187,19 @@ def test_signal_scan_cycle_skips_when_disconnected(monkeypatch):
         raise AssertionError("no deberia escanear si no esta conectado")
 
     monkeypatch.setattr(main_module.screener, "scan", fail_if_called)
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
 
 def test_signal_scan_cycle_first_run_establishes_baseline_without_drafting(monkeypatch):
     main_module.screener_config.auto_scan_enabled = True
-    monkeypatch.setattr(main_module.screener, "scan", lambda: [make_signal(passes=True)])
+    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [make_signal(passes=True)])
 
     async def fail_if_called(result):
         raise AssertionError("el primer ciclo no deberia draftear ordenes")
 
     monkeypatch.setattr(main_module, "_draft_order_from_signal", fail_if_called)
 
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
     assert main_module._signal_state["previously_passing"] == {"AAPL"}
     assert main_module.state["pending_orders"] == {}
@@ -208,9 +208,9 @@ def test_signal_scan_cycle_first_run_establishes_baseline_without_drafting(monke
 def test_signal_scan_cycle_drafts_order_for_new_passing_symbol(monkeypatch):
     main_module.screener_config.auto_scan_enabled = True
     main_module._signal_state["previously_passing"] = set()  # baseline ya establecida, nada pasaba
-    monkeypatch.setattr(main_module.screener, "scan", lambda: [make_signal(symbol="AAPL", passes=True)])
+    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [make_signal(symbol="AAPL", passes=True)])
 
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
     assert main_module._signal_state["previously_passing"] == {"AAPL"}
     assert len(main_module.state["pending_orders"]) == 1
@@ -222,9 +222,9 @@ def test_signal_scan_cycle_drafts_order_for_new_passing_symbol(monkeypatch):
 def test_signal_scan_cycle_does_not_redraft_symbol_already_passing(monkeypatch):
     main_module.screener_config.auto_scan_enabled = True
     main_module._signal_state["previously_passing"] = {"AAPL"}  # ya estaba pasando antes
-    monkeypatch.setattr(main_module.screener, "scan", lambda: [make_signal(symbol="AAPL", passes=True)])
+    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [make_signal(symbol="AAPL", passes=True)])
 
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
     assert main_module.state["pending_orders"] == {}
 
@@ -233,12 +233,12 @@ def test_signal_scan_cycle_handles_scan_failure_gracefully(monkeypatch):
     main_module.screener_config.auto_scan_enabled = True
     main_module._signal_state["previously_passing"] = set()
 
-    def failing_scan():
+    def failing_scan(*a, **kw):
         raise RuntimeError("fallo de datos de mercado")
 
     monkeypatch.setattr(main_module.screener, "scan", failing_scan)
 
-    asyncio.run(main_module._run_signal_scan_cycle())  # no debe propagar la excepcion
+    asyncio.run(main_module._run_score_recompute_cycle())  # no debe propagar la excepcion
 
     assert main_module._signal_state["previously_passing"] == set()
 
@@ -254,7 +254,7 @@ def test_signal_scan_cycle_holds_screener_config_lock_around_signal_state_update
     en vez de con una raza real entre threads (no deterministica): el lock
     debe estar tomado en cada get/set de 'previously_passing'."""
     main_module.screener_config.auto_scan_enabled = True
-    monkeypatch.setattr(main_module.screener, "scan", lambda: [make_signal(passes=True)])
+    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [make_signal(passes=True)])
 
     lock_held_on_access = []
 
@@ -271,7 +271,7 @@ def test_signal_scan_cycle_holds_screener_config_lock_around_signal_state_update
 
     monkeypatch.setattr(main_module, "_signal_state", _SpyDict(main_module._signal_state))
 
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
     assert lock_held_on_access  # se accedio al menos una vez (get + set)
     assert all(lock_held_on_access)
@@ -356,9 +356,9 @@ def test_signal_scan_cycle_caps_drafts_per_cycle(monkeypatch):
     # descendente (S0 el mas fuerte). Con el tope de 3, solo se draftean los 3
     # mejores.
     signals = [make_signal(symbol=f"S{i}", score=100 - i, passes=True) for i in range(5)]
-    monkeypatch.setattr(main_module.screener, "scan", lambda: signals)
+    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: signals)
 
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
     drafted = list(main_module.state["pending_orders"].values())
     assert len(drafted) == 3
@@ -387,9 +387,9 @@ def test_signal_scan_cycle_respects_free_slots_vs_top_n(monkeypatch):
     main_module.state["pending_orders"]["pending-x"] = existing
 
     signals = [make_signal(symbol=f"S{i}", score=100 - i, passes=True) for i in range(3)]
-    monkeypatch.setattr(main_module.screener, "scan", lambda: signals)
+    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: signals)
 
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
     drafted = [p for p in main_module.state["pending_orders"].values() if p.source == "signal_engine"]
     assert len(drafted) == 1

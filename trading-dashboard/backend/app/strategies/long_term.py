@@ -49,18 +49,18 @@ class LongTermStrategy:
     def reload(self, config: ScreenerConfig) -> None:
         self.config = config
 
-    def evaluate_symbol(self, symbol: str, force: bool = False) -> SignalResult | None:
+    def evaluate_symbol(self, symbol: str, force: bool = False, cache_only: bool = False) -> SignalResult | None:
         cfg = self.config
         lt = cfg.long_term
         try:
-            bars = get_daily_bars(symbol, cfg.lookback_days, force=force)
+            bars = get_daily_bars(symbol, cfg.lookback_days, force=force, cache_only=cache_only)
         except MarketDataError:
             return None
         ctx = context_technicals(bars, cfg.atr_period)
         if ctx is None:
             return None
 
-        fundamentals = get_fundamentals(symbol, force=force)
+        fundamentals = get_fundamentals(symbol, force=force, cache_only=cache_only)
         # trailing_pe (ganancias ya reportadas) y forward_pe (estimado por
         # analistas a futuro) son metodologias distintas: mezclarlas sin
         # distincion comparaba, entre simbolos distintos, un PE real contra
@@ -88,7 +88,7 @@ class LongTermStrategy:
         # clase): esta estrategia es deliberadamente fundamentals-first, no
         # tecnica, asi que mezclar señales de precio en su ranking diluiria
         # la tesis que el usuario explicitamente pidio para esta estrategia.
-        last_sector_rel_strength = sector_relative_strength(symbol, ctx["momentum_3m_pct"], cfg.lookback_days, force=force)
+        last_sector_rel_strength = sector_relative_strength(symbol, ctx["momentum_3m_pct"], cfg.lookback_days, force=force, cache_only=cache_only)
 
         # Valoracion y crecimiento son los dos pilares explicitamente
         # pedidos ("fundamentales fuertes" + "bajo su valoracion"): si faltan,
@@ -102,7 +102,7 @@ class LongTermStrategy:
         days_to_earnings: int | None = None
         earnings_ok = True
         if value_ok and growth_ok and liquidity_ok:
-            earnings_ok, days_to_earnings = earnings_blackout_ok(symbol, cfg.earnings_blackout_days, force=force)
+            earnings_ok, days_to_earnings = earnings_blackout_ok(symbol, cfg.earnings_blackout_days, force=force, cache_only=cache_only)
 
         notes: list[str] = []
         if pe is None:
@@ -236,16 +236,14 @@ class LongTermStrategy:
             score_components=components,
         )
 
-    def scan(self, force: bool = False) -> list[SignalResult]:
+    def scan(self, force: bool = False, cache_only: bool = False) -> list[SignalResult]:
         results = []
         delay = self.config.scan_request_delay_seconds
         for i, symbol in enumerate(self.config.universe):
-            # Salteado si el dato ya esta cacheado (ej. otra estrategia ya
-            # escaneo este simbolo en este ciclo): no hay fetch real que
-            # espaciar (ver is_bars_cached).
-            if i > 0 and delay > 0 and (force or not is_bars_cached(symbol, self.config.lookback_days)):
+            # Salteado si el dato ya esta cacheado o si es cache_only (sin red).
+            if not cache_only and i > 0 and delay > 0 and (force or not is_bars_cached(symbol, self.config.lookback_days)):
                 time.sleep(delay)
-            result = self.evaluate_symbol(symbol, force=force)
+            result = self.evaluate_symbol(symbol, force=force, cache_only=cache_only)
             if result is not None:
                 results.append(result)
         if self.config.universe and not results:

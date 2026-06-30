@@ -110,7 +110,9 @@ def _fetch_with_timeout(fn):
         raise MarketDataError(f"Sin respuesta de Yahoo Finance tras {_FETCH_TIMEOUT_SECONDS}s") from None
 
 
-def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.DataFrame:
+def get_daily_bars(
+    symbol: str, lookback_days: int, force: bool = False, cache_only: bool = False
+) -> pd.DataFrame:
     """Barras diarias OHLCV ajustadas para `symbol`, cubriendo ~lookback_days dias de trading.
 
     Usa yfinance (datos de Yahoo Finance, no oficiales, gratis y con limites de
@@ -120,6 +122,13 @@ def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.D
     `force=True` ignora el cache (usado por el boton "forzar rescan" del
     dashboard): sin esto, forzar un rescan dentro de los 15 minutos del cache
     no traia datos nuevos a pesar de que el usuario lo pidio explicitamente.
+
+    `cache_only=True` (usado por el recalculo de scores, ver _run_score_recompute_cycle
+    en main.py) nunca toca la red: devuelve el cache si esta fresco o relanza/lanza
+    MarketDataError de inmediato. El refresco de datos real lo hace por separado
+    _run_data_refresh_cycle, en lotes chicos -- el recalculo de scores tiene que
+    poder correr seguido sin nunca bloquearse esperando a yfinance. Mutuamente
+    excluyente con `force` por construccion del caller.
 
     Reintenta hasta `_MAX_FETCH_RETRIES` veces con backoff exponencial ante
     excepcion o respuesta vacia, ya que ambas pueden ser un fallo transitorio
@@ -133,6 +142,8 @@ def get_daily_bars(symbol: str, lookback_days: int, force: bool = False) -> pd.D
     failed = _bars_failure_cache.get(key)
     if not force and failed and now - failed[0] < _CACHE_TTL_SECONDS:
         raise MarketDataError(failed[1])
+    if cache_only:
+        raise MarketDataError(f"cache_only: sin dato cacheado para {symbol}")
 
     with _bars_locks.get(key):
         # Re-chequea el cache bajo el lock: mientras se esperaba para entrar
@@ -205,16 +216,22 @@ def _earnings_cache_ttl(ok: bool) -> float:
     return _EARNINGS_CACHE_TTL_SECONDS if ok else _EARNINGS_FAILURE_CACHE_TTL_SECONDS
 
 
-def get_next_earnings_date(symbol: str, force: bool = False) -> "date | None":
+def get_next_earnings_date(symbol: str, force: bool = False, cache_only: bool = False) -> "date | None":
     """Proxima fecha de earnings estimada para `symbol`, o None si no se pudo
     determinar (simbolo sin cobertura, limite de la API gratuita, etc.). El
     filtro de earnings del screener trata None como "sin dato, no bloquea" en
-    vez de fallar el scan completo por un dato secundario y best-effort."""
+    vez de fallar el scan completo por un dato secundario y best-effort.
+
+    `cache_only=True` nunca toca la red: devuelve el cache (fresco o stale) si
+    existe, o None si no hay nada cacheado. Mismo valor neutro que el caller
+    ya maneja para "sin dato"."""
     key = symbol.upper()
     now = time.time()
     cached = _earnings_cache.get(key)
     if not force and cached and now - cached[0] < _earnings_cache_ttl(cached[2]):
         return cached[1]
+    if cache_only:
+        return cached[1] if cached else None
 
     with _earnings_locks.get(key):
         now = time.time()
@@ -277,7 +294,7 @@ _INFO_FIELD_MAP = {
 }
 
 
-def get_fundamentals(symbol: str, force: bool = False) -> dict:
+def get_fundamentals(symbol: str, force: bool = False, cache_only: bool = False) -> dict:
     """Datos fundamentales de `symbol` para las estrategias Largo plazo y
     Dividendos (ver app/strategies/). Devuelve un dict con las claves de
     _INFO_FIELD_MAP; un campo ausente en la respuesta de yfinance queda en
@@ -292,6 +309,10 @@ def get_fundamentals(symbol: str, force: bool = False) -> dict:
     recibe un TTL corto en vez del de 24hs, ya que esa rama si es mas
     probablemente un fallo transitorio (rate limit, timeout) que falta de
     cobertura real.
+
+    `cache_only=True` nunca toca la red: devuelve el cache (fresco o stale)
+    si existe, o un dict de Nones (mismo formato que el caller ya maneja para
+    "sin cobertura") si no hay nada cacheado.
     """
     key = symbol.upper()
     now = time.time()
@@ -300,6 +321,8 @@ def get_fundamentals(symbol: str, force: bool = False) -> dict:
         ttl = _FUNDAMENTALS_CACHE_TTL_SECONDS if cached[2] else _FUNDAMENTALS_FAILURE_CACHE_TTL_SECONDS
         if now - cached[0] < ttl:
             return cached[1]
+    if cache_only:
+        return cached[1] if cached else {name: None for name in _INFO_FIELD_MAP}
 
     with _fundamentals_locks.get(key):
         now = time.time()

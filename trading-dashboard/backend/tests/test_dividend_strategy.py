@@ -45,15 +45,15 @@ FUNDAMENTALS = {
 
 @pytest.fixture
 def patched_market_data(monkeypatch):
-    def fake_get_daily_bars(symbol, lookback_days, force=False):
+    def fake_get_daily_bars(symbol, lookback_days, force=False, cache_only=False):
         if symbol not in FUNDAMENTALS:
             raise MarketDataError(f"sin datos sinteticos para {symbol}")
         return ILLIQUID_BARS if symbol == "ILLIQUID" else BARS
 
-    def fake_get_fundamentals(symbol, force=False):
+    def fake_get_fundamentals(symbol, force=False, cache_only=False):
         return FUNDAMENTALS[symbol]
 
-    def fake_get_next_earnings_date(symbol, force=False):
+    def fake_get_next_earnings_date(symbol, force=False, cache_only=False):
         return None
 
     monkeypatch.setattr(dividend_module, "get_daily_bars", fake_get_daily_bars)
@@ -145,7 +145,7 @@ def test_unknown_symbol_is_skipped(patched_market_data):
 
 
 def test_scan_raises_when_no_symbol_has_data(monkeypatch):
-    def always_fails(symbol, lookback_days, force=False):
+    def always_fails(symbol, lookback_days, force=False, cache_only=False):
         raise MarketDataError("sin red en este entorno")
 
     monkeypatch.setattr(dividend_module, "get_daily_bars", always_fails)
@@ -171,7 +171,7 @@ def test_extra_fundamentals_are_exposed_on_signal_result(monkeypatch, patched_ma
         insider_ownership=0.02, institutional_ownership=0.55, short_pct_of_float=0.04,
         current_ratio=1.5, quick_ratio=1.1, free_cash_flow=3_000_000.0,
     )
-    monkeypatch.setattr(dividend_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    monkeypatch.setattr(dividend_module, "get_fundamentals", lambda symbol, force=False, cache_only=False: fundamentals)
     config = ScreenerConfig(universe=["GOODDIV"])
     result = DividendStrategy(config).evaluate_symbol("GOODDIV")
     assert result.peg_ratio == 1.2
@@ -187,7 +187,7 @@ def test_extra_fundamentals_are_exposed_on_signal_result(monkeypatch, patched_ma
 
 def test_high_beta_adds_advisory_note_but_does_not_block_filter(monkeypatch, patched_market_data):
     fundamentals = dict(FUNDAMENTALS["GOODDIV"], beta=3.0)
-    monkeypatch.setattr(dividend_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    monkeypatch.setattr(dividend_module, "get_fundamentals", lambda symbol, force=False, cache_only=False: fundamentals)
     config = ScreenerConfig(universe=["GOODDIV"])
     result = DividendStrategy(config).evaluate_symbol("GOODDIV")
     assert result.passes_filters
@@ -196,7 +196,7 @@ def test_high_beta_adds_advisory_note_but_does_not_block_filter(monkeypatch, pat
 
 def test_weak_liquidity_ratios_add_advisory_notes_but_do_not_block_filter(monkeypatch, patched_market_data):
     fundamentals = dict(FUNDAMENTALS["GOODDIV"], current_ratio=0.6, quick_ratio=0.4)
-    monkeypatch.setattr(dividend_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    monkeypatch.setattr(dividend_module, "get_fundamentals", lambda symbol, force=False, cache_only=False: fundamentals)
     config = ScreenerConfig(universe=["GOODDIV"])
     result = DividendStrategy(config).evaluate_symbol("GOODDIV")
     assert result.passes_filters

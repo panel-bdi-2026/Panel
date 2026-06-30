@@ -393,6 +393,12 @@ class ScreenerConfig(BaseModel):
     # alto rota el universo completo mas rapido, pero ocupa mas lineas libres
     # a la vez (no deberia superar 100 - live_hot_symbols_cap en la practica).
     live_rotation_batch_size: int = 25
+    # Cuantos simbolos del universo del screener se refrescan de yfinance por
+    # ciclo de _run_data_refresh_cycle (mismo patron que live_rotation_batch_size
+    # pero para datos historicos, no precios en vivo). Mas alto acelera el
+    # precalentamiento del cache pero puede disparar rate-limit de la API
+    # gratuita de Yahoo Finance.
+    data_refresh_batch_size: int = 25
 
     # Filtro de regimen de mercado para Momentum: no se sugieren entradas
     # largas si el benchmark no esta en un regimen alcista de fondo. Antes era
@@ -524,14 +530,14 @@ class ScreenerConfig(BaseModel):
     # antes de esta).
     deflated_sharpe_num_trials: int = 1
 
-    # Escaneo proactivo en background: si esta habilitado, el backend corre el
-    # screener solo (sin que el usuario abra el dashboard) cada
-    # auto_scan_interval_minutes y arma ordenes de compra en borrador para
-    # simbolos que recien empiezan a pasar los filtros (transicion no-pasa ->
-    # pasa). Esas ordenes quedan en la cola de aprobacion manual igual que
-    # cualquier otra: el motor nunca ejecuta nada por si solo.
+    # Recalculo proactivo de scores en background: si esta habilitado, el
+    # backend recalcula scores sobre el cache de datos (sin tocar la red) cada
+    # auto_scan_interval_minutes. El refresco de datos lo hace _data_refresh_loop
+    # por separado, en lotes chicos, de forma continua. Cuando un simbolo
+    # transiciona de no-pasar a pasar los filtros, se arma una orden en borrador
+    # para aprobacion manual.
     auto_scan_enabled: bool = False
-    auto_scan_interval_minutes: int = 30
+    auto_scan_interval_minutes: int = 2
     # Tope de ordenes en borrador que el escaneo proactivo puede crear en un
     # solo ciclo. Si el regimen de mercado se vuelve alcista de golpe, decenas
     # de simbolos pueden pasar a cumplir los filtros a la vez; sin este tope se

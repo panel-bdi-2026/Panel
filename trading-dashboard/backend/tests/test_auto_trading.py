@@ -1003,7 +1003,7 @@ def test_run_auto_exit_monitor_cycle_continues_after_a_check_fails(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # fund.strategy_id: cada fondo en auto-trading puede elegir una estrategia
-# distinta a la activa global (ver _run_signal_scan_cycle /
+# distinta a la activa global (ver _run_score_recompute_cycle /
 # _run_fund_strategy_auto_trade_scan en main.py).
 # ---------------------------------------------------------------------------
 
@@ -1014,7 +1014,7 @@ def test_signal_scan_cycle_triggers_extra_scan_for_fund_with_distinct_strategy(m
     main_module.funds_store.create(
         "Fondo dividendos", 10_000, auto_trading_enabled=True, strategy_id="dividend"
     )
-    monkeypatch.setattr(main_module.screener, "scan", lambda: [])
+    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [])
 
     called_with = []
 
@@ -1023,7 +1023,7 @@ def test_signal_scan_cycle_triggers_extra_scan_for_fund_with_distinct_strategy(m
 
     monkeypatch.setattr(main_module, "_run_fund_strategy_auto_trade_scan", fake_extra_scan)
 
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
     assert called_with == ["dividend"]
 
@@ -1037,7 +1037,7 @@ def test_signal_scan_cycle_skips_extra_scan_for_fund_matching_global_strategy(mo
     main_module.funds_store.create(
         "Fondo", 10_000, auto_trading_enabled=True, strategy_id="momentum"
     )
-    monkeypatch.setattr(main_module.screener, "scan", lambda: [])
+    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [])
 
     called = []
 
@@ -1046,7 +1046,7 @@ def test_signal_scan_cycle_skips_extra_scan_for_fund_matching_global_strategy(mo
 
     monkeypatch.setattr(main_module, "_run_fund_strategy_auto_trade_scan", fake_extra_scan)
 
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
     assert called == []
 
@@ -1058,7 +1058,7 @@ def test_signal_scan_cycle_skips_extra_scan_for_fund_without_auto_trading(monkey
     main_module.funds_store.create(
         "Fondo dividendos pausado", 10_000, auto_trading_enabled=False, strategy_id="dividend"
     )
-    monkeypatch.setattr(main_module.screener, "scan", lambda: [])
+    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [])
 
     called = []
 
@@ -1067,14 +1067,14 @@ def test_signal_scan_cycle_skips_extra_scan_for_fund_without_auto_trading(monkey
 
     monkeypatch.setattr(main_module, "_run_fund_strategy_auto_trade_scan", fake_extra_scan)
 
-    asyncio.run(main_module._run_signal_scan_cycle())
+    asyncio.run(main_module._run_score_recompute_cycle())
 
     assert called == []
 
 
 def test_run_fund_strategy_auto_trade_scan_first_run_establishes_baseline(monkeypatch):
     signal = make_signal(symbol="DIV1", score=90.0)
-    monkeypatch.setattr(main_module.strategy_registry["dividend"], "scan", lambda: [signal])
+    monkeypatch.setattr(main_module.strategy_registry["dividend"], "scan", lambda *a, **kw: [signal])
 
     asyncio.run(main_module._run_fund_strategy_auto_trade_scan("dividend"))
 
@@ -1090,7 +1090,7 @@ def test_run_fund_strategy_auto_trade_scan_executes_auto_trade_for_matching_fund
     # AAPL (no DIV1): debe estar en symbol_whitelist (ver fixture reset_state)
     # para que rules_engine.evaluate apruebe la orden.
     signal = make_signal(symbol="AAPL", score=90.0, last_price=100.0, stop=95.0)
-    monkeypatch.setattr(main_module.strategy_registry["dividend"], "scan", lambda: [signal])
+    monkeypatch.setattr(main_module.strategy_registry["dividend"], "scan", lambda *a, **kw: [signal])
     monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
 
     asyncio.run(main_module._run_fund_strategy_auto_trade_scan("dividend"))
@@ -1101,14 +1101,14 @@ def test_run_fund_strategy_auto_trade_scan_executes_auto_trade_for_matching_fund
 
 def test_run_fund_strategy_auto_trade_scan_holds_screener_config_lock_around_signal_state(monkeypatch):
     """Mismo motivo que el test analogo en test_signal_engine.py para
-    _run_signal_scan_cycle (ver M8 del audit): update_screener_config
+    _run_score_recompute_cycle (ver M8 del audit): update_screener_config
     REEMPLAZA _signal_state["previously_passing_by_strategy"] por un dict
     nuevo (no lo muta in place), asi que sin compartir _screener_config_lock
     este ciclo podia guardarse una referencia al dict VIEJO antes del
     reemplazo y escribir ahi, perdiendo la escritura sin que _signal_state la
     vea nunca."""
     signal = make_signal(symbol="DIV1", score=90.0)
-    monkeypatch.setattr(main_module.strategy_registry["dividend"], "scan", lambda: [signal])
+    monkeypatch.setattr(main_module.strategy_registry["dividend"], "scan", lambda *a, **kw: [signal])
 
     lock_held_on_access = []
 
@@ -1132,7 +1132,7 @@ def test_run_fund_strategy_auto_trade_scan_ignores_fund_with_other_strategy(monk
     )
     main_module._signal_state["previously_passing_by_strategy"]["dividend"] = set()
     signal = make_signal(symbol="DIV1", score=90.0, last_price=100.0, stop=95.0)
-    monkeypatch.setattr(main_module.strategy_registry["dividend"], "scan", lambda: [signal])
+    monkeypatch.setattr(main_module.strategy_registry["dividend"], "scan", lambda *a, **kw: [signal])
     monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
 
     asyncio.run(main_module._run_fund_strategy_auto_trade_scan("dividend"))

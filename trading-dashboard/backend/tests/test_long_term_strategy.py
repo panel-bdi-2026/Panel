@@ -69,15 +69,15 @@ FUNDAMENTALS = {
 
 @pytest.fixture
 def patched_market_data(monkeypatch):
-    def fake_get_daily_bars(symbol, lookback_days, force=False):
+    def fake_get_daily_bars(symbol, lookback_days, force=False, cache_only=False):
         if symbol not in FUNDAMENTALS:
             raise MarketDataError(f"sin datos sinteticos para {symbol}")
         return ILLIQUID_BARS if symbol == "ILLIQUID" else BARS
 
-    def fake_get_fundamentals(symbol, force=False):
+    def fake_get_fundamentals(symbol, force=False, cache_only=False):
         return FUNDAMENTALS[symbol]
 
-    def fake_get_next_earnings_date(symbol, force=False):
+    def fake_get_next_earnings_date(symbol, force=False, cache_only=False):
         return None
 
     monkeypatch.setattr(long_term_module, "get_daily_bars", fake_get_daily_bars)
@@ -126,7 +126,7 @@ def test_illiquid_symbol_fails_liquidity_filter_despite_strong_fundamentals(stra
 
 def test_roe_missing_adds_note_but_does_not_block_filter(monkeypatch, patched_market_data):
     fundamentals_no_roe = dict(FUNDAMENTALS["STRONG"], return_on_equity=None)
-    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: fundamentals_no_roe)
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False, cache_only=False: fundamentals_no_roe)
     config = ScreenerConfig(universe=["STRONG"])
     s = LongTermStrategy(config)
     result = s.evaluate_symbol("STRONG")
@@ -136,7 +136,7 @@ def test_roe_missing_adds_note_but_does_not_block_filter(monkeypatch, patched_ma
 
 def test_high_debt_to_equity_adds_note_but_does_not_block_filter(monkeypatch, patched_market_data):
     fundamentals_high_debt = dict(FUNDAMENTALS["STRONG"], debt_to_equity=300.0)
-    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: fundamentals_high_debt)
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False, cache_only=False: fundamentals_high_debt)
     config = ScreenerConfig(universe=["STRONG"])
     s = LongTermStrategy(config)
     result = s.evaluate_symbol("STRONG")
@@ -165,7 +165,7 @@ def test_unknown_symbol_is_skipped(patched_market_data):
 
 
 def test_scan_raises_when_no_symbol_has_data(monkeypatch):
-    def always_fails(symbol, lookback_days, force=False):
+    def always_fails(symbol, lookback_days, force=False, cache_only=False):
         raise MarketDataError("sin red en este entorno")
 
     monkeypatch.setattr(long_term_module, "get_daily_bars", always_fails)
@@ -215,10 +215,10 @@ def test_low_peg_ratio_scores_higher_than_high_peg_ratio(monkeypatch, patched_ma
     config = ScreenerConfig(universe=["STRONG"])
     s = LongTermStrategy(config)
 
-    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: dict(FUNDAMENTALS["STRONG"], peg_ratio=0.5))
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False, cache_only=False: dict(FUNDAMENTALS["STRONG"], peg_ratio=0.5))
     low_result = s.evaluate_symbol("STRONG")
 
-    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: dict(FUNDAMENTALS["STRONG"], peg_ratio=4.0))
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False, cache_only=False: dict(FUNDAMENTALS["STRONG"], peg_ratio=4.0))
     high_result = s.evaluate_symbol("STRONG")
 
     assert low_result.peg_ratio == 0.5
@@ -232,7 +232,7 @@ def test_extra_fundamentals_are_exposed_on_signal_result(monkeypatch, patched_ma
         insider_ownership=0.05, institutional_ownership=0.65, short_pct_of_float=0.03,
         current_ratio=1.8, quick_ratio=1.3, free_cash_flow=2_000_000.0,
     )
-    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False, cache_only=False: fundamentals)
     config = ScreenerConfig(universe=["STRONG"])
     result = LongTermStrategy(config).evaluate_symbol("STRONG")
     assert result.peg_ratio == 1.2
@@ -248,7 +248,7 @@ def test_extra_fundamentals_are_exposed_on_signal_result(monkeypatch, patched_ma
 
 def test_high_beta_adds_advisory_note_but_does_not_block_filter(monkeypatch, patched_market_data):
     fundamentals = dict(FUNDAMENTALS["STRONG"], beta=3.0)
-    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False, cache_only=False: fundamentals)
     config = ScreenerConfig(universe=["STRONG"])
     result = LongTermStrategy(config).evaluate_symbol("STRONG")
     assert result.passes_filters
@@ -257,7 +257,7 @@ def test_high_beta_adds_advisory_note_but_does_not_block_filter(monkeypatch, pat
 
 def test_negative_free_cash_flow_adds_advisory_note_but_does_not_block_filter(monkeypatch, patched_market_data):
     fundamentals = dict(FUNDAMENTALS["STRONG"], free_cash_flow=-500_000.0)
-    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False: fundamentals)
+    monkeypatch.setattr(long_term_module, "get_fundamentals", lambda symbol, force=False, cache_only=False: fundamentals)
     config = ScreenerConfig(universe=["STRONG"])
     result = LongTermStrategy(config).evaluate_symbol("STRONG")
     assert result.passes_filters

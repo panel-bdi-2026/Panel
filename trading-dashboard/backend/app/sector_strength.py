@@ -14,7 +14,7 @@ _MOMENTUM_3M_DAYS = 63
 
 
 def sector_relative_strength(
-    symbol: str, own_momentum_3m_pct: float, lookback_days: int, force: bool = False
+    symbol: str, own_momentum_3m_pct: float, lookback_days: int, force: bool = False, cache_only: bool = False
 ) -> "float | None":
     """Fuerza relativa de `symbol` contra el ETF de su propio sector GICS
     (distinto del benchmark general usado por Momentum, ej. SPY): retorno a
@@ -26,7 +26,7 @@ def sector_relative_strength(
     if not etf:
         return None
     try:
-        bars = get_daily_bars(etf, lookback_days, force=force)
+        bars = get_daily_bars(etf, lookback_days, force=force, cache_only=cache_only)
     except MarketDataError:
         return None
     roc = rate_of_change(bars["Close"], _MOMENTUM_3M_DAYS)

@@ -51,7 +51,7 @@ class MomentumScreener:
     def reload(self, config: ScreenerConfig) -> None:
         self.config = config
 
-    def _benchmark_context(self, force: bool = False) -> tuple[float | None, bool]:
+    def _benchmark_context(self, force: bool = False, cache_only: bool = False) -> tuple[float | None, bool]:
         """Retorna (roc_3m, regime_ok) del benchmark.
 
         roc_3m es el momentum usado para la fuerza relativa de cada simbolo.
@@ -63,7 +63,7 @@ class MomentumScreener:
         de bloquear todo el scan por falta de dato.
         """
         try:
-            bars = get_daily_bars(self.config.benchmark_symbol, self.config.lookback_days, force=force)
+            bars = get_daily_bars(self.config.benchmark_symbol, self.config.lookback_days, force=force, cache_only=cache_only)
         except MarketDataError:
             return None, True
         close = bars["Close"]
@@ -90,10 +90,11 @@ class MomentumScreener:
         benchmark_roc_3m: float | None,
         regime_ok: bool = True,
         force: bool = False,
+        cache_only: bool = False,
     ) -> SignalResult | None:
         cfg = self.config
         try:
-            bars = get_daily_bars(symbol, cfg.lookback_days, force=force)
+            bars = get_daily_bars(symbol, cfg.lookback_days, force=force, cache_only=cache_only)
         except MarketDataError:
             return None
         if len(bars) < max(
@@ -138,7 +139,7 @@ class MomentumScreener:
             else None
         )
         last_bollinger_pct_b = float(bollinger_pct_b_s.iloc[-1]) if not pd.isna(bollinger_pct_b_s.iloc[-1]) else None
-        last_sector_rel_strength = sector_relative_strength(symbol, last_roc_3m, cfg.lookback_days, force=force)
+        last_sector_rel_strength = sector_relative_strength(symbol, last_roc_3m, cfg.lookback_days, force=force, cache_only=cache_only)
 
         trend_ok = bool(last_price > sma_fast_s.iloc[-1] > sma_slow_s.iloc[-1])
         # Filtro en volumen en dolares, no en cantidad de acciones: una accion de
@@ -165,7 +166,7 @@ class MomentumScreener:
         days_to_earnings: int | None = None
         earnings_ok = True
         if trend_ok and liquidity_ok and rsi_ok and regime_ok and near_high_ok:
-            earnings_date = get_next_earnings_date(symbol, force=force)
+            earnings_date = get_next_earnings_date(symbol, force=force, cache_only=cache_only)
             days_to_earnings = (earnings_date - datetime.now(timezone.utc).date()).days if earnings_date else None
             earnings_ok = days_to_earnings is None or not (0 <= days_to_earnings <= cfg.earnings_blackout_days)
 
@@ -253,19 +254,18 @@ class MomentumScreener:
             score_components=components,
         )
 
-    def scan(self, force: bool = False) -> list[SignalResult]:
-        benchmark_roc, regime_ok = self._benchmark_context(force=force)
+    def scan(self, force: bool = False, cache_only: bool = False) -> list[SignalResult]:
+        benchmark_roc, regime_ok = self._benchmark_context(force=force, cache_only=cache_only)
         results = []
         delay = self.config.scan_request_delay_seconds
         for i, symbol in enumerate(self.config.universe):
             # Pausa entre simbolos para no rafagar la API gratuita de Yahoo
             # Finance con un universo grande (ver scan_request_delay_seconds),
-            # salvo que el dato ya este cacheado (ej. otra estrategia ya
-            # escaneo este simbolo en este mismo ciclo): ahi no hay fetch real
-            # que espaciar.
-            if i > 0 and delay > 0 and (force or not is_bars_cached(symbol, self.config.lookback_days)):
+            # salvo que el dato ya este cacheado o que sea cache_only (sin red
+            # de por medio, la pausa no sirve de nada).
+            if not cache_only and i > 0 and delay > 0 and (force or not is_bars_cached(symbol, self.config.lookback_days)):
                 time.sleep(delay)
-            result = self.evaluate_symbol(symbol, benchmark_roc, regime_ok=regime_ok, force=force)
+            result = self.evaluate_symbol(symbol, benchmark_roc, regime_ok=regime_ok, force=force, cache_only=cache_only)
             if result is not None:
                 results.append(result)
         if self.config.universe and not results:

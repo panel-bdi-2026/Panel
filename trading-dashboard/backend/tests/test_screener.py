@@ -50,12 +50,12 @@ FAKE_BARS = {
 
 @pytest.fixture
 def patched_market_data(monkeypatch):
-    def fake_get_daily_bars(symbol, lookback_days, force=False):
+    def fake_get_daily_bars(symbol, lookback_days, force=False, cache_only=False):
         if symbol not in FAKE_BARS:
             raise MarketDataError(f"sin datos sinteticos para {symbol}")
         return FAKE_BARS[symbol]
 
-    def fake_get_next_earnings_date(symbol, force=False):
+    def fake_get_next_earnings_date(symbol, force=False, cache_only=False):
         return None
 
     monkeypatch.setattr(screener_module, "get_daily_bars", fake_get_daily_bars)
@@ -144,7 +144,7 @@ def test_stop_loss_is_below_last_price(screener):
 
 
 def test_scan_raises_when_no_symbol_has_data(monkeypatch):
-    def always_fails(symbol, lookback_days, force=False):
+    def always_fails(symbol, lookback_days, force=False, cache_only=False):
         raise MarketDataError("sin red en este entorno")
 
     monkeypatch.setattr(screener_module, "get_daily_bars", always_fails)
@@ -178,7 +178,7 @@ def test_earnings_blackout_blocks_symbol_when_earnings_within_window(monkeypatch
     from datetime import date, timedelta
 
     soon = date.today() + timedelta(days=2)
-    monkeypatch.setattr(screener_module, "get_next_earnings_date", lambda symbol, force=False: soon)
+    monkeypatch.setattr(screener_module, "get_next_earnings_date", lambda symbol, force=False, cache_only=False: soon)
     config = ScreenerConfig(universe=["MOM"], benchmark_symbol="SPY", earnings_blackout_days=5)
     s = MomentumScreener(config)
     results = s.scan()
@@ -191,7 +191,7 @@ def test_earnings_blackout_does_not_block_when_earnings_outside_window(monkeypat
     from datetime import date, timedelta
 
     far = date.today() + timedelta(days=30)
-    monkeypatch.setattr(screener_module, "get_next_earnings_date", lambda symbol, force=False: far)
+    monkeypatch.setattr(screener_module, "get_next_earnings_date", lambda symbol, force=False, cache_only=False: far)
     config = ScreenerConfig(universe=["MOM"], benchmark_symbol="SPY", earnings_blackout_days=5)
     s = MomentumScreener(config)
     results = s.scan()
@@ -213,7 +213,7 @@ def test_earnings_lookup_is_skipped_for_symbols_that_already_fail_other_filters(
     liquidez/regimen."""
     calls: list[str] = []
 
-    def tracking_get_next_earnings_date(symbol, force=False):
+    def tracking_get_next_earnings_date(symbol, force=False, cache_only=False):
         calls.append(symbol)
         return None
 
@@ -249,13 +249,13 @@ def test_near_high_filter_returns_none_with_insufficient_history(monkeypatch):
     # proximidad no debe bloquear por esto (ver indicators.pct_from_high).
     short_bars = FAKE_BARS["MOM"].iloc[:100]
 
-    def fake_get_daily_bars(symbol, lookback_days, force=False):
+    def fake_get_daily_bars(symbol, lookback_days, force=False, cache_only=False):
         if symbol != "MOM":
             raise MarketDataError(f"sin datos sinteticos para {symbol}")
         return short_bars
 
     monkeypatch.setattr(screener_module, "get_daily_bars", fake_get_daily_bars)
-    monkeypatch.setattr(screener_module, "get_next_earnings_date", lambda symbol, force=False: None)
+    monkeypatch.setattr(screener_module, "get_next_earnings_date", lambda symbol, force=False, cache_only=False: None)
 
     config = ScreenerConfig(
         universe=["MOM"], benchmark_symbol="SPY",
