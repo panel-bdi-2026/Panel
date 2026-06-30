@@ -253,15 +253,23 @@ class LongTermStrategy:
                 "API gratuita de datos."
             )
         lt = self.config.long_term
-        apply_cross_sectional_normalization(results, {
+        weights = {
             "value": lt.score_weight_value,
             "growth": lt.score_weight_growth,
             "quality": lt.score_weight_quality,
             "peg": lt.score_weight_peg,
             "safety": lt.score_weight_safety,
             "ownership_alignment": lt.score_weight_ownership_alignment,
-        })
-        results.sort(key=lambda r: r.score, reverse=True)
+        }
+        passing = [r for r in results if r.passes_filters]
+        non_passing = [r for r in results if not r.passes_filters]
+        apply_cross_sectional_normalization(passing, weights)
+        apply_cross_sectional_normalization(non_passing, weights)
+        for r in passing:
+            r.score = round(50.0 + r.score * 0.5, 2)
+        for r in non_passing:
+            r.score = round(r.score * 0.49, 2)
+        results = sorted(passing + non_passing, key=lambda r: r.score, reverse=True)
         if self.config.news_sentiment_enabled:
             apply_news_sentiment_adjustment(
                 results,

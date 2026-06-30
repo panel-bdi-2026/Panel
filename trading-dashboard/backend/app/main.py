@@ -29,7 +29,7 @@ from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
 from .funds import FundsStore, FundValidationError
 from .indicators import atr, sma
-from .market_data import MarketDataError, get_daily_bars, is_bars_cached
+from .market_data import MarketDataError, get_daily_bars, get_fundamentals, is_bars_cached, is_fundamentals_cached
 from .models import OrderRequest, OrderType, PendingOrder, Position, SignalResult, Side, validate_symbol
 from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
@@ -1085,20 +1085,25 @@ async def _run_data_refresh_cycle() -> None:
     delay = screener_config.scan_request_delay_seconds
     first_fetch = True
     for symbol in batch:
-        if is_bars_cached(symbol, screener_config.lookback_days):
+        bars_cached = is_bars_cached(symbol, screener_config.lookback_days)
+        funds_cached = is_fundamentals_cached(symbol)
+        if bars_cached and funds_cached:
             continue
         if not first_fetch and delay > 0:
             await asyncio.sleep(delay)
         first_fetch = False
-        try:
-            # Sin _market_scan_lock: get_daily_bars ya tiene _bars_locks por
-            # simbolo que previenen fetches duplicados concurrentes. Tomar el
-            # lock aqui lo mantendria ocupado casi continuamente durante el
-            # primer calentamiento del cache (25 fetches * varios segundos c/u),
-            # devolviendo market_scan_busy=True todo el tiempo.
-            await asyncio.to_thread(get_daily_bars, symbol, screener_config.lookback_days)
-        except Exception:
-            pass  # fallo cacheado por get_daily_bars; no reintentar hasta que expire el TTL
+        if not bars_cached:
+            try:
+                # Sin _market_scan_lock: get_daily_bars/_fundamentals_locks por
+                # simbolo ya previenen fetches duplicados concurrentes.
+                await asyncio.to_thread(get_daily_bars, symbol, screener_config.lookback_days)
+            except Exception:
+                pass  # fallo cacheado; no reintentar hasta que expire el TTL
+        if not funds_cached:
+            try:
+                await asyncio.to_thread(get_fundamentals, symbol)
+            except Exception:
+                pass
 
 
 async def _data_refresh_loop() -> None:

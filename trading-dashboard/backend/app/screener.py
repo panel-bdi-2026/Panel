@@ -274,7 +274,7 @@ class MomentumScreener:
                 "configurado. Puede ser un problema de conectividad o el limite de la "
                 "API gratuita de datos."
             )
-        apply_cross_sectional_normalization(results, {
+        weights = {
             "relative_strength": self.config.score_weight_relative_strength,
             "momentum_12_1": self.config.score_weight_momentum_12_1,
             "trend": self.config.score_weight_trend,
@@ -282,8 +282,16 @@ class MomentumScreener:
             "macd": self.config.score_weight_macd,
             "bollinger": self.config.score_weight_bollinger,
             "sector_relative_strength": self.config.score_weight_sector_relative_strength,
-        })
-        results.sort(key=lambda r: r.score, reverse=True)
+        }
+        passing = [r for r in results if r.passes_filters]
+        non_passing = [r for r in results if not r.passes_filters]
+        apply_cross_sectional_normalization(passing, weights)
+        apply_cross_sectional_normalization(non_passing, weights)
+        for r in passing:
+            r.score = round(50.0 + r.score * 0.5, 2)
+        for r in non_passing:
+            r.score = round(r.score * 0.49, 2)
+        results = sorted(passing + non_passing, key=lambda r: r.score, reverse=True)
         if self.config.news_sentiment_enabled:
             apply_news_sentiment_adjustment(
                 results,

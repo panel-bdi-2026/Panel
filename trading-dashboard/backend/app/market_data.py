@@ -212,6 +212,15 @@ def is_bars_cached(symbol: str, lookback_days: int) -> bool:
     return failed is not None and now - failed[0] < _CACHE_TTL_SECONDS
 
 
+def is_fundamentals_cached(symbol: str) -> bool:
+    """True si get_fundamentals(symbol) devolveria el cache sin tocar la red."""
+    cached = _fundamentals_cache.get(symbol.upper())
+    if not cached:
+        return False
+    ttl = _FUNDAMENTALS_CACHE_TTL_SECONDS if cached[2] else _FUNDAMENTALS_FAILURE_CACHE_TTL_SECONDS
+    return time.time() - cached[0] < ttl
+
+
 def _earnings_cache_ttl(ok: bool) -> float:
     return _EARNINGS_CACHE_TTL_SECONDS if ok else _EARNINGS_FAILURE_CACHE_TTL_SECONDS
 
