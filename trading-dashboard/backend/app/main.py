@@ -974,10 +974,16 @@ async def _trailing_stop_loop() -> None:
 
 async def _run_hot_set_cycle() -> None:
     """Recalcula el hot-set del radar en vivo: los simbolos con mayor score
-    MAXIMO entre las 4 estrategias (ver _scan_general), hasta
-    live_hot_symbols_cap. Dinamico: diffea contra el hot-set anterior y solo
-    suscribe/desuscribe streaming de IBKR lo que cambio, no todo el set en
-    cada ciclo.
+    MAXIMO entre las 4 estrategias, hasta live_hot_symbols_cap. Dinamico:
+    diffea contra el hot-set anterior y solo suscribe/desuscribe streaming de
+    IBKR lo que cambio, no todo el set en cada ciclo.
+
+    Lee directamente de signal_cache (sin disparar scans de red): el cache lo
+    mantienen _score_recompute_loop y los endpoints HTTP. Si el cache esta vacio
+    (ej. justo tras un restart), no hay hot-set todavia y se vuelve en el
+    proximo ciclo. Esto evita que _hot_set_loop dispare un scan completo bajo
+    _market_scan_lock en el arranque, que era lo que mantenia market_scan_busy
+    en True indefinidamente.
 
     Las altas se intentan antes que las bajas: si suscribir el nuevo hot-set
     falla (ej. error de IBKR), el hot-set anterior queda intacto en vez de
@@ -986,7 +992,15 @@ async def _run_hot_set_cycle() -> None:
     if not screener_config.live_radar_enabled or not state["connected"]:
         return
     try:
-        _, _, ranked = await _scan_general(force=False)
+        best_by_symbol: dict[str, dict] = {}
+        for strategy_id, cached in signal_cache.items():
+            for r in cached.get("results", []):
+                current = best_by_symbol.get(r["symbol"])
+                if current is None or r["score"] > current["score"]:
+                    best_by_symbol[r["symbol"]] = r
+        if not best_by_symbol:
+            return
+        ranked = sorted(best_by_symbol.values(), key=lambda r: r["score"], reverse=True)
     except Exception as exc:
         logger.warning("No se pudo recalcular el hot-set del radar en vivo: %s", exc)
         return
@@ -1077,8 +1091,12 @@ async def _run_data_refresh_cycle() -> None:
             await asyncio.sleep(delay)
         first_fetch = False
         try:
-            async with _market_scan_lock:
-                await asyncio.to_thread(get_daily_bars, symbol, screener_config.lookback_days)
+            # Sin _market_scan_lock: get_daily_bars ya tiene _bars_locks por
+            # simbolo que previenen fetches duplicados concurrentes. Tomar el
+            # lock aqui lo mantendria ocupado casi continuamente durante el
+            # primer calentamiento del cache (25 fetches * varios segundos c/u),
+            # devolviendo market_scan_busy=True todo el tiempo.
+            await asyncio.to_thread(get_daily_bars, symbol, screener_config.lookback_days)
         except Exception:
             pass  # fallo cacheado por get_daily_bars; no reintentar hasta que expire el TTL
 

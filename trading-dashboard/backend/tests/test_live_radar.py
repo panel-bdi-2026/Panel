@@ -39,11 +39,13 @@ def reset_state(monkeypatch):
     main_module._live_prices.clear()
     main_module._live_prices_as_of.clear()
     main_module._rotation_cursor = 0
+    main_module.signal_cache.clear()
     yield
     main_module._hot_symbols.clear()
     main_module._live_prices.clear()
     main_module._live_prices_as_of.clear()
     main_module._rotation_cursor = 0
+    main_module.signal_cache.clear()
 
 
 def _ranked(*symbols_and_scores):
@@ -84,10 +86,11 @@ def test_hot_set_cycle_noop_when_not_connected(monkeypatch):
 
 def test_hot_set_cycle_subscribes_top_n_by_max_score_up_to_cap(monkeypatch):
     main_module.screener_config.live_hot_symbols_cap = 2
-    monkeypatch.setattr(
-        main_module, "_scan_general",
-        _fake_scan_general(_ranked(("AAPL", 9.0), ("MSFT", 8.0), ("XOM", 1.0))),
-    )
+    # _run_hot_set_cycle lee directo de signal_cache (ya no llama _scan_general):
+    main_module.signal_cache["momentum"] = {
+        "as_of": datetime.now(timezone.utc),
+        "results": _ranked(("AAPL", 9.0), ("MSFT", 8.0), ("XOM", 1.0)),
+    }
 
     subscribed = []
 
@@ -106,10 +109,10 @@ def test_hot_set_cycle_subscribes_top_n_by_max_score_up_to_cap(monkeypatch):
 def test_hot_set_cycle_diffs_against_previous_hot_set(monkeypatch):
     main_module._hot_symbols.update({"AAPL", "MSFT"})
     main_module.screener_config.live_hot_symbols_cap = 2
-    monkeypatch.setattr(
-        main_module, "_scan_general",
-        _fake_scan_general(_ranked(("MSFT", 9.0), ("XOM", 8.0))),
-    )
+    main_module.signal_cache["momentum"] = {
+        "as_of": datetime.now(timezone.utc),
+        "results": _ranked(("MSFT", 9.0), ("XOM", 8.0)),
+    }
 
     subscribe_calls, unsubscribe_calls = [], []
 
