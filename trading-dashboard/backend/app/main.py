@@ -434,11 +434,26 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
         position_qty = broker.get_position_qty(symbol)
         sector_exposure_usd = _compute_sector_exposure(await broker.get_positions(), symbol)
 
+        # Si el stop-loss sugerido por la estrategia (basado en ATR) excede el
+        # maximo permitido, se ajusta al tope en vez de rechazar la orden: el
+        # riesgo se mantiene dentro del limite configurado y el auto-trade puede
+        # proceder. El sizing se recalcula con el stop ajustado para que el
+        # riesgo en dolares siga siendo coherente con risk_per_trade_pct.
+        effective_stop_loss_price = result.suggested_stop_loss_price
+        stop_adjusted_from_pct: float | None = None
+        if live_price > 0 and effective_stop_loss_price > 0:
+            implied_stop_pct = (live_price - effective_stop_loss_price) / live_price * 100
+            if implied_stop_pct > rules_config.max_stop_loss_pct:
+                stop_adjusted_from_pct = round(implied_stop_pct, 2)
+                effective_stop_loss_price = round(
+                    live_price * (1 - rules_config.max_stop_loss_pct / 100), 2
+                )
+
         fund = None
         quantity = 0.0
         for candidate in candidates:
             sizing = rules_engine.suggested_quantity(
-                candidate.equity_estimate(), position_qty, live_price, result.suggested_stop_loss_price
+                candidate.equity_estimate(), position_qty, live_price, effective_stop_loss_price
             )
             if sizing.quantity <= 0:
                 continue
@@ -457,7 +472,7 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
             quantity=quantity,
             order_type=OrderType.LMT,
             limit_price=live_price,
-            stop_loss_price=result.suggested_stop_loss_price,
+            stop_loss_price=effective_stop_loss_price,
             fund_id=fund.id,
         )
         trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
@@ -493,14 +508,18 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
             fill_price = result_payload.get("avg_fill_price") or live_price
             funds_store.record_fill(
                 fund.id, symbol, Side.BUY, filled_qty, fill_price,
-                stop_loss_price=result.suggested_stop_loss_price,
+                stop_loss_price=effective_stop_loss_price,
                 stop_order_id=result_payload.get("stop_order_id"),
                 commission=screener_config.commission_per_trade_usd,
             )
+        audit_extra: dict = {"fund_id": fund.id, "signal": result.model_dump(), **result_payload}
+        if stop_adjusted_from_pct is not None:
+            audit_extra["stop_loss_adjusted_from_pct"] = stop_adjusted_from_pct
+            audit_extra["stop_loss_adjusted_to_pct"] = rules_config.max_stop_loss_pct
         audit.record(
             "auto_trade_executed" if filled_qty > 0 else "auto_trade_submitted_unfilled",
             order.model_dump(),
-            {"fund_id": fund.id, "signal": result.model_dump(), **result_payload},
+            audit_extra,
         )
 
 

@@ -593,7 +593,7 @@ risk_per_trade_pct: 1.0
 daily_loss_limit_pct: 2.0
 max_trades_per_day: 10
 require_stop_loss_on_buy: true
-max_stop_loss_pct: 5.0
+max_stop_loss_pct: 8.0
 allow_short_selling: false
 manual_approval_threshold_usd: 1000.0
 allow_extended_hours: false
