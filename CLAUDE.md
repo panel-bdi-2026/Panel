@@ -24,23 +24,21 @@ usuario ya lo pidió varias veces.
 - Hay una sesión persistente de Claude Code corriendo en el droplet, dentro
   de una sesión de `tmux` llamada `claude-remote`, con working directory
   `/opt/panel`.
-- Se inició con `claude remote-control` (modo spawn: `same-dir`, las
+- Corre como el usuario **`claude-rc`** (no root) con permisos totales
+  habilitados vía `/home/claude-rc/.claude/settings.json` (no versionado,
+  vive solo en el droplet):
+  ```json
+  { "permissions": { "defaultMode": "bypassPermissions" } }
+  ```
+  **Ya no hay ninguna capa de confirmación.** Cualquier acción (incluidas
+  las destructivas: `rm -rf`, `git push --force`, `git reset --hard`,
+  reiniciar el droplet, tocar IB Gateway, etc.) se ejecuta sin pedir
+  aprobación. Funciona porque `claude-rc` no es root — Claude Code bloquea
+  `bypassPermissions` para procesos root/sudo. Si se quiere volver a pedir
+  confirmación para algo, hay que agregar `permissions.ask` y sacar
+  `defaultMode` de ese archivo.
+- Se lanza con `claude remote-control` (modo spawn: `same-dir`, las
   sesiones nuevas comparten `/opt/panel`).
-- **Política de permisos actualizada por segunda vez (2026-06-29, mismo día
-  que la primera): el usuario pidió explícitamente eliminar TODA
-  confirmación, sin excepción** ("cero excepciones, confirmo" — incluyendo
-  los casos que antes quedaban en `ask`: `rm -rf`, `git push --force`,
-  `git reset --hard`, apagar/reiniciar el droplet, tocar IB Gateway, etc).
-  `.claude/settings.json` (no versionado, vive solo en este droplet) tiene
-  `permissions.defaultMode: "bypassPermissions"` — el equivalente exacto de
-  `--dangerously-skip-permissions`, solo que vía config en vez del flag de
-  arranque. **Ya no hay ninguna capa de confirmación en este droplet.**
-  Cualquier acción (incluidas las destructivas o las que afectan dinero
-  real una vez en modo live) se ejecuta sin pedir aprobación. Si se quiere
-  volver a pedir confirmación para algo puntual, hay que volver a poblar
-  `permissions.ask` en `.claude/settings.json` y sacar `defaultMode`
-  (ver historial de este archivo para la versión con excepciones que hubo
-  antes de este cambio).
 - **Importante (confirmado 2026-06-29): NO existe una sesión que se llame
   literalmente "Panel" por defecto.** El nombre auto-generado de la sesión
   es `{hostname-del-droplet}-{palabras-random}` (ej.
@@ -93,6 +91,7 @@ usuario ya lo pidió varias veces.
     minutos o más y el proceso cerró solo. Fix — NO hace falta recrear
     tmux, solo relanzar el proceso dentro de la misma sesión:
     ```bash
+    su - claude-rc
     cd /opt/panel
     claude remote-control
     ```
@@ -104,6 +103,7 @@ usuario ya lo pidió varias veces.
     recrear todo desde cero:
     ```bash
     tmux new -s claude-remote
+    su - claude-rc
     cd /opt/panel
     claude remote-control
     ```
@@ -121,14 +121,16 @@ usuario ya lo pidió varias veces.
   - Directo por SSH: `ssh root@100.92.236.44` y luego
     `tmux attach -t claude-remote`.
 - Login OAuth hecho con la cuenta de Google `alejandrortega75@gmail.com`
-  (la misma de claude.ai, con 2FA activado vía Google).
+  (la misma de claude.ai, con 2FA activado vía Google), tanto para `root`
+  como para el usuario `claude-rc`.
 - Acceso SSH por llave configurado además de lo anterior: llave generada en
   la laptop (`laptop-panel`, ed25519) agregada a `~/.ssh/authorized_keys`
   del droplet. El sshd del droplet acepta **solo autenticación por llave
   pública** (`PasswordAuthentication no`), no hay fallback de password.
-- Pendiente (diferido a propósito hasta estar más cerca de operar en vivo):
-  crear un usuario Linux sin privilegios de root para correr Remote
-  Control, en vez de usar `root` directamente.
+- El usuario `claude-rc` tiene acceso a `/opt/panel` vía membresía en el
+  grupo `trading` con permisos de grupo habilitados (`chmod -R g+rw`).
+  Sudoers configurado en `/etc/sudoers.d/claude-rc` para `systemctl` y
+  `journalctl` sin password.
 
 ## Pasos para desplegar un cambio ya pusheado a la rama
 
