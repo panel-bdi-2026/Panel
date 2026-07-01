@@ -18,11 +18,27 @@ def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None
     "estado vacio" en vez de fallar fuerte, justamente para poder arrancar el
     backend igual ante un problema de datos -- pero eso solo es seguro si la
     escritura en si es atomica.
-    """
+
+    tempfile.mkstemp() crea el archivo temporal con permisos 0600 (solo el
+    dueño puede leerlo) sin importar los permisos que tuviera el archivo
+    destino, y os.replace() no los ajusta: cada guardado (cualquier PUT que
+    persista config, no solo una edicion manual) volvia a dejar el archivo en
+    0600, pisando en silencio un chmod mas permisivo que se hubiera aplicado
+    antes (ej. group-read para que otro usuario del sistema pueda leerlo).
+    Se preserva el modo del archivo destino si ya existia (respeta cualquier
+    esquema de permisos que el administrador haya establecido a proposito);
+    si es la primera vez que se crea, se usa 0644 (legible por cualquiera,
+    escribible solo por el dueño) en vez del 0600 por defecto de mkstemp,
+    mas razonable para un archivo de config."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing_mode = path.stat().st_mode & 0o777
+    except OSError:
+        existing_mode = 0o644
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
+        os.chmod(tmp_name, existing_mode)
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(content)
             f.flush()

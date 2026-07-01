@@ -46,6 +46,31 @@ def test_atomic_write_preserves_original_file_if_write_fails(tmp_path, monkeypat
     assert [p.name for p in tmp_path.iterdir()] == ["data.json"]
 
 
+def test_atomic_write_preserves_existing_file_permissions(tmp_path):
+    # tempfile.mkstemp() crea el archivo temporal en 0600 sin importar los
+    # permisos del destino, y os.replace() no los ajusta -- sin este fix,
+    # cada guardado volvia a dejar un archivo group-readable (0664, ej. para
+    # que otro usuario del sistema en el mismo grupo pueda leerlo) en 0600,
+    # pisando en silencio ese permiso mas amplio en cada escritura posterior.
+    target = tmp_path / "data.json"
+    target.write_text("original", encoding="utf-8")
+    os.chmod(target, 0o664)
+
+    atomic_io.atomic_write_text(target, "nuevo contenido")
+
+    assert target.read_text(encoding="utf-8") == "nuevo contenido"
+    assert oct(target.stat().st_mode & 0o777) == oct(0o664)
+
+
+def test_atomic_write_uses_0644_default_for_new_file(tmp_path):
+    # Un archivo que nunca existio antes no tiene permisos previos que
+    # preservar: usa 0644 (legible por cualquiera) en vez del 0600 por
+    # defecto de mkstemp, mas razonable para un archivo de config nuevo.
+    target = tmp_path / "data.json"
+    atomic_io.atomic_write_text(target, "contenido")
+    assert oct(target.stat().st_mode & 0o777) == oct(0o644)
+
+
 def test_atomic_write_creates_missing_parent_directories(tmp_path):
     target = tmp_path / "nested" / "deeper" / "data.json"
     atomic_io.atomic_write_text(target, '{"a": 1}')

@@ -11,6 +11,7 @@ directamente.
 import asyncio
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 # Mismo patron que test_auto_trading.py / test_signal_engine.py: apuntar las
@@ -865,6 +866,58 @@ def test_refresh_sectors_rejects_oversized_symbol_list():
         headers={"X-API-Key": "test-key"},
     )
     assert resp.status_code == 422
+
+
+def test_update_screener_config_auto_refreshes_sector_for_new_unclassified_symbol(monkeypatch):
+    # Antes de este fix, un simbolo nuevo agregado al universo (ej. via
+    # addTickerToUniverse() en el frontend) quedaba sin sector conocido hasta
+    # que alguien apretaba manualmente "Refrescar sectores": mientras tanto,
+    # max_sector_concentration_pct/max_concurrent_positions_per_sector no lo
+    # cubrian (sin dato, esas reglas no bloquean). Corre en un hilo aparte
+    # (ver _refresh_missing_sectors_in_background), por eso el Event en vez
+    # de asumir que ya termino apenas vuelve la respuesta del PUT.
+    done = threading.Event()
+    calls = []
+
+    def fake_refresh_sector(symbol):
+        calls.append(symbol)
+        done.set()
+        return "Energy"
+
+    monkeypatch.setattr(main_module, "refresh_sector", fake_refresh_sector)
+    original_universe = list(main_module.screener_config.universe)
+    try:
+        resp = client.put(
+            "/api/signals/config",
+            json={"config": {"universe": original_universe + ["ZZZNEWCO"]}},
+            headers={"X-API-Key": "test-key"},
+        )
+        assert resp.status_code == 200
+        assert done.wait(timeout=2), "refresh_sector no se llamo a tiempo"
+        assert calls == ["ZZZNEWCO"]
+    finally:
+        main_module.screener_config.universe = original_universe
+
+
+def test_update_screener_config_does_not_refresh_sector_for_already_classified_symbol(monkeypatch):
+    # AAPL ya esta en el mapeo estatico (TICKER_SECTOR): agregarlo al
+    # universo no deberia disparar ningun refresh de sector.
+    calls = []
+    monkeypatch.setattr(main_module, "refresh_sector", lambda symbol: calls.append(symbol))
+    original_universe = list(main_module.screener_config.universe)
+    try:
+        universe_without_aapl = [s for s in original_universe if s != "AAPL"]
+        resp = client.put(
+            "/api/signals/config",
+            json={"config": {"universe": universe_without_aapl + ["AAPL"]}},
+            headers={"X-API-Key": "test-key"},
+        )
+        assert resp.status_code == 200
+        import time
+        time.sleep(0.2)  # margen para que un thread indebido alcanzara a correr
+        assert calls == []
+    finally:
+        main_module.screener_config.universe = original_universe
 
 
 # ---------------------------------------------------------------------------

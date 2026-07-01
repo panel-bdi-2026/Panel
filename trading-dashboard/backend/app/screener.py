@@ -18,8 +18,7 @@ from .indicators import (
 )
 from .market_data import MarketDataError, get_daily_bars, get_next_earnings_date, is_bars_cached
 from .models import SignalResult
-from .news_sentiment import apply_news_sentiment_adjustment
-from .scoring import apply_cross_sectional_normalization
+from .scoring import finalize_scan_results
 from .screener_config import ScreenerConfig
 from .sector_strength import sector_relative_strength
 from .sectors import get_sector
@@ -283,21 +282,9 @@ class MomentumScreener:
             "bollinger": self.config.score_weight_bollinger,
             "sector_relative_strength": self.config.score_weight_sector_relative_strength,
         }
-        passing = [r for r in results if r.passes_filters]
-        non_passing = [r for r in results if not r.passes_filters]
-        apply_cross_sectional_normalization(passing, weights)
-        apply_cross_sectional_normalization(non_passing, weights)
-        for r in passing:
-            r.score = round(50.0 + r.score * 0.5, 2)
-        for r in non_passing:
-            r.score = round(r.score * 0.49, 2)
-        results = sorted(passing + non_passing, key=lambda r: r.score, reverse=True)
-        if self.config.news_sentiment_enabled:
-            apply_news_sentiment_adjustment(
-                results,
-                self.config.top_n,
-                self.config.news_sentiment_shortlist_multiplier,
-                self.config.news_sentiment_max_adjustment,
-            )
-            results.sort(key=lambda r: r.score, reverse=True)
-        return results
+        return finalize_scan_results(
+            results, weights, self.config.top_n,
+            self.config.news_sentiment_enabled,
+            self.config.news_sentiment_shortlist_multiplier,
+            self.config.news_sentiment_max_adjustment,
+        )

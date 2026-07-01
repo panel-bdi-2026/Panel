@@ -5,8 +5,7 @@ from datetime import datetime, timezone
 
 from ..market_data import MarketDataError, get_daily_bars, get_fundamentals, is_bars_cached
 from ..models import SignalResult
-from ..news_sentiment import apply_news_sentiment_adjustment
-from ..scoring import apply_cross_sectional_normalization
+from ..scoring import finalize_scan_results
 from ..screener_config import ScreenerConfig
 from ..sectors import get_sector
 from .common import (
@@ -214,21 +213,9 @@ class DividendStrategy:
             "safety": dv.score_weight_safety,
             "ownership_alignment": dv.score_weight_ownership_alignment,
         }
-        passing = [r for r in results if r.passes_filters]
-        non_passing = [r for r in results if not r.passes_filters]
-        apply_cross_sectional_normalization(passing, weights)
-        apply_cross_sectional_normalization(non_passing, weights)
-        for r in passing:
-            r.score = round(50.0 + r.score * 0.5, 2)
-        for r in non_passing:
-            r.score = round(r.score * 0.49, 2)
-        results = sorted(passing + non_passing, key=lambda r: r.score, reverse=True)
-        if self.config.news_sentiment_enabled:
-            apply_news_sentiment_adjustment(
-                results,
-                self.config.top_n,
-                self.config.news_sentiment_shortlist_multiplier,
-                self.config.news_sentiment_max_adjustment,
-            )
-            results.sort(key=lambda r: r.score, reverse=True)
-        return results
+        return finalize_scan_results(
+            results, weights, self.config.top_n,
+            self.config.news_sentiment_enabled,
+            self.config.news_sentiment_shortlist_multiplier,
+            self.config.news_sentiment_max_adjustment,
+        )

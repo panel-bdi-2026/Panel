@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import re
 import time
 from typing import Literal, Optional
@@ -16,6 +17,19 @@ _CACHE_TTL_SECONDS = 6 * 3600
 # TTL corto solo para fallos de la API de Claude (ver _classify).
 _FAILURE_CACHE_TTL_SECONDS = 15 * 60
 _cache: dict[str, tuple[float, "NewsSentiment | None", bool]] = {}  # (timestamp, value, ok)
+
+# Pool dedicado para paralelizar get_news_sentiment sobre el shortlist (ver
+# apply_news_sentiment_adjustment): cada llamada es IO-bound (un fetch de
+# noticias a yfinance + una clasificacion via la API de Claude), asi que
+# corrian secuenciales dejaba un scan con sentimiento activo tardar la SUMA
+# de las latencias de red de cada simbolo del shortlist (hasta 30 por
+# default) en vez del maximo. max_workers moderado (no el tamaño del
+# shortlist completo) para no saturar de golpe el rate limit de la cuenta de
+# Anthropic ni el de Yahoo Finance.
+_SENTIMENT_MAX_WORKERS = 6
+_sentiment_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_SENTIMENT_MAX_WORKERS, thread_name_prefix="news-sentiment"
+)
 
 # Cache de nombre de empresa para filtrado de titulares. Se llena la primera
 # vez que se pide sentimiento de un símbolo y se reutiliza dentro de la sesión.
@@ -194,10 +208,24 @@ def apply_news_sentiment_adjustment(
     podia cruzar a la banda alta y, si superaba ademas el umbral de
     auto-trading, disparar una compra en un simbolo que fallaba el filtro de
     calidad de la estrategia solo por una noticia favorable.
+
+    Las llamadas a get_news_sentiment del shortlist se paralelizan en
+    _sentiment_executor (IO-bound: fetch de noticias + clasificacion via
+    Claude), en vez de una por una: secuencial, un shortlist de 30 simbolos
+    sin cache tardaba la SUMA de las latencias de red de cada uno (podia
+    ser varios minutos en un scan forzado), en vez del maximo entre todas.
+    Los resultados se recolectan primero (sin tocar `results` todavia) y
+    recien despues se aplican los ajustes en orden, para que el resultado
+    final sea identico al del loop secuencial de antes -- solo cambia
+    CUANTO tarda, no que hace.
     """
     shortlist_size = max(1, round(top_n * shortlist_multiplier))
-    for result in results[:shortlist_size]:
-        sentiment_data = get_news_sentiment(result.symbol)
+    shortlist = results[:shortlist_size]
+    if not shortlist:
+        return
+    symbols = [r.symbol for r in shortlist]
+    sentiments = list(_sentiment_executor.map(get_news_sentiment, symbols))
+    for result, sentiment_data in zip(shortlist, sentiments):
         if sentiment_data is None:
             continue
         result.news_sentiment = sentiment_data.sentiment

@@ -1702,10 +1702,29 @@ def _deep_merge_dict(base: dict, updates: dict) -> dict:
     return merged
 
 
+def _refresh_missing_sectors_in_background(symbols: list[str]) -> None:
+    """Resuelve el sector de `symbols` contra Yahoo Finance (ver
+    sectors.refresh_sector) en un hilo aparte, sin bloquear la respuesta del
+    PUT que los agrego al universo. Antes de este fix, un simbolo nuevo
+    quedaba silenciosamente sin sector (get_sector() devuelve None) hasta que
+    alguien lo notaba y apretaba manualmente "🌐 Refrescar sectores" en el
+    Radar -- mientras tanto, max_sector_concentration_pct/
+    max_concurrent_positions_per_sector no lo cubrian en absoluto (sin dato,
+    esas reglas no bloquean, ver RulesEngine.evaluate()). Best-effort: si
+    yfinance falla para alguno, sigue sin sector, igual que si nunca se
+    hubiera llamado."""
+    for symbol in symbols:
+        try:
+            refresh_sector(symbol)
+        except Exception:
+            logger.warning("No se pudo auto-resolver el sector de %s", symbol, exc_info=True)
+
+
 @app.put("/api/signals/config")
 def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_key)):
     global screener_config
     with _screener_config_lock:
+        previous_universe = set(screener_config.universe)
         merged = _deep_merge_dict(screener_config.model_dump(), body.config)
         try:
             new_config = ScreenerConfig(**merged)
@@ -1723,6 +1742,21 @@ def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_k
         # strategy_id propio (ver _run_fund_strategy_auto_trade_scan).
         _signal_state["previously_passing"] = None
         _signal_state["previously_passing_by_strategy"] = {}
+
+        # Simbolos nuevos en el universo (agregados en este PUT) que todavia
+        # no tienen sector conocido: se resuelven en background, en un hilo
+        # aparte (ver _refresh_missing_sectors_in_background), sin demorar la
+        # respuesta de este endpoint sincrono ni importar cuantos se hayan
+        # agregado de una (ej. un reemplazo masivo del universo entero).
+        new_symbols = set(new_config.universe) - previous_universe
+        unclassified_new = [s for s in new_symbols if get_sector(s) is None]
+        if unclassified_new:
+            threading.Thread(
+                target=_refresh_missing_sectors_in_background,
+                args=(unclassified_new,),
+                daemon=True,
+                name="sector-auto-refresh",
+            ).start()
     audit.record("screener_config_updated", body.config, {})
     return screener_config.model_dump()
 

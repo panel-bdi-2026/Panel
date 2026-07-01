@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -284,7 +285,10 @@ def test_adjustment_only_applies_to_shortlist(monkeypatch):
 
     monkeypatch.setattr(news_sentiment_module, "get_news_sentiment", fake_get)
     apply_news_sentiment_adjustment(results, top_n=2, shortlist_multiplier=1.0, max_adjustment=10.0)
-    assert calls == ["S0", "S1"]
+    # sorted(): las llamadas del shortlist se paralelizan en un thread pool
+    # (ver _sentiment_executor), asi que el ORDEN en que cada hilo aparece en
+    # `calls` no esta garantizado -- solo que sean exactamente estos dos.
+    assert sorted(calls) == ["S0", "S1"]
 
 
 def test_positive_sentiment_increases_score(monkeypatch):
@@ -362,6 +366,26 @@ def test_non_passing_candidate_score_never_exceeds_49(monkeypatch):
     )
     apply_news_sentiment_adjustment(results, top_n=10, shortlist_multiplier=3.0, max_adjustment=10.0)
     assert results[0].score == 49.0
+
+
+def test_apply_news_sentiment_adjustment_runs_shortlist_in_parallel(monkeypatch):
+    # Antes de paralelizar, un shortlist de N simbolos tardaba la SUMA de la
+    # latencia de cada uno (aca simulada con sleep); en paralelo (pool de
+    # _SENTIMENT_MAX_WORKERS) tarda aprox lo mismo que UNO solo. Con 6
+    # simbolos de 0.2s cada uno: secuencial séria >=1.2s, en paralelo (con
+    # margen de sobra para jitter de scheduling) tiene que quedar bien por
+    # debajo de eso.
+    results = [make_result(f"S{i}", score=100 - i) for i in range(6)]
+
+    def slow_get(symbol, force=False):
+        time.sleep(0.2)
+        return NewsSentiment(sentiment="neutral", summary="x")
+
+    monkeypatch.setattr(news_sentiment_module, "get_news_sentiment", slow_get)
+    start = time.monotonic()
+    apply_news_sentiment_adjustment(results, top_n=6, shortlist_multiplier=1.0, max_adjustment=10.0)
+    elapsed = time.monotonic() - start
+    assert elapsed < 0.6  # muy por debajo de 1.2s (6 * 0.2s secuencial)
 
 
 def test_shortlist_size_rounds_and_has_floor_of_one(monkeypatch):

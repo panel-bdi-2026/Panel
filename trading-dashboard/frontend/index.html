@@ -299,7 +299,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
   <div class="grid2">
     <div style="display:flex;flex-direction:column;gap:18px">
       <div class="card" id="sec-posiciones">
-        <div class="card-hdr">Posiciones <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="refreshAll()">↻ Actualizar</button></div>
+        <div class="card-hdr">Posiciones <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="refreshPositionsAndAccount()">↻ Actualizar</button></div>
         <div class="card-body">
           <table id="posTable">
             <thead><tr><th>Símbolo</th><th>Cantidad</th><th title="Precio promedio de compra de la posición actual.">Costo prom.</th><th title="Último precio de mercado conocido para este símbolo.">Precio mkt.</th><th title="Ganancia o pérdida no realizada: (precio de mercado − costo promedio) × cantidad. No se concreta hasta vender.">P&L no real.</th></tr></thead>
@@ -575,7 +575,9 @@ function fmtPct(v, decimals=1){
 
 function fmtAge(iso){
   if(!iso) return '—';
-  const sec = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  const ms = new Date(iso).getTime();
+  if(Number.isNaN(ms)) return '—';  // iso malformado: sin esto, "NaNh" en pantalla
+  const sec = Math.max(0, Math.round((Date.now() - ms) / 1000));
   if(sec < 60) return `${sec}s`;
   const min = Math.round(sec / 60);
   if(min < 60) return `${min}m`;
@@ -591,6 +593,21 @@ function esc(s){
   return String(s ?? '').replace(/[&<>"']/g, c => (
     {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
   ));
+}
+
+// Para interpolar un valor como argumento de string DENTRO de un atributo
+// onclick="fn(...)": esc() sola no alcanza ahi, porque el navegador primero
+// decodifica las entidades HTML del atributo y RECIEN DESPUES ejecuta el
+// resultado como JS -- un '&#39;' vuelve a ser ' antes de que el motor de JS
+// lo vea, así que un valor con una comilla simple podía romper el string de
+// JS igual (aunque esc() ya lo hubiera escapado para el HTML). JSON.stringify
+// castea a un literal de string de JS válido (con sus propias comillas y
+// escapes), y esc() alrededor de ESE resultado protege la capa de atributo
+// HTML sin volver a tocar los escapes de JSON.stringify (no toca backslashes).
+// Uso: onclick="fn(${escJsArg(value)})" -- sin comillas propias en la plantilla,
+// JSON.stringify ya las incluye.
+function escJsArg(value){
+  return esc(JSON.stringify(value));
 }
 
 function setSide(side){
@@ -770,18 +787,18 @@ function renderFunds(funds){
       <div class="fund-card">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
           <span>
-            <b class="fund-name-link" onclick="openFundDetail('${f.id}')" title="Ver detalle del fondo">${esc(f.name)}</b>
+            <b class="fund-name-link" onclick="openFundDetail(${escJsArg(f.id)})" title="Ver detalle del fondo">${esc(f.name)}</b>
             ${f.closed ? '<span class="muted-sm" style="margin-left:6px;font-weight:700;text-transform:uppercase">🔒 Cerrado</span>' : ''}
           </span>
           ${f.closed ? '' : `
           <label class="toggle-switch" title="Si está activo, el motor autónomo puede abrir y cerrar posiciones en este fondo sin aprobación manual (siempre en modo paper)">
-            <input type="checkbox" ${f.auto_trading_enabled ? 'checked' : ''} onchange="toggleFundAutoTrading('${f.id}', this.checked)">
+            <input type="checkbox" ${f.auto_trading_enabled ? 'checked' : ''} onchange="toggleFundAutoTrading(${escJsArg(f.id)}, this.checked)">
             <span class="toggle-slider"></span>
           </label>`}
         </div>
         ${f.closed ? '' : `
         <div style="margin-top:6px">
-          <select class="fs" style="width:auto;padding:4px 6px;font-size:11px" title="Estrategia que rige las entradas automáticas de este fondo. 'Sigue la estrategia activa global' significa que cambia junto con el selector del Radar de oportunidades." onchange="setFundStrategy('${f.id}', this.value)">
+          <select class="fs" style="width:auto;padding:4px 6px;font-size:11px" title="Estrategia que rige las entradas automáticas de este fondo. 'Sigue la estrategia activa global' significa que cambia junto con el selector del Radar de oportunidades." onchange="setFundStrategy(${escJsArg(f.id)}, this.value)">
             <option value="" ${!f.strategy_id ? 'selected' : ''}>Sigue la estrategia activa global</option>
             ${STRATEGIES.map(s => `<option value="${esc(s.id)}" ${f.strategy_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
           </select>
@@ -798,11 +815,11 @@ function renderFunds(funds){
         <div class="muted-sm" style="margin-top:8px">Cerrado el ${new Date(f.closed_at).toLocaleDateString()}</div>` : `
         <div style="display:flex;gap:6px;margin-top:10px;align-items:center">
           <input type="number" id="flow-amount-${f.id}" class="fi" style="flex:1;min-width:0;padding:6px 8px" placeholder="Monto USD" min="0" step="100">
-          <button class="btn-fund-add" onclick="adjustFundCapital('${f.id}', 1)" title="Aportar capital adicional a este fondo">+ Aportar</button>
-          <button class="btn-fund-remove" onclick="adjustFundCapital('${f.id}', -1)" title="Retirar capital de este fondo (no puede superar el cash disponible)">− Retirar</button>
+          <button class="btn-fund-add" onclick="adjustFundCapital(${escJsArg(f.id)}, 1)" title="Aportar capital adicional a este fondo">+ Aportar</button>
+          <button class="btn-fund-remove" onclick="adjustFundCapital(${escJsArg(f.id)}, -1)" title="Retirar capital de este fondo (no puede superar el cash disponible)">− Retirar</button>
         </div>
         <div>
-          <button class="btn-fund-close" onclick="closeFund('${f.id}')" ${canClose ? '' : 'disabled'} title="${canClose ? 'Cerrar este fondo de forma definitiva (no se puede reabrir)' : 'Para cerrar el fondo hay que retirar todo el cash y no tener posiciones abiertas'}">🔒 Cerrar fondo</button>
+          <button class="btn-fund-close" onclick="closeFund(${escJsArg(f.id)})" ${canClose ? '' : 'disabled'} title="${canClose ? 'Cerrar este fondo de forma definitiva (no se puede reabrir)' : 'Para cerrar el fondo hay que retirar todo el cash y no tener posiciones abiertas'}">🔒 Cerrar fondo</button>
         </div>`}
       </div>`;
     }).join('');
@@ -925,7 +942,7 @@ const RULES_FIELDS = [
   { key:'risk_per_trade_pct', section:'Riesgo y stop-loss', label:'Riesgo por operación (% del equity, para sugerir tamaño)', type:'number', min:0.01, max:100 },
   { key:'daily_loss_limit_pct', label:'Límite de pérdida diaria (%)', type:'number', min:0.01, max:100 },
   { key:'max_trades_per_day', label:'Máximo de operaciones por día', type:'number', min:1, max:1000, step:1, integer:true },
-  { key:'max_trades_per_day_per_fund', label:'Máximo de operaciones por día, por fondo', type:'number', min:1, max:1000, step:1, integer:true,
+  { key:'max_trades_per_day_per_fund', label:'Máximo de operaciones por día, por fondo', type:'number', min:1, max:1000, step:1, integer:true, nullable:true,
     hint:'Cupo ADICIONAL por fondo, para que uno solo no agote el cupo global de arriba y bloquee a los demás. Vacío = sin cupo adicional, solo aplica el global.' },
   { key:'require_stop_loss_on_buy', label:'Exigir stop-loss en toda compra', type:'checkbox' },
   { key:'max_stop_loss_pct', label:'Stop-loss máximo permitido (%)', type:'number', min:0.01, max:100 },
@@ -1165,7 +1182,23 @@ function readConfigFields(fields){
       // null = todas (default) cuando todas o ninguna marcada
       value = checked.length === 0 || checked.length === STRATEGIES.length ? null : checked;
     }
-    else if(f.type === 'number') value = f.integer ? parseInt(el.value, 10) : parseFloat(el.value);
+    else if(f.type === 'number'){
+      const raw = el.value.trim();
+      if(raw === '' && f.nullable){
+        // Campo explicitamente opcional (ej. max_trades_per_day_per_fund):
+        // vacio = null (desactivado), no un error de validacion.
+        value = null;
+      } else {
+        value = f.integer ? parseInt(raw, 10) : parseFloat(raw);
+        if(Number.isNaN(value)){
+          // Sin este chequeo, un campo numerico vaciado por error se mandaba
+          // como NaN -> JSON.stringify lo convierte en null silenciosamente,
+          // y el backend podia terminar guardando un valor invalido sin que
+          // el usuario se enterara.
+          throw new Error(`"${f.label}" no es un número válido.`);
+        }
+      }
+    }
     else value = el.value.trim();
     if(f.group){
       groups[f.group] = groups[f.group] || {};
@@ -1531,8 +1564,8 @@ async function refreshPending(){
         · valor estimado ${fmtUsd(p.decision.estimated_value_usd)}
         ${p.order.stop_loss_price ? ' · stop-loss ' + fmtUsd(p.order.stop_loss_price) : ''}
         <div class="pending-actions">
-          <button class="btn-approve" onclick="approveOrder('${p.id}')">✓ Aprobar</button>
-          <button class="btn-reject" onclick="rejectOrder('${p.id}')">✕ Rechazar</button>
+          <button class="btn-approve" onclick="approveOrder(${escJsArg(p.id)})">✓ Aprobar</button>
+          <button class="btn-reject" onclick="rejectOrder(${escJsArg(p.id)})">✕ Rechazar</button>
         </div>
       </div>`).join('');
   }catch(e){ /* ignore */ }
@@ -1675,7 +1708,13 @@ async function submitOrder(){
     stop_loss_price: document.getElementById('f-stop').value ? parseFloat(document.getElementById('f-stop').value) : null,
     fund_id: document.getElementById('f-fund').value || null,
   };
-  if(!order.symbol || !order.quantity){ toast('Completa símbolo y cantidad'); return; }
+  // !(x > 0) atrapa NaN, 0 y negativos en una sola condicion (a diferencia
+  // de !order.quantity, que solo bloqueaba 0/NaN: -5 es "truthy" en JS y se
+  // colaba). El atributo min="0" del input no alcanza por si solo: nadie
+  // llama a checkValidity()/reportValidity() antes de este chequeo manual.
+  if(!order.symbol || !(order.quantity > 0)){ toast('Completa símbolo y una cantidad positiva'); return; }
+  if(order.limit_price != null && !(order.limit_price > 0)){ toast('El precio límite debe ser un número positivo'); return; }
+  if(order.stop_loss_price != null && !(order.stop_loss_price > 0)){ toast('El stop-loss debe ser un número positivo'); return; }
   if(!confirmLiveAction(`¿Confirmás enviar ${order.side} ${order.quantity} ${order.symbol}?`)) return;
 
   const submitBtn = document.getElementById('submitOrderBtn');
@@ -1821,13 +1860,13 @@ function renderSignalsTable(){
           <td>${esc(r.sector || '—')}</td>
           <td>${scoresCellHtml(r)}</td>
           <td>${fmtUsd(r.last_price)}</td>
-          <td style="color:${r.momentum_3m_pct>=0?'var(--green)':'var(--red)'}">${r.momentum_3m_pct.toFixed(1)}%</td>
-          <td style="color:${r.momentum_1m_pct>=0?'var(--green)':'var(--red)'}">${r.momentum_1m_pct.toFixed(1)}%</td>
-          <td>${r.rsi.toFixed(0)}</td>
-          <td>${fmtUsd(r.suggested_stop_loss_price)} (-${r.suggested_stop_loss_pct.toFixed(1)}%)</td>
+          <td style="color:${r.momentum_3m_pct==null?'inherit':(r.momentum_3m_pct>=0?'var(--green)':'var(--red)')}">${fmtPct(r.momentum_3m_pct)}</td>
+          <td style="color:${r.momentum_1m_pct==null?'inherit':(r.momentum_1m_pct>=0?'var(--green)':'var(--red)')}">${fmtPct(r.momentum_1m_pct)}</td>
+          <td>${r.rsi != null ? r.rsi.toFixed(0) : '—'}</td>
+          <td>${fmtUsd(r.suggested_stop_loss_price)} (-${fmtPct(r.suggested_stop_loss_pct)})</td>
           <td>
-            <button class="btn-approve" onclick="useSignal('${esc(r.symbol)}')">Usar</button>
-            <button class="info-btn" onclick="showSignalDetail('${esc(r.symbol)}')" title="Ver más datos de esta señal">ⓘ</button>
+            <button class="btn-approve" onclick="useSignal(${escJsArg(r.symbol)})">Usar</button>
+            <button class="info-btn" onclick="showSignalDetail(${escJsArg(r.symbol)})" title="Ver más datos de esta señal">ⓘ</button>
           </td>
         </tr>`).join('');
   if(signalsDisplayCount < filtered.length){
@@ -2430,9 +2469,26 @@ async function refreshAll(){
   // (mensaje 'update' cada poll_interval_seconds, ver renderAccount/
   // renderPositions en ws.onmessage). No se re-piden por REST en el ciclo
   // periodico para no duplicar llamadas al broker.
+  //
+  // refreshFunds() ANTES que refreshPending(): esta ultima usa lastFundsById
+  // (poblado por renderFunds, dentro de refreshFunds) para mostrar el
+  // nombre del fondo de cada orden pendiente. En el orden invertido, la
+  // primera carga (o el primer ciclo tras crear un fondo) mostraba el UUID
+  // crudo del fondo en vez del nombre hasta el proximo ciclo de refresco.
+  await refreshFunds();
   await refreshPending();
   await refreshAudit();
-  await refreshFunds();
+}
+
+// Botón "↻ Actualizar" de Posiciones: a diferencia de refreshAll() (que
+// deliberadamente NO re-pide cuenta/posiciones, asumiendo que el WS las
+// mantiene al día), esto fuerza un refresh real por REST. Sin esto, si el
+// socket queda "colgado" (abierto pero sin disparar onclose ni mandar
+// mensajes nuevos), el botón daba una falsa sensación de estar actualizando
+// sin traer ningún dato nuevo.
+async function refreshPositionsAndAccount(){
+  await refreshAccount();
+  await refreshPositions();
 }
 
 // --- A: scrollspy de la nav por secciones ---
@@ -2517,10 +2573,12 @@ function toggleFundCreateForm(){
 
 function boot(){
   onTypeChange();
-  refreshAll();
+  refreshAll();        // ya incluye un refreshFunds() propio (ver refreshAll)
   refreshAccount();    // carga inicial; despues el WS la mantiene en vivo
   refreshPositions();  // carga inicial; despues el WS las mantiene en vivo
-  refreshFunds();
+  // loadStrategies() re-renderiza fondos al final (necesita STRATEGIES para
+  // el selector de estrategia de cada fondo, ver renderFunds): no hace falta
+  // un tercer refreshFunds() aca ademas del de refreshAll() de arriba.
   loadStrategies();
   connectWs();
   setupScrollspy();
