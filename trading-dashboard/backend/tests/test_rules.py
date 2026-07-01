@@ -133,6 +133,62 @@ def test_max_trades_per_day(engine):
     assert any(v.rule == "max_trades_per_day" for v in decision.violations)
 
 
+def test_rejects_when_fund_reaches_its_own_daily_cap():
+    # Cupo global (max_trades_per_day) muy alto para no interferir: aislar
+    # el chequeo por fondo.
+    config = RulesConfig(
+        symbol_whitelist=["AAPL"], allow_extended_hours=True,
+        max_trades_per_day=1000, max_trades_per_day_per_fund=3,
+    )
+    engine = RulesEngine(config)
+    order = buy_order(fund_id="fund-a")
+    decision = engine.evaluate(
+        order, make_account(), 0, 200, 0, False, trades_today_for_fund=3,
+    )
+    assert not decision.approved
+    assert any(v.rule == "max_trades_per_day_per_fund" for v in decision.violations)
+
+
+def test_approves_when_fund_below_its_own_daily_cap():
+    config = RulesConfig(
+        symbol_whitelist=["AAPL"], allow_extended_hours=True,
+        max_trades_per_day=1000, max_trades_per_day_per_fund=3,
+    )
+    engine = RulesEngine(config)
+    order = buy_order(fund_id="fund-a")
+    decision = engine.evaluate(
+        order, make_account(), 0, 200, 0, False, trades_today_for_fund=2,
+    )
+    assert decision.approved
+
+
+def test_max_trades_per_day_per_fund_disabled_by_default(engine):
+    # max_trades_per_day_per_fund=None (default): sin cupo adicional por
+    # fondo, solo el global (max_trades_per_day) sigue aplicando.
+    order = buy_order(fund_id="fund-a")
+    decision = engine.evaluate(
+        order, make_account(), 0, 200, 0, False, trades_today_for_fund=999,
+    )
+    assert decision.approved
+    assert not any(v.rule == "max_trades_per_day_per_fund" for v in decision.violations)
+
+
+def test_max_trades_per_day_per_fund_ignores_orders_without_fund_id():
+    # Una orden de la cuenta general (sin fund_id) no tiene fondo del que
+    # contar: el cupo por fondo no debe aplicarle aunque se pase un conteo.
+    config = RulesConfig(
+        symbol_whitelist=["AAPL"], allow_extended_hours=True,
+        max_trades_per_day=1000, max_trades_per_day_per_fund=3,
+    )
+    engine = RulesEngine(config)
+    order = buy_order()  # sin fund_id
+    decision = engine.evaluate(
+        order, make_account(), 0, 200, 0, False, trades_today_for_fund=99,
+    )
+    assert decision.approved
+    assert not any(v.rule == "max_trades_per_day_per_fund" for v in decision.violations)
+
+
 def test_sell_does_not_require_stop_loss(engine):
     order = buy_order(side=Side.SELL, stop_loss_price=None, quantity=1)
     decision = engine.evaluate(order, make_account(), 1, 200, 0, False)
@@ -272,6 +328,141 @@ def test_order_sector_none_bypasses_sector_concentration_check(engine):
     )
     assert decision.approved
     assert not any(v.rule == "max_sector_concentration_pct" for v in decision.violations)
+
+
+def test_rejects_new_position_when_sector_at_max_concurrent_positions(engine):
+    # Antes solo se aplicaba en el backtest (cap_concurrent_positions), nunca
+    # en el motor de auto-trading en vivo -- ver fix de paridad.
+    order = buy_order()  # abre una posicion NUEVA (current_position_qty=0)
+    decision = engine.evaluate(
+        order, make_account(), 0, 200, 0, False,
+        order_sector="Information Technology",
+        max_concurrent_positions_per_sector=2,
+        sector_position_count={"Information Technology": 2},
+    )
+    assert not decision.approved
+    assert any(v.rule == "max_concurrent_positions_per_sector" for v in decision.violations)
+
+
+def test_approves_new_position_when_sector_below_max_concurrent_positions(engine):
+    order = buy_order()
+    decision = engine.evaluate(
+        order, make_account(), 0, 200, 0, False,
+        order_sector="Information Technology",
+        max_concurrent_positions_per_sector=2,
+        sector_position_count={"Information Technology": 1},
+    )
+    assert decision.approved
+
+
+def test_max_concurrent_positions_per_sector_disabled_when_zero_or_none(engine):
+    order = buy_order()
+    decision = engine.evaluate(
+        order, make_account(), 0, 200, 0, False,
+        order_sector="Information Technology",
+        max_concurrent_positions_per_sector=0,  # 0 = desactivado
+        sector_position_count={"Information Technology": 99},
+    )
+    assert decision.approved
+    assert not any(v.rule == "max_concurrent_positions_per_sector" for v in decision.violations)
+
+
+def test_max_concurrent_positions_per_sector_ignores_add_to_existing_position(engine):
+    # current_position_qty != 0: la orden agrega a una posicion YA abierta en
+    # ese simbolo, no aumenta la cantidad de simbolos distintos del sector.
+    order = buy_order()
+    decision = engine.evaluate(
+        order, make_account(), 5, 200, 0, False,  # ya tiene 5 unidades de AAPL
+        order_sector="Information Technology",
+        max_concurrent_positions_per_sector=2,
+        sector_position_count={"Information Technology": 2},
+    )
+    assert decision.approved
+    assert not any(v.rule == "max_concurrent_positions_per_sector" for v in decision.violations)
+
+
+def test_max_concurrent_positions_per_sector_does_not_apply_to_sells(engine):
+    order = buy_order(side=Side.SELL, stop_loss_price=None)
+    decision = engine.evaluate(
+        order, make_account(), 10, 200, 0, False,
+        order_sector="Information Technology",
+        max_concurrent_positions_per_sector=2,
+        sector_position_count={"Information Technology": 2},
+    )
+    assert not any(v.rule == "max_concurrent_positions_per_sector" for v in decision.violations)
+
+
+def test_rejects_order_exceeding_total_exposure(engine):
+    # resulting_value = 10*200 = 2,000 (2% del equity); 97% ya invertido en
+    # el resto de la cartera -> 99% combinado, por debajo del limite (default
+    # 100%) -- subir a 99_500 ya invertidos para superarlo.
+    order = buy_order(quantity=10)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 0, 200, 0, False,
+        total_position_value_usd=99_500,  # 99.5% ya invertido + 2% de esta orden = 101.5%
+    )
+    assert not decision.approved
+    assert any(v.rule == "max_total_exposure_pct" for v in decision.violations)
+
+
+def test_approves_order_within_total_exposure_limit(engine):
+    order = buy_order(quantity=10)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 0, 200, 0, False,
+        total_position_value_usd=50_000,  # 50% + 2% = 52%, bajo el limite (100%)
+    )
+    assert decision.approved
+
+
+def test_total_position_value_none_bypasses_total_exposure_check(engine):
+    order = buy_order(quantity=10)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 0, 200, 0, False,
+        total_position_value_usd=None,
+    )
+    assert decision.approved
+    assert not any(v.rule == "max_total_exposure_pct" for v in decision.violations)
+
+
+def test_rejects_order_exceeding_portfolio_heat(engine):
+    # riesgo de esta orden: (200-190)*1 = $10 de $100,000 = 0.01%. Con
+    # $6,000 ya en riesgo abierto (6.0%) + este, el combinado (6.01%)
+    # supera el limite default de 6%.
+    order = buy_order(quantity=1)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 0, 200, 0, False,
+        open_portfolio_risk_usd=6_000,
+    )
+    assert not decision.approved
+    assert any(v.rule == "max_portfolio_heat_pct" for v in decision.violations)
+
+
+def test_approves_order_within_portfolio_heat_limit(engine):
+    order = buy_order(quantity=1)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 0, 200, 0, False,
+        open_portfolio_risk_usd=1_000,  # 1% + 0.01% de esta orden, bajo el limite (6%)
+    )
+    assert decision.approved
+
+
+def test_open_portfolio_risk_none_bypasses_portfolio_heat_check(engine):
+    order = buy_order(quantity=1)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 0, 200, 0, False,
+        open_portfolio_risk_usd=None,
+    )
+    assert decision.approved
+    assert not any(v.rule == "max_portfolio_heat_pct" for v in decision.violations)
+
+
+def test_portfolio_heat_check_ignored_for_sells(engine):
+    order = buy_order(side=Side.SELL, stop_loss_price=None, quantity=1)
+    decision = engine.evaluate(
+        order, make_account(net_liq=100_000), 10, 200, 0, False,
+        open_portfolio_risk_usd=50_000,  # muy por encima del limite, pero es una venta
+    )
+    assert not any(v.rule == "max_portfolio_heat_pct" for v in decision.violations)
 
 
 def test_sector_concentration_only_counts_matching_sector(engine):

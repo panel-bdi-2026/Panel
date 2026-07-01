@@ -635,6 +635,7 @@ def test_roi_history_empty_when_no_funds():
         "dates": [],
         "fund_cumulative_return_pct": [],
         "benchmark_cumulative_return_pct": [],
+        "per_fund": [],
     }
 
 
@@ -669,6 +670,7 @@ def test_roi_history_empty_when_spy_data_unavailable(monkeypatch):
         "dates": [],
         "fund_cumulative_return_pct": [],
         "benchmark_cumulative_return_pct": [],
+        "per_fund": [],
     }
 
 

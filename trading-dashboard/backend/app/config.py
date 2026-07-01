@@ -37,6 +37,17 @@ class Settings:
         # 7497 = TWS paper trading (default seguro)
         self.ib_port = _int_env("IB_PORT", os.getenv("IB_PORT", "7497"))
         self.ib_client_id = _int_env("IB_CLIENT_ID", os.getenv("IB_CLIENT_ID", "17"))
+        # Tipo de datos de mercado de IBKR (reqMarketDataType): 1=real-time,
+        # 2=frozen, 3=delayed, 4=delayed-frozen. 3 (delayed, ~15-20 min) es el
+        # default porque funciona sin ninguna suscripcion de datos activa. Si
+        # la cuenta (incluida la paper, que suele heredar los mismos
+        # entitlements que la cuenta real vinculada) tiene datos en tiempo
+        # real habilitados, cambiar a 1 aca sin tocar codigo: el pricing de
+        # auto-trading (limit price, sizing) hoy se calcula sobre un precio
+        # que puede tener hasta 15-20 minutos de antiguedad, lo cual pega mas
+        # fuerte en Momentum, cuya tesis depende de capturar movimiento
+        # reciente.
+        self.ib_market_data_type = _int_env("IB_MARKET_DATA_TYPE", os.getenv("IB_MARKET_DATA_TYPE", "3"))
 
         # Puertos usados al cambiar de modo desde el boton del dashboard (sin
         # reiniciar el backend). TWS: 7497 paper / 7496 live. IB Gateway: 4002

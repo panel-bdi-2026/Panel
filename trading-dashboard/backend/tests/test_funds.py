@@ -70,7 +70,11 @@ def test_sell_deducts_commission_from_cash_and_realized_pnl(store):
     store.record_fill(fund.id, "AAPL", Side.SELL, 10, 120, commission=1.0)
     fund = store.get(fund.id)
     assert fund.cash_usd == 5000 - 1.0 + (120 - 100) * 10 - 1.0
-    assert fund.realized_pnl_total() == 200.0 - 1.0
+    # realized_pnl_total() netea AMBAS comisiones (entrada + salida), no solo
+    # la de salida: la de entrada ya se habia descontado del cash al comprar,
+    # pero antes de este fix nunca se reflejaba en el PnL REALIZADO reportado
+    # (ver cost_basis_commission en funds.py).
+    assert fund.realized_pnl_total() == 200.0 - 1.0 - 1.0
 
 
 def test_partial_sell_keeps_remaining_position_and_avg_cost(store):
@@ -80,6 +84,36 @@ def test_partial_sell_keeps_remaining_position_and_avg_cost(store):
     fund = store.get(fund.id)
     assert fund.owned_quantity("AAPL") == 6
     assert fund.positions["AAPL"].avg_cost == 100
+
+
+def test_partial_sells_prorate_entry_commission_across_both_legs(store):
+    # Comision de entrada ($10) se prorratea segun la cantidad vendida en
+    # cada venta parcial, no se descuenta entera en la primera: 10 acciones
+    # compradas ($1/accion de comision), se venden 4 y despues las 6
+    # restantes -- cada venta debe absorber su porcion proporcional (4/10 y
+    # 6/10 de los $10 de comision de entrada), y la suma de ambos
+    # realized_pnl debe coincidir con el total esperado neteando TODA la
+    # comision (entrada + las dos salidas).
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100, commission=10.0)
+    store.record_fill(fund.id, "AAPL", Side.SELL, 4, 150, commission=1.0)
+    fund = store.get(fund.id)
+    # PnL bruto de esta porcion: (150-100)*4 = 200; menos comision de salida
+    # (1) y la porcion de entrada prorrateada (10 * 4/10 = 4): 200 - 1 - 4 = 195
+    assert fund.trades[-1].realized_pnl == pytest.approx(195.0)
+    assert fund.positions["AAPL"].cost_basis_commission == pytest.approx(6.0)  # 10 - 4 restante
+
+    store.record_fill(fund.id, "AAPL", Side.SELL, 6, 150, commission=1.0)
+    fund = store.get(fund.id)
+    # (150-100)*6 = 300; menos comision de salida (1) y el resto de la
+    # comision de entrada prorrateada (6): 300 - 1 - 6 = 293
+    assert fund.trades[-1].realized_pnl == pytest.approx(293.0)
+    assert fund.owned_quantity("AAPL") == 0
+    assert fund.positions["AAPL"].cost_basis_commission == 0.0
+
+    # Suma total de ambas ventas == PnL bruto total (200+300=500) menos TODA
+    # la comision (10 de entrada + 1 + 1 de las dos salidas) = 488.
+    assert fund.realized_pnl_total() == pytest.approx(488.0)
 
 
 def test_sell_more_than_held_clamps_to_position_quantity(store, caplog):

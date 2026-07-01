@@ -260,14 +260,23 @@ def _simulate_symbol(
     score_series: pd.Series,
     benchmark_regime_ok: pd.Series,
     marks_by_trade_id: dict | None = None,
+    rules_config: RulesConfig | None = None,
 ) -> list[BacktestTrade]:
     """Simula la entrada/salida de Momentum sobre historia, score-driven (ver
     _cross_sectional_score_panel) en vez del antiguo AND booleano de filtros
     tecnicos: entra cuando score_series supera cfg.backtest_score_entry_threshold
-    Y, ademas, el regimen de mercado, la proximidad al maximo de 52 semanas y
-    la liquidez minima lo permiten -- esos tres NO son parte del score (son
-    gates booleanos puros igual que en el scan en vivo, ver screener.py), asi
-    que se siguen chequeando aparte. Sale por stop-loss (basado en el ATR del
+    Y, ademas, el regimen de mercado, la proximidad al maximo de 52 semanas, la
+    liquidez minima, la tendencia (trend_ok) y el RSI (rsi_ok) lo permiten --
+    estos cinco NO son parte del score (son gates booleanos puros igual que en
+    el scan en vivo, ver screener.py), asi que se siguen chequeando aparte.
+    trend_ok/rsi_ok en particular replican el gate que en vivo separa la banda
+    "pasa filtros" (score 50-100) de "no pasa" (0-49, ver
+    apply_cross_sectional_normalization): sin este gate aca, el backtest podia
+    simular entradas en simbolos que rompen tendencia o tienen el RSI fuera de
+    rango pero igual sacan un score compuesto alto por sus otros componentes,
+    algo que el motor de auto-trading en vivo practicamente nunca haria (esa
+    combinacion cae del lado "no pasa", que rara vez cruza el umbral de
+    entrada). Sale por stop-loss (basado en el ATR del
     dia de la senal, igual que la sugerencia en vivo, y si cfg.trailing_stop_enabled
     el stop sube dia a dia con el ATR de cada dia en posicion -- nunca baja --
     igual que _check_fund_trailing_stop en main.py), por tiempo maximo en la
@@ -289,11 +298,30 @@ def _simulate_symbol(
     debajo del stop), no se espera al cierre. Tambien se restan comision y
     slippage estimados, para no inflar los retornos respecto a la operatoria
     real.
+
+    `rules_config`, si se pasa, replica el mismo ajuste de _try_auto_trade_entry
+    en main.py: si el stop-loss implicado por el ATR excede
+    rules_config.max_stop_loss_pct, se tensa al tope en vez de simular la
+    entrada con el stop ancho original. Sin esto, el backtest no reflejaba una
+    decision que el motor de auto-trading en vivo SI toma, sesgando tanto la
+    frecuencia de stop-outs simulada como (indirectamente, via stop_loss_pct)
+    el sizing por riesgo de _risk_based_trade_weight.
     """
     close = bars["Close"]
     atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
     from_high_s = pct_from_high(close, 252)
     sma_fast_s = sma(close, cfg.sma_fast)
+    # sma_slow_s y rsi_s: gates de calidad de la entrada (trend_ok/rsi_ok),
+    # los mismos que el scan en vivo exige para que un simbolo pase a la
+    # banda "pasa filtros" del score (ver screener.py/apply_cross_sectional_
+    # normalization). Sin este gate aca, el backtest podia simular una
+    # entrada en un simbolo que rompe tendencia o tiene el RSI fuera de rango
+    # pero igual saca un score alto por sus otros componentes -- algo que en
+    # vivo el motor de auto-trading practicamente nunca haria, porque esa
+    # combinacion cae en la banda "no pasa" (0-49) y rara vez cruza el umbral
+    # de entrada (ver la banda 50-100/0-49 en screener.py).
+    sma_slow_s = sma(close, cfg.sma_slow)
+    rsi_s = rsi(close, cfg.rsi_period)
     # Mismo criterio de liquidez que el scan en vivo (ver screener.py): volumen
     # promedio en DOLARES de los ultimos 20 dias, no en cantidad de acciones.
     dollar_volume_s = bars["Volume"].rolling(20, min_periods=1).mean() * close
@@ -306,6 +334,7 @@ def _simulate_symbol(
     entry_idx = 0
     entry_date = None
     stop_price = 0.0
+    initial_stop_price = 0.0  # stop al momento de la entrada, ya tensado si aplico -- nunca lo mueve el trailing
     entry_atr = 0.0
     pending_entry_atr = None  # ATR del dia en que se detecto la senal (ver mas abajo)
 
@@ -346,6 +375,14 @@ def _simulate_symbol(
             entry_date = date
             entry_atr = pending_entry_atr
             stop_price = entry_price - cfg.stop_loss_atr_multiplier * pending_entry_atr
+            # Mismo ajuste que _try_auto_trade_entry: si el stop implicado por
+            # el ATR excede el riesgo maximo permitido, se tensa al tope en
+            # vez de simular la entrada con el stop ancho original.
+            if rules_config is not None and entry_price > 0 and stop_price > 0:
+                implied_stop_pct = (entry_price - stop_price) / entry_price * 100
+                if implied_stop_pct > rules_config.max_stop_loss_pct:
+                    stop_price = entry_price * (1 - rules_config.max_stop_loss_pct / 100)
+            initial_stop_price = stop_price
             pending_entry_atr = None
             continue
 
@@ -383,6 +420,14 @@ def _simulate_symbol(
                 ret_pct = (exit_fill - entry_fill) / entry_fill * 100 - commission_pct
 
                 entry_atr_pct = round(entry_atr / entry_price * 100, 4) if entry_price else None
+                # stop_loss_pct se deriva de la distancia REAL entrada->stop
+                # inicial (initial_stop_price, ya tensado si rules_config lo
+                # exigio), no de stop_loss_atr_multiplier * entry_atr_pct a
+                # ciegas: sin tensar son matematicamente equivalentes, pero
+                # con el ajuste aplicado la formula vieja ignoraba el tope y
+                # reportaba un riesgo mayor al que la posicion realmente tomo
+                # (afecta tambien el sizing por riesgo de
+                # _risk_based_trade_weight, que consume este campo).
                 trade = BacktestTrade(
                     symbol=symbol,
                     entry_date=entry_date,
@@ -393,7 +438,7 @@ def _simulate_symbol(
                     exit_reason=exit_reason,
                     entry_atr_pct=entry_atr_pct,
                     stop_loss_pct=(
-                        round(cfg.stop_loss_atr_multiplier * entry_atr_pct, 4) if entry_atr_pct is not None else None
+                        round((entry_price - initial_stop_price) / entry_price * 100, 4) if entry_price else None
                     ),
                 )
                 trades.append(trade)
@@ -420,7 +465,12 @@ def _simulate_symbol(
         )
         liquidity_ok = dollar_volume_s.iloc[i] >= cfg.min_avg_dollar_volume
 
-        if regime_ok and near_high_ok and liquidity_ok:
+        sma_slow_today = sma_slow_s.iloc[i]
+        trend_ok = not pd.isna(sma_slow_today) and price > sma_fast_s.iloc[i] > sma_slow_today
+        rsi_today = rsi_s.iloc[i]
+        rsi_ok = not pd.isna(rsi_today) and cfg.rsi_min <= rsi_today <= cfg.rsi_max
+
+        if regime_ok and near_high_ok and liquidity_ok and trend_ok and rsi_ok:
             pending_entry_atr = atr_s.iloc[i]
 
     return trades
@@ -491,30 +541,57 @@ def _simulate_symbol_opportunistic(
     score_series: pd.Series,
     benchmark_regime_ok: pd.Series,
     marks_by_trade_id: dict | None = None,
+    rules_config: RulesConfig | None = None,
 ) -> list[BacktestTrade]:
     """Misma logica score-driven que _simulate_symbol (ver ese docstring para
     el detalle de fills/stop-loss/comision/slippage/salida), aplicada a
-    Oportunista: a diferencia de Momentum, las 4 condiciones booleanas
-    originales (momentum corto positivo, RSI en zona de recuperacion,
-    volatilidad minima, espacio de crecimiento) ya son, cada una, un
-    componente del score (ver _opportunistic_raw_components). Los gates
-    booleanos aparte del umbral de score son la liquidez minima (igual que
-    Momentum, que tampoco la incluye en su score) y el regimen del benchmark:
-    comprar caidas (la esencia de Oportunista) en un mercado en regimen
-    bajista de fondo es comprar cuchillos cayendo, asi que este filtro ahora
-    se aplica tambien aqui (antes solo bloqueaba nuevas entradas de
-    Momentum).
+    Oportunista: las 4 condiciones booleanas originales (momentum corto
+    positivo, RSI en zona de recuperacion, volatilidad minima, espacio de
+    crecimiento) son, ADEMAS de gates duros de entrada, cada una un componente
+    continuo del score (ver _opportunistic_raw_components) -- igual que
+    trend_ok/rsi_ok en _simulate_symbol, replican el gate que en vivo separa
+    la banda "pasa filtros" (50-100) de "no pasa" (0-49, ver
+    apply_cross_sectional_normalization), para que el backtest no simule
+    entradas que el motor en vivo practicamente nunca tomaria. Los gates
+    restantes son la liquidez minima (igual que Momentum, que tampoco la
+    incluye en su score) y el regimen del benchmark: comprar caidas (la
+    esencia de Oportunista) en un mercado en regimen bajista de fondo es
+    comprar cuchillos cayendo, asi que este filtro ahora se aplica tambien
+    aqui (antes solo bloqueaba nuevas entradas de Momentum).
 
-    Entra cuando score_series supera opp.backtest_score_entry_threshold y la
-    liquidez minima lo permite; sale por stop-loss, tiempo maximo en la
-    posicion, o ruptura de tendencia (el cierre cae por debajo de
-    cfg.sma_fast, la MISMA SMA global que usa _check_fund_exit en main.py
-    para TODAS las estrategias, Oportunista incluida: el monitor de salida en
-    vivo no es especifico por estrategia)."""
+    Entra cuando score_series supera opp.backtest_score_entry_threshold Y los
+    4 gates de calidad Y la liquidez lo permiten; sale por stop-loss o tiempo
+    maximo en la
+    posicion (opp.max_holding_days). SIN ruptura de tendencia: a diferencia
+    de Momentum, la entrada de Oportunista no exige ninguna condicion de
+    tendencia (ver strategies/opportunistic.py), asi que salir por romper una
+    SMA que nunca formo parte de la señal de entrada no tiene tesis detras.
+    Esto replica _check_fund_exit en main.py (ver _strategy_exit_params ahi):
+    el monitor de salida en vivo SI es especifico por estrategia, y antes de
+    ese fix usaba por accidente la SMA global de Momentum para todas -- este
+    backtest reflejaba ese mismo comportamiento viejo, por eso se actualiza
+    junto con el fix en vivo para no reintroducir la discrepancia.
+
+    `rules_config`, si se pasa, replica el mismo ajuste de
+    _try_auto_trade_entry en main.py: si el stop-loss implicado por el ATR
+    excede rules_config.max_stop_loss_pct, se tensa al tope en vez de simular
+    la entrada con el stop ancho original (ver docstring de _simulate_symbol
+    para el detalle completo)."""
     opp = cfg.opportunistic
     close = bars["Close"]
     atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
-    sma_fast_s = sma(close, cfg.sma_fast)
+    # Gates de calidad de la entrada (momentum_ok/rsi_ok/volatility_ok/
+    # room_to_grow_ok): en evaluate_symbol (strategies/opportunistic.py) son
+    # las 4 condiciones booleanas de passes_filters, ademas de ser cada una un
+    # componente continuo del score. Sin exigirlas tambien aca como gate duro,
+    # el backtest podia simular una entrada en un dia donde, por ejemplo, el
+    # retorno reciente es negativo (falla momentum_ok) pero el score compuesto
+    # es igual alto por los demas componentes -- algo que en vivo cae del lado
+    # "no pasa" (0-49) y rara vez cruza el umbral de entrada (ver la banda
+    # 50-100/0-49 en screener.py/strategies/opportunistic.py).
+    roc_short_s = rate_of_change(close, opp.momentum_lookback_days)
+    rsi_s = rsi(close, opp.rsi_period)
+    from_high_s = pct_from_high(close, 252)
     dollar_volume_s = bars["Volume"].rolling(20, min_periods=1).mean() * close
 
     notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
@@ -525,6 +602,7 @@ def _simulate_symbol_opportunistic(
     entry_idx = 0
     entry_date = None
     stop_price = 0.0
+    initial_stop_price = 0.0  # stop al momento de la entrada, ya tensado si aplico -- nunca lo mueve el trailing
     entry_atr = 0.0
     pending_entry_atr = None
 
@@ -542,6 +620,11 @@ def _simulate_symbol_opportunistic(
             entry_date = date
             entry_atr = pending_entry_atr
             stop_price = entry_price - opp.stop_loss_atr_multiplier * pending_entry_atr
+            if rules_config is not None and entry_price > 0 and stop_price > 0:
+                implied_stop_pct = (entry_price - stop_price) / entry_price * 100
+                if implied_stop_pct > rules_config.max_stop_loss_pct:
+                    stop_price = entry_price * (1 - rules_config.max_stop_loss_pct / 100)
+            initial_stop_price = stop_price
             pending_entry_atr = None
             continue
 
@@ -549,10 +632,8 @@ def _simulate_symbol_opportunistic(
             held_days = i - entry_idx
             hit_stop = low_price <= stop_price
             timed_out = held_days >= opp.max_holding_days
-            sma_fast_today = sma_fast_s.iloc[i]
-            trend_broke = not pd.isna(sma_fast_today) and price < sma_fast_today
-            if hit_stop or timed_out or trend_broke:
-                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "trend_break")
+            if hit_stop or timed_out:
+                exit_reason = "stop_loss" if hit_stop else "max_holding_days"
                 raw_exit_price = min(open_price, stop_price) if hit_stop else price
 
                 entry_slippage_pct = _effective_slippage_pct(
@@ -577,6 +658,9 @@ def _simulate_symbol_opportunistic(
                 ret_pct = (exit_fill - entry_fill) / entry_fill * 100 - commission_pct
 
                 entry_atr_pct = round(entry_atr / entry_price * 100, 4) if entry_price else None
+                # stop_loss_pct se deriva de la distancia real entrada->stop
+                # inicial (ya tensado si rules_config lo exigio) -- ver el
+                # mismo comentario en _simulate_symbol.
                 trade = BacktestTrade(
                     symbol=symbol,
                     entry_date=entry_date,
@@ -587,7 +671,7 @@ def _simulate_symbol_opportunistic(
                     exit_reason=exit_reason,
                     entry_atr_pct=entry_atr_pct,
                     stop_loss_pct=(
-                        round(opp.stop_loss_atr_multiplier * entry_atr_pct, 4) if entry_atr_pct is not None else None
+                        round((entry_price - initial_stop_price) / entry_price * 100, 4) if entry_price else None
                     ),
                 )
                 trades.append(trade)
@@ -612,12 +696,28 @@ def _simulate_symbol_opportunistic(
         if not regime_ok:
             continue
 
-        pending_entry_atr = atr_s.iloc[i]
+        atr_today = atr_s.iloc[i]
+        volatility_pct = (atr_today / price * 100) if price else 0.0
+        roc_today = roc_short_s.iloc[i]
+        rsi_today = rsi_s.iloc[i]
+        fh_today = from_high_s.iloc[i]
+
+        momentum_ok = not pd.isna(roc_today) and roc_today > 0
+        rsi_ok = not pd.isna(rsi_today) and opp.rsi_min <= rsi_today <= opp.rsi_max
+        volatility_ok = volatility_pct >= opp.min_volatility_pct
+        room_to_grow_ok = pd.isna(fh_today) or fh_today <= -opp.min_pct_below_52w_high
+
+        if not (momentum_ok and rsi_ok and volatility_ok and room_to_grow_ok):
+            continue
+
+        pending_entry_atr = atr_today
 
     return trades
 
 
-def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], dict, pd.DataFrame]:
+def _collect_opportunistic_trades(
+    cfg: ScreenerConfig, rules_config: RulesConfig | None = None
+) -> tuple[list[BacktestTrade], dict, pd.DataFrame]:
     """Simula la estrategia Oportunista sobre todo el universo configurado y
     devuelve las operaciones resultantes (ya capadas a top_n posiciones
     concurrentes), el dict de marcas diarias por operacion (ver
@@ -686,7 +786,9 @@ def _collect_opportunistic_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTra
     for symbol, bars in bars_by_symbol.items():
         aligned_regime_ok = benchmark_regime_ok.reindex(bars.index, method="ffill").fillna(True)
         all_trades.extend(
-            _simulate_symbol_opportunistic(symbol, bars, cfg, score_panel[symbol], aligned_regime_ok, marks_by_trade_id)
+            _simulate_symbol_opportunistic(
+                symbol, bars, cfg, score_panel[symbol], aligned_regime_ok, marks_by_trade_id, rules_config
+            )
         )
 
     if not all_trades:
@@ -707,7 +809,7 @@ def run_opportunistic_backtest(cfg: ScreenerConfig, rules_config: RulesConfig | 
     (curva de equity diaria real con cupo top_n, sin supervivencia historica
     del universo); aca solo cambia la logica de entrada/salida por simbolo
     (ver _simulate_symbol_opportunistic)."""
-    all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg)
+    all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg, rules_config)
     return _compute_summary_stats(
         all_trades, cfg.top_n, bench_bars, marks_by_trade_id,
         cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
@@ -724,7 +826,7 @@ def run_opportunistic_backtest_walk_forward(
     """Validacion out-of-sample de la estrategia Oportunista. Ver docstring de
     run_backtest_walk_forward (Momentum) para el alcance y las limitaciones:
     misma logica, solo cambia la simulacion subyacente."""
-    all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg)
+    all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg, rules_config)
     return _build_walk_forward_result(
         all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds,
         cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
@@ -1208,7 +1310,9 @@ def _build_walk_forward_result(
     return WalkForwardResult(n_folds=n_folds, folds=folds)
 
 
-def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], dict, pd.DataFrame]:
+def _collect_momentum_trades(
+    cfg: ScreenerConfig, rules_config: RulesConfig | None = None
+) -> tuple[list[BacktestTrade], dict, pd.DataFrame]:
     """Simula la estrategia Momentum sobre todo el universo configurado y
     devuelve las operaciones resultantes (ya capadas a top_n posiciones
     concurrentes), el dict de marcas diarias por operacion (ver
@@ -1280,7 +1384,9 @@ def _collect_momentum_trades(cfg: ScreenerConfig) -> tuple[list[BacktestTrade], 
     marks_by_trade_id: dict = {}
     for symbol, bars in bars_by_symbol.items():
         aligned_regime_ok = benchmark_regime_ok.reindex(bars.index, method="ffill").fillna(True)
-        all_trades.extend(_simulate_symbol(symbol, bars, cfg, score_panel[symbol], aligned_regime_ok, marks_by_trade_id))
+        all_trades.extend(
+            _simulate_symbol(symbol, bars, cfg, score_panel[symbol], aligned_regime_ok, marks_by_trade_id, rules_config)
+        )
 
     if not all_trades:
         raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
@@ -1327,7 +1433,7 @@ def run_backtest(cfg: ScreenerConfig, rules_config: RulesConfig | None = None) -
     validar la direccion de la idea antes de arriesgar capital real, no como
     promesa de resultados futuros.
     """
-    all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg)
+    all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg, rules_config)
     return _compute_summary_stats(
         all_trades, cfg.top_n, bench_bars, marks_by_trade_id,
         cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
@@ -1359,7 +1465,7 @@ def run_backtest_walk_forward(
     hace optimizacion de parametros. "Out of sample" aca significa: ¿el mismo
     set de reglas fijo (el que ya esta configurado) se sostiene en distintos
     tramos de tiempo, o gano todo en un solo tramo favorable?"""
-    all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg)
+    all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg, rules_config)
     return _build_walk_forward_result(
         all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds,
         cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,

@@ -120,11 +120,18 @@ class AuditLog:
             for row in rows
         ]
 
-    def count_trades_today(self, tz_name: str = "America/New_York") -> int:
+    def count_trades_today(self, tz_name: str = "America/New_York", fund_id: str | None = None) -> int:
         """Cuenta ordenes ejecutadas hoy segun el dia de trading en `tz_name`
         (no el dia calendario UTC): ts se guarda en UTC, asi que filtrar por el
         prefijo de fecha UTC desalinea el conteo del dia real de mercado --
-        ej. una orden ejecutada a las 21:00 ET ya es "manana" en UTC."""
+        ej. una orden ejecutada a las 21:00 ET ya es "manana" en UTC.
+
+        `fund_id`, si se pasa, acota el conteo a las ordenes de ESE fondo
+        (via json_extract sobre payload.fund_id, presente en el
+        model_dump() de OrderRequest que ya se guarda en cada accion de
+        _TRADE_ACTIONS) -- para RulesConfig.max_trades_per_day_per_fund, un
+        cupo diario adicional POR fondo, distinto del cupo global
+        (max_trades_per_day) que sigue contando sin filtrar por fondo."""
         tz = ZoneInfo(tz_name)
         now_local = datetime.now(tz)
         start_local = datetime.combine(now_local.date(), dtime.min, tzinfo=tz)
@@ -132,9 +139,12 @@ class AuditLog:
         start_utc = start_local.astimezone(timezone.utc).isoformat()
         end_utc = end_local.astimezone(timezone.utc).isoformat()
         placeholders = ", ".join("?" for _ in self._TRADE_ACTIONS)
+        fund_filter = " AND json_extract(payload, '$.fund_id') = ?" if fund_id is not None else ""
+        params = (*self._TRADE_ACTIONS, start_utc, end_utc, *((fund_id,) if fund_id is not None else ()))
         with self._lock:
             cur = self._conn.execute(
-                f"SELECT COUNT(*) FROM audit_log WHERE action IN ({placeholders}) AND ts >= ? AND ts < ?",
-                (*self._TRADE_ACTIONS, start_utc, end_utc),
+                f"SELECT COUNT(*) FROM audit_log WHERE action IN ({placeholders}) "
+                f"AND ts >= ? AND ts < ?{fund_filter}",
+                params,
             )
             return cur.fetchone()[0]

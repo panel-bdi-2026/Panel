@@ -44,3 +44,20 @@ def test_settings_raises_friendly_error_for_invalid_poll_interval(monkeypatch):
     monkeypatch.setenv("POLL_INTERVAL_SECONDS", "not-a-number")
     with pytest.raises(RuntimeError, match="POLL_INTERVAL_SECONDS"):
         Settings()
+
+
+def test_ib_market_data_type_defaults_to_delayed(monkeypatch):
+    monkeypatch.setenv("API_KEY", "test-key")
+    monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.delenv("IB_MARKET_DATA_TYPE", raising=False)
+    assert Settings().ib_market_data_type == 3
+
+
+def test_ib_market_data_type_configurable_to_real_time(monkeypatch):
+    # Sin tocar codigo: una cuenta con suscripcion de datos en tiempo real
+    # (incluida la paper, que suele heredar los entitlements de la cuenta
+    # real vinculada) puede pasar a real-time (1) via .env.
+    monkeypatch.setenv("API_KEY", "test-key")
+    monkeypatch.setenv("TRADING_MODE", "paper")
+    monkeypatch.setenv("IB_MARKET_DATA_TYPE", "1")
+    assert Settings().ib_market_data_type == 1

@@ -9,7 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import pandas as pd
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 rules_config = RulesConfig.load(settings.rules_path)
 rules_engine = RulesEngine(rules_config)
 audit = AuditLog(settings.audit_db_path)
-broker = IBKRBroker(settings.ib_host, settings.ib_port, settings.ib_client_id)
+broker = IBKRBroker(settings.ib_host, settings.ib_port, settings.ib_client_id, settings.ib_market_data_type)
 
 screener_config = ScreenerConfig.load(settings.screener_path)
 screener = MomentumScreener(screener_config)
@@ -320,6 +320,67 @@ def _compute_sector_exposure(positions: list[Position], exclude_symbol: str) -> 
     return exposure
 
 
+def _compute_total_position_value(positions: list[Position], exclude_symbol: str) -> float:
+    """Valor de mercado (USD, valor absoluto) de TODAS las posiciones
+    actuales salvo `exclude_symbol` (ya se suma aparte como resulting_value
+    dentro de RulesEngine.evaluate()), para que pueda chequear
+    max_total_exposure_pct -- exposicion BRUTA de toda la cartera, sin
+    importar el sector (a diferencia de max_sector_concentration_pct/
+    _compute_sector_exposure, que solo mira un sector a la vez). Sin este
+    limite, alcanzar el tope de varios sectores distintos a la vez podia
+    dejar la cuenta totalmente invertida (o mas, si hay margen) sin que
+    ninguna regla individual lo bloqueara."""
+    total = 0.0
+    for p in positions:
+        if p.symbol == exclude_symbol:
+            continue
+        price = p.market_price if p.market_price is not None else p.avg_cost
+        total += abs(p.quantity) * price
+    return total
+
+
+def _compute_open_portfolio_risk_usd(exclude_symbol: "str | None" = None) -> float:
+    """Suma en USD del riesgo (precio de entrada - stop-loss) x cantidad de
+    TODAS las posiciones abiertas con stop-loss registrado, en TODOS los
+    fondos -- para que RulesEngine.evaluate() pueda chequear
+    max_portfolio_heat_pct: cuanto se perderia en total si TODOS los stops
+    abiertos se tocaran a la vez, no solo el riesgo de la operacion
+    individual en evaluacion (risk_per_trade_pct). `exclude_symbol` se
+    descarta porque su riesgo (si ya tiene una posicion abierta) se vuelve a
+    sumar aparte a partir de la orden nueva en evaluacion, para no contarlo
+    dos veces.
+
+    Alcance: solo cubre posiciones atadas a un fondo (las unicas que
+    guardan stop_loss_price localmente, ver funds.py) -- una posicion fuera
+    de un fondo no aporta a esta suma."""
+    total = 0.0
+    for fund in funds_store.list():
+        for symbol, pos in fund.positions.items():
+            if symbol == exclude_symbol or pos.quantity <= 0 or pos.stop_loss_price is None:
+                continue
+            total += max(0.0, pos.avg_cost - pos.stop_loss_price) * pos.quantity
+    return total
+
+
+def _compute_sector_position_count(positions: list[Position], exclude_symbol: str) -> dict[str, int]:
+    """Cantidad de simbolos DISTINTOS con posicion abierta agrupados por
+    sector GICS, para que RulesEngine.evaluate() pueda chequear
+    max_concurrent_positions_per_sector -- espejo de _compute_sector_exposure,
+    pero contando posiciones en vez de sumar USD (ese limite es de cantidad,
+    no de exposicion). `exclude_symbol` se descarta del conteo por el mismo
+    motivo que en _compute_sector_exposure: el propio simbolo de la orden en
+    evaluacion no debe contarse dos veces si ya tiene una posicion abierta."""
+    counts: dict[str, int] = {}
+    for p in positions:
+        if p.symbol == exclude_symbol or p.quantity == 0:
+            continue
+        sector = get_sector(p.symbol)
+        if sector is None:
+            continue
+        counts[sector] = counts.get(sector, 0) + 1
+    return counts
+
+
 async def _draft_order_from_signal(result: SignalResult, positions: list[Position]) -> PendingOrder | None:
     """Convierte una señal que recien cruzo el umbral de auto-trading (ver
     _live_score_entry_threshold/operational_gates_ok en _run_signal_scan_cycle)
@@ -376,6 +437,10 @@ async def _draft_order_from_signal(result: SignalResult, positions: list[Positio
         halted=state["halted"],
         order_sector=get_sector(symbol),
         sector_exposure_usd=_compute_sector_exposure(positions, symbol),
+        max_concurrent_positions_per_sector=screener_config.max_concurrent_positions_per_sector,
+        sector_position_count=_compute_sector_position_count(positions, symbol),
+        total_position_value_usd=_compute_total_position_value(positions, symbol),
+        open_portfolio_risk_usd=_compute_open_portfolio_risk_usd(symbol),
     )
     if not decision.approved:
         audit.record("signal_order_rejected", order.model_dump(), decision.model_dump())
@@ -393,6 +458,76 @@ async def _draft_order_from_signal(result: SignalResult, positions: list[Positio
     _persist_state()
     audit.record("signal_order_drafted", order.model_dump(), {"id": pending_id, "signal": result.model_dump()})
     return pending
+
+
+def _register_fund_fill_reconciliation(
+    order_id: "int | None",
+    fund_id: str,
+    symbol: str,
+    side: Side,
+    requested_qty: float,
+    already_filled_qty: float,
+    already_avg_price: float,
+    stop_loss_price: "float | None",
+    stop_order_id: "int | None",
+    audit_action: str,
+) -> None:
+    """Si `already_filled_qty` es menor que `requested_qty` (la ventana de
+    espera sincronica de broker.place_order, 5s, vio menos de lo pedido -- 0
+    o una parte), se suscribe al fill tardio de `order_id` (ver
+    broker.subscribe_fill) para registrar en el ledger del fondo lo que
+    termine de llenar DESPUES, dentro de esta misma sesion de proceso.
+
+    A diferencia de la version anterior (que solo cubria el caso 0%), esto
+    tambien cubre un fill PARCIAL que se completa mas tarde: sin esto, la
+    porcion adicional quedaba en IBKR sin que el ledger del fondo se
+    enterara nunca (no se relanza como "*_submitted_unfilled" en el audit,
+    asi que tampoco lo agarra _reconcile_unfilled_on_startup). El precio
+    incremental se calcula netando el costo ya registrado del costo TOTAL
+    final que reporta el callback (unico dato que ib_async expone), para que
+    el costo promedio de la porcion nueva sea el correcto y no el promedio
+    de toda la orden.
+
+    Comun a _try_auto_trade_entry, submit_order y approve_order: antes de
+    este fix, solo el auto-trade tenia esta red de seguridad -- una orden
+    MANUAL con el mismo problema de fill tardio quedaba completamente sin
+    cubrir hasta el proximo reinicio del backend."""
+    if order_id is None or already_filled_qty >= requested_qty:
+        return
+
+    _already_qty = already_filled_qty
+    _already_cost = already_filled_qty * already_avg_price
+
+    def _on_late_fill(total_filled: float, avg_price: float) -> None:
+        incremental_qty = total_filled - _already_qty
+        if incremental_qty <= 0:
+            return
+        incremental_cost = avg_price * total_filled - _already_cost
+        incremental_price = incremental_cost / incremental_qty
+        funds_store.record_fill(
+            fund_id, symbol, side, incremental_qty, incremental_price,
+            stop_loss_price=stop_loss_price,
+            stop_order_id=stop_order_id,
+            commission=screener_config.commission_per_trade_usd,
+        )
+        audit.record(
+            audit_action,
+            {"symbol": symbol, "side": side.value, "fund_id": fund_id,
+             "quantity": incremental_qty, "order_id": order_id},
+            {"filled_qty": incremental_qty, "avg_fill_price": incremental_price,
+             "total_filled_qty": total_filled, "fund_id": fund_id, "order_id": order_id},
+        )
+        logger.info(
+            "Fill tardío registrado: %s %.4f %s × $%.4f (fondo %s, orden %s)",
+            side.value, incremental_qty, symbol, incremental_price, fund_id, order_id,
+        )
+
+    if not broker.subscribe_fill(order_id, _on_late_fill):
+        logger.warning(
+            "subscribe_fill: orden %s no encontrada en trades() — "
+            "fill tardío solo detectable en próximo startup via reconciliación",
+            order_id,
+        )
 
 
 async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = None) -> None:
@@ -432,7 +567,9 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
 
         account_summary = await broker.get_account_summary()
         position_qty = broker.get_position_qty(symbol)
-        sector_exposure_usd = _compute_sector_exposure(await broker.get_positions(), symbol)
+        current_positions = await broker.get_positions()
+        sector_exposure_usd = _compute_sector_exposure(current_positions, symbol)
+        sector_position_count = _compute_sector_position_count(current_positions, symbol)
 
         # Si el stop-loss sugerido por la estrategia (basado en ATR) excede el
         # maximo permitido, se ajusta al tope en vez de rechazar la orden: el
@@ -476,6 +613,7 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
             fund_id=fund.id,
         )
         trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
+        trades_today_for_fund = audit.count_trades_today(rules_config.trading_hours_timezone, fund_id=fund.id)
         decision = rules_engine.evaluate(
             order=order,
             account=account_summary,
@@ -485,6 +623,11 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
             halted=state["halted"],
             order_sector=get_sector(symbol),
             sector_exposure_usd=sector_exposure_usd,
+            max_concurrent_positions_per_sector=screener_config.max_concurrent_positions_per_sector,
+            sector_position_count=sector_position_count,
+            total_position_value_usd=_compute_total_position_value(current_positions, symbol),
+            open_portfolio_risk_usd=_compute_open_portfolio_risk_usd(symbol),
+            trades_today_for_fund=trades_today_for_fund,
         )
         if not decision.approved:
             audit.record("auto_trade_rejected", order.model_dump(), decision.model_dump())
@@ -515,42 +658,23 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
             audit_extra,
         )
 
-        # Si la orden no llenó dentro de la ventana de 5s de place_order(), la
-        # suscribimos a filledEvent/cancelledEvent para capturar el fill cuando
-        # llegue (dentro de esta misma sesión de proceso). No sobrevive reinicios:
-        # para ese caso existe _reconcile_unfilled_on_startup() en lifespan.
-        if filled_qty == 0:
-            _oid      = result_payload.get("order_id")
-            _stop_oid = result_payload.get("stop_order_id")
-            _fund_id  = fund.id
-            _sym      = symbol
-            _stop_px  = effective_stop_loss_price
-
-            def _on_late_fill(qty: float, price: float) -> None:
-                funds_store.record_fill(
-                    _fund_id, _sym, Side.BUY, qty, price,
-                    stop_loss_price=_stop_px,
-                    stop_order_id=_stop_oid,
-                    commission=screener_config.commission_per_trade_usd,
-                )
-                audit.record(
-                    "auto_trade_fill_late",
-                    {"symbol": _sym, "side": "BUY", "fund_id": _fund_id,
-                     "quantity": qty, "order_id": _oid},
-                    {"filled_qty": qty, "avg_fill_price": price,
-                     "fund_id": _fund_id, "order_id": _oid},
-                )
-                logger.info(
-                    "Fill tardío registrado: %s %.0f × $%.4f (fondo %s, orden %s)",
-                    _sym, qty, price, _fund_id, _oid,
-                )
-
-            if _oid and not broker.subscribe_fill(_oid, _on_late_fill):
-                logger.warning(
-                    "subscribe_fill: orden %s no encontrada en trades() — "
-                    "fill tardío solo detectable en próximo startup via reconciliación",
-                    _oid,
-                )
+        # Si la orden no llenó del todo dentro de la ventana de 5s de
+        # place_order() (nada, o solo una parte), nos suscribimos al fill
+        # tardío -- ver _register_fund_fill_reconciliation. No sobrevive
+        # reinicios: para ese caso existe _reconcile_unfilled_on_startup()
+        # en lifespan.
+        _register_fund_fill_reconciliation(
+            order_id=result_payload.get("order_id"),
+            fund_id=fund.id,
+            symbol=symbol,
+            side=Side.BUY,
+            requested_qty=quantity,
+            already_filled_qty=filled_qty,
+            already_avg_price=result_payload.get("avg_fill_price") or live_price,
+            stop_loss_price=effective_stop_loss_price,
+            stop_order_id=result_payload.get("stop_order_id"),
+            audit_action="auto_trade_fill_late",
+        )
 
 
 def _live_score_entry_threshold(strategy_id: str) -> float:
@@ -570,6 +694,47 @@ def _live_score_entry_threshold(strategy_id: str) -> float:
         return cfg.long_term.live_score_entry_threshold
     if strategy_id == "dividend":
         return cfg.dividend.live_score_entry_threshold
+    raise ValueError(f"strategy_id desconocido: {strategy_id!r}")
+
+
+class _ExitParams(NamedTuple):
+    """Parametros de salida por tiempo/tendencia para _check_fund_exit,
+    propios de cada estrategia (ver _strategy_exit_params). `max_holding_days`
+    None = sin limite de tiempo; `trend_break_enabled` False = no se chequea
+    ruptura de tendencia en absoluto para esa estrategia (ni se pide la barra
+    de precio de mas, ver _check_fund_exit)."""
+    max_holding_days: "int | None"
+    trend_break_enabled: bool
+    sma_period: "int | None"
+
+
+def _strategy_exit_params(strategy_id: str) -> _ExitParams:
+    """Antes de este fix, _check_fund_exit usaba SIEMPRE
+    screener_config.max_holding_days/sma_fast (los campos globales de
+    Momentum) para decidir cuando cerrar una posicion, sin importar la
+    estrategia real del fondo -- un fondo Oportunista (max_holding_days
+    propio de 15 dias) se cerraba en cambio a los 20 dias de Momentum, y un
+    futuro fondo Largo Plazo/Dividendos (tesis a meses/año, fundamentals-
+    first) se hubiera cerrado por una ruptura de SMA de 20 dias que no tiene
+    ninguna relacion con su tesis.
+
+    - momentum: usa sus propios max_holding_days/sma_fast (la ruptura de
+      tendencia es parte central de su tesis).
+    - opportunistic: solo max_holding_days propio (15 por defecto); SIN
+      ruptura de tendencia -- su entrada tampoco exige ninguna condicion de
+      tendencia (ver strategies/opportunistic.py), asi que salir por romper
+      una SMA que nunca formo parte de la señal de entrada no tiene tesis
+      detras, solo agregaba una salida prestada de Momentum.
+    - long_term / dividend: sin limite de tiempo (fundamentals-first, tesis
+      a meses/año) y sin ruptura de tendencia -- solo salen por stop-loss.
+    """
+    cfg = screener_config
+    if strategy_id == "momentum":
+        return _ExitParams(cfg.max_holding_days, True, cfg.sma_fast)
+    if strategy_id == "opportunistic":
+        return _ExitParams(cfg.opportunistic.max_holding_days, False, None)
+    if strategy_id in ("long_term", "dividend"):
+        return _ExitParams(None, False, None)
     raise ValueError(f"strategy_id desconocido: {strategy_id!r}")
 
 
@@ -784,9 +949,13 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
        como antes -- aceptando el riesgo de colision entre fondos que ya
        tenia ese camino, documentado donde se usa abajo.
     2. max_holding_days: misma regla que ya se simula en backtest.py, ahora
-       aplicada en vivo sobre la fecha real de apertura.
+       aplicada en vivo sobre la fecha real de apertura. Propio de la
+       estrategia del fondo (ver _strategy_exit_params), no siempre el mismo
+       numero.
     3. trend_break: el precio cierra por debajo de la SMA rapida del
-       screener, igual que en backtest.py.
+       screener, igual que en backtest.py. Solo aplica si la estrategia del
+       fondo la tiene habilitada (ver _strategy_exit_params) -- Momentum si,
+       el resto no.
     """
     async with _funds_order_lock:
         fund = funds_store.get(fund_id)
@@ -854,17 +1023,20 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                 if position is None or position.quantity <= 0:
                     return
 
+        exit_params = _strategy_exit_params(fund.strategy_id or screener_config.strategy_id)
+
         held_days = (datetime.now(timezone.utc) - position.opened_at).days if position.opened_at else 0
-        timed_out = held_days >= screener_config.max_holding_days
+        timed_out = exit_params.max_holding_days is not None and held_days >= exit_params.max_holding_days
 
         trend_broke = False
-        try:
-            bars = await asyncio.to_thread(get_daily_bars, symbol, screener_config.sma_fast + 5)
-            sma_fast_s = sma(bars["Close"], screener_config.sma_fast)
-            if len(sma_fast_s) and not bool(sma_fast_s.isna().iloc[-1]):
-                trend_broke = float(bars["Close"].iloc[-1]) < float(sma_fast_s.iloc[-1])
-        except MarketDataError:
-            pass
+        if exit_params.trend_break_enabled:
+            try:
+                bars = await asyncio.to_thread(get_daily_bars, symbol, exit_params.sma_period + 5)
+                sma_fast_s = sma(bars["Close"], exit_params.sma_period)
+                if len(sma_fast_s) and not bool(sma_fast_s.isna().iloc[-1]):
+                    trend_broke = float(bars["Close"].iloc[-1]) < float(sma_fast_s.iloc[-1])
+            except MarketDataError:
+                pass
 
         if not (timed_out or trend_broke):
             return
@@ -1955,6 +2127,7 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
             _validate_fund_order(order, reference_price)
 
         trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
+        current_positions = await broker.get_positions()
 
         decision = rules_engine.evaluate(
             order=order,
@@ -1964,7 +2137,15 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
             trades_today=trades_today,
             halted=state["halted"],
             order_sector=get_sector(order.symbol),
-            sector_exposure_usd=_compute_sector_exposure(await broker.get_positions(), order.symbol),
+            sector_exposure_usd=_compute_sector_exposure(current_positions, order.symbol),
+            max_concurrent_positions_per_sector=screener_config.max_concurrent_positions_per_sector,
+            sector_position_count=_compute_sector_position_count(current_positions, order.symbol),
+            total_position_value_usd=_compute_total_position_value(current_positions, order.symbol),
+            open_portfolio_risk_usd=_compute_open_portfolio_risk_usd(order.symbol),
+            trades_today_for_fund=(
+                audit.count_trades_today(rules_config.trading_hours_timezone, fund_id=order.fund_id)
+                if order.fund_id else None
+            ),
         )
 
         audit.record("order_submitted", order.model_dump(), decision.model_dump())
@@ -2011,6 +2192,22 @@ async def submit_order(order: OrderRequest, _: None = Depends(require_api_key)):
             order.model_dump(),
             result,
         )
+        # Misma red de seguridad que _try_auto_trade_entry: si no llenó del
+        # todo dentro de la ventana sincronica de place_order, se reconcilia
+        # cuando el fill tardío llegue (ver _register_fund_fill_reconciliation).
+        if order.fund_id:
+            _register_fund_fill_reconciliation(
+                order_id=result.get("order_id"),
+                fund_id=order.fund_id,
+                symbol=order.symbol,
+                side=order.side,
+                requested_qty=order.quantity,
+                already_filled_qty=filled_qty,
+                already_avg_price=result.get("avg_fill_price") or reference_price,
+                stop_loss_price=order.stop_loss_price,
+                stop_order_id=result.get("stop_order_id"),
+                audit_action="order_fill_late",
+            )
         return {"status": status_label, "result": result}
 
 
@@ -2063,6 +2260,21 @@ async def approve_order(order_id: str, _: None = Depends(require_api_key)):
             pending.order.model_dump(),
             result,
         )
+        # Misma red de seguridad que _try_auto_trade_entry/submit_order (ver
+        # _register_fund_fill_reconciliation).
+        if pending.order.fund_id:
+            _register_fund_fill_reconciliation(
+                order_id=result.get("order_id"),
+                fund_id=pending.order.fund_id,
+                symbol=pending.order.symbol,
+                side=pending.order.side,
+                requested_qty=pending.order.quantity,
+                already_filled_qty=filled_qty,
+                already_avg_price=result.get("avg_fill_price") or reference_price,
+                stop_loss_price=pending.order.stop_loss_price,
+                stop_order_id=result.get("stop_order_id"),
+                audit_action="order_fill_late",
+            )
         return {"status": status_label, "result": result}
 
 

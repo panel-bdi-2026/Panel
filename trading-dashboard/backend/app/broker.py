@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from ib_async import IB, LimitOrder, MarketOrder, Stock, StopOrder, Ticker
+from ib_async.order import OrderStatus
 
 from .models import AccountSummary, OrderRequest, OrderType, Position, Side
 
@@ -67,10 +68,14 @@ class IBKRBroker:
     y chocan con el de FastAPI ("event loop is already running").
     """
 
-    def __init__(self, host: str, port: int, client_id: int):
+    def __init__(self, host: str, port: int, client_id: int, market_data_type: int = 3):
         self.host = host
         self.port = port
         self.client_id = client_id
+        # 1=real-time, 2=frozen, 3=delayed (default, funciona sin ninguna
+        # suscripcion de datos), 4=delayed-frozen. Ver Settings.ib_market_data_type
+        # (app/config.py) para el detalle de cuando conviene cambiarlo.
+        self.market_data_type = market_data_type
         self.account_id: str | None = None
         self.ib = IB()
         # Suscripciones de streaming persistente (Nivel 1) para el hot-set del
@@ -84,9 +89,7 @@ class IBKRBroker:
     async def connect(self) -> None:
         try:
             await self.ib.connectAsync(self.host, self.port, clientId=self.client_id, timeout=10)
-            # Datos demorados por defecto: funcionan sin suscripcion de market data
-            # en tiempo real. Cambia a reqMarketDataType(1) si tienes suscripciones.
-            self.ib.reqMarketDataType(3)
+            self.ib.reqMarketDataType(self.market_data_type)
             accounts = self.ib.managedAccounts()
             if accounts:
                 self.account_id = accounts[0]
@@ -302,8 +305,6 @@ class IBKRBroker:
         no debe tratar eso como una falla, el proximo chequeo de salida
         reconciliara la posicion si el stop ya se ejecuto del lado del
         broker."""
-        from ib_async.order import OrderStatus
-
         for trade in self.ib.trades():
             if trade.order.orderId == stop_order_id:
                 if trade.orderStatus.status in OrderStatus.DoneStates:
@@ -386,8 +387,6 @@ class IBKRBroker:
         terminal, devuelve el ultimo estado visto (puede ser parcial o
         todavia en curso) en vez de bloquear indefinidamente.
         """
-        from ib_async.order import OrderStatus
-
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout
         result = None
@@ -398,6 +397,59 @@ class IBKRBroker:
             if loop.time() >= deadline:
                 return result
             await asyncio.sleep(interval)
+
+    def _register_stop_reconciliation(
+        self, parent_trade, stop_trade, contract, requested_qty: float
+    ) -> None:
+        """Ajusta el stop-loss a la cantidad FINAL que el padre efectivamente
+        llene, sin importar si eso pasa dentro de los 5s de _wait_for_fill o
+        mucho despues (fill tardio).
+
+        Reemplaza la logica vieja, que resolvia esto una sola vez con el
+        snapshot de los 5s de _wait_for_fill: si el padre todavia no habia
+        llenado nada en ese instante, cancelaba el stop asumiendo que la
+        orden ya no iba a llenar -- pero una orden LMT puede seguir viva y
+        llenar minutos despues (ver subscribe_fill/_on_late_fill en main.py),
+        y en ese caso la posicion quedaba abierta sin ninguna proteccion real
+        en IBKR (el ledger del fondo seguia mostrando un stop_order_id que
+        para entonces ya estaba cancelado). Este callback se dispara recien
+        cuando el PADRE llega a su propio estado terminal (lleno del todo o
+        cancelado), sea cuando sea que eso ocurra, y es la UNICA fuente de
+        verdad para cancelar/resizear el stop -- place_order ya no lo hace
+        con el snapshot de la espera sincronica.
+
+        Si el padre nunca llena nada, cancela el stop (no debe quedar un stop
+        huerfano sin posicion que proteger). Si llena parcialmente, resizea
+        el stop a la cantidad real. Si llena exactamente lo pedido, no hace
+        falta tocarlo (ya quedo bien dimensionado desde que se coloco).
+
+        Chequea el estado ACTUAL antes de suscribirse: si el padre ya esta en
+        un estado terminal en el momento de registrar (ej. lleno casi al
+        instante, dentro del asyncio.sleep(0.2) previo), el evento ya pudo
+        haber disparado antes de que este codigo se suscribiera y nunca
+        volveria a hacerlo -- correr el ajuste de inmediato en ese caso evita
+        esa ventana de carrera, ademas de cubrir el caso normal (sincronico)
+        en el que _wait_for_fill ya vio el estado final."""
+        _done = [False]  # guard para que el ajuste corra una sola vez
+
+        def _handler(t=parent_trade):
+            if _done[0]:
+                return
+            _done[0] = True
+            filled = t.orderStatus.filled
+            if stop_trade.orderStatus.status in OrderStatus.DoneStates:
+                return  # el stop ya termino solo (se disparo, o lo cancelaron a mano)
+            if filled <= 0:
+                self.ib.cancelOrder(stop_trade.order)
+            elif filled != requested_qty:
+                stop_trade.order.totalQuantity = filled
+                self.ib.placeOrder(contract, stop_trade.order)
+
+        if parent_trade.orderStatus.status in OrderStatus.DoneStates:
+            _handler()
+            return
+        parent_trade.filledEvent += _handler
+        parent_trade.cancelledEvent += _handler
 
     async def place_order(self, order: OrderRequest) -> dict:
         contract = Stock(_to_ib_symbol(order.symbol), "SMART", "USD")
@@ -422,6 +474,14 @@ class IBKRBroker:
             stop.transmit = True
             stop_trade = self.ib.placeOrder(contract, stop)
 
+            # Registrado ANTES de esperar: el ajuste final del stop (cancelar
+            # si el padre nunca llena, resizear si llena parcial) se resuelve
+            # por evento cuando el padre llegue a SU PROPIO estado terminal,
+            # no con el snapshot de la espera sincronica de abajo (ver
+            # _register_stop_reconciliation para el detalle de por que esto
+            # importa con un fill tardio).
+            self._register_stop_reconciliation(parent_trade, stop_trade, contract, order.quantity)
+
             # Espera el fill real del padre (hasta DoneStates) en vez de un
             # sleep a ciegas: ver _wait_for_fill.
             fill = await self._wait_for_fill(parent.orderId)
@@ -445,18 +505,6 @@ class IBKRBroker:
                 parent_trade.orderStatus.avgFillPrice or None,
                 parent_trade.orderStatus.remaining,
             )
-
-            # El stop se creo con order.quantity (lo pedido) antes de conocer
-            # el fill real del padre. Si el padre lleno menos (o nada),
-            # resize/cancela el stop para que nunca proteja mas cantidad de
-            # la que efectivamente se compro: un stop sobredimensionado que
-            # se dispara puede vender de mas (posicion fantasma negativa).
-            if filled_qty != order.quantity:
-                if filled_qty <= 0:
-                    self.ib.cancelOrder(stop_trade.order)
-                else:
-                    stop_trade.order.totalQuantity = filled_qty
-                    self.ib.placeOrder(contract, stop_trade.order)
 
             return {
                 "order_id": parent.orderId,

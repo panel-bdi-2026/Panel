@@ -34,6 +34,15 @@ class FundPosition(BaseModel):
     # del broker sin pasar por record_fill, en vez de aproximarlo solo con
     # stop_loss_price (ver _check_fund_exit en main.py).
     stop_order_id: Optional[int] = None
+    # Comision de COMPRA acumulada, todavia no realizada, de la cantidad
+    # actualmente abierta (ver record_fill). Igual que avg_cost, no incluye
+    # la comision (se mantiene "precio limpio" a proposito), pero eso
+    # significaba que realized_pnl de una venta solo restaba la comision de
+    # SALIDA, nunca la de entrada -- realized_pnl_total() quedaba inflado por
+    # la suma de todas las comisiones de compra de posiciones ya cerradas.
+    # Al vender, se descuenta la porcion proporcional a la cantidad vendida
+    # (ver record_fill) del realized_pnl de esa venta, sin tocar avg_cost.
+    cost_basis_commission: float = 0.0
 
 
 class FundTrade(BaseModel):
@@ -170,9 +179,16 @@ class Fund(BaseModel):
         en screener_config.py) si modela ese costo -- inflando el P&L en vivo
         respecto al de un backtest comparable. No se suma a avg_cost (el
         costo de la posicion queda en precio puro): se resta directo del cash
-        al comprar, y del PnL realizado al vender, asi equity_estimate()
-        siempre refleja el costo total pagado sin importar en que pierna se
-        cobro la comision.
+        al comprar, asi equity_estimate() siempre refleja el costo total
+        pagado sin importar en que pierna se cobro la comision.
+
+        La comision de COMPRA se acumula en pos.cost_basis_commission (sin
+        tocar avg_cost) y se descuenta PRO-RATA del realized_pnl de cada
+        venta posterior, ademas de la comision de esa venta: sin esto,
+        realized_pnl_total() solo restaba la comision de salida, nunca la de
+        entrada, e inflaba el PnL realizado reportado por fondo (aunque
+        equity_estimate()/cash_usd ya eran correctos, porque la comision de
+        compra si se descuenta del cash en el momento de comprar).
 
         No valida nada (cash suficiente): esa validacion corre ANTES de
         enviar la orden al broker (ver main.py). La cantidad vendida si se
@@ -193,6 +209,7 @@ class Fund(BaseModel):
                 (pos.avg_cost * pos.quantity + price * quantity) / new_qty if new_qty else 0.0
             )
             pos.quantity = new_qty
+            pos.cost_basis_commission += commission
             self.cash_usd -= price * quantity + commission
         else:
             if quantity > pos.quantity:
@@ -202,7 +219,11 @@ class Fund(BaseModel):
                     quantity, symbol, self.id, pos.quantity,
                 )
                 quantity = pos.quantity
-            realized_pnl = (price - pos.avg_cost) * quantity - commission
+            entry_commission_share = (
+                pos.cost_basis_commission / pos.quantity * quantity if pos.quantity else 0.0
+            )
+            realized_pnl = (price - pos.avg_cost) * quantity - commission - entry_commission_share
+            pos.cost_basis_commission -= entry_commission_share
             pos.quantity -= quantity
             if pos.quantity <= 0:
                 pos.quantity = 0.0
@@ -210,6 +231,7 @@ class Fund(BaseModel):
                 pos.opened_at = None
                 pos.stop_loss_price = None
                 pos.stop_order_id = None
+                pos.cost_basis_commission = 0.0
             self.cash_usd += price * quantity - commission
 
         trade = FundTrade(

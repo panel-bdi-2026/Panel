@@ -40,6 +40,26 @@ class RulesConfig(BaseModel):
     # Solo se aplica si se puede determinar el sector de la orden (ver
     # app/sectors.py); si no, la regla no bloquea (sin dato, no se rechaza).
     max_sector_concentration_pct: float = Field(default=30, gt=0, le=100)
+    # Exposicion BRUTA maxima de toda la cartera (todas las posiciones + la
+    # orden en evaluacion), como % del equity -- a diferencia de
+    # max_position_pct_of_equity (por simbolo) y max_sector_concentration_pct
+    # (por sector), este es el unico limite que mira la cartera COMPLETA sin
+    # importar como se reparte entre simbolos/sectores. Default 100%: nunca
+    # invertir mas del equity disponible (sin margen implicito), salvo que se
+    # suba explicitamente. le=1000 (no 100) para no impedirle a una cuenta
+    # con margen habilitado configurar un tope por encima del 100% a
+    # proposito.
+    max_total_exposure_pct: float = Field(default=100, gt=0, le=1000)
+    # "Portfolio heat": si TODOS los stops abiertos se tocaran a la vez (no
+    # solo el de la operacion en evaluacion), cuanto se perderia en total,
+    # como % del equity. Riesgo agregado de la cartera completa -- distinto
+    # de risk_per_trade_pct (riesgo de UNA sola operacion): varias posiciones
+    # con bajo riesgo individual pero correlacionadas (ej. todas en el mismo
+    # regimen de mercado, aunque esten en sectores distintos) pueden sumar un
+    # riesgo combinado mucho mayor al que cualquiera de los limites
+    # individuales deja ver. Default 6%: conservador, unos pocos multiplos de
+    # risk_per_trade_pct por defecto (1%).
+    max_portfolio_heat_pct: float = Field(default=6, gt=0, le=100)
     # Riesgo maximo a arriesgar por operacion, como % del equity, si se toca el
     # stop-loss. Se usa solo para sugerir un tamano de posicion (no rechaza
     # ordenes por si solo): el tamano final igual queda limitado tambien por
@@ -47,6 +67,14 @@ class RulesConfig(BaseModel):
     risk_per_trade_pct: float = Field(default=1, gt=0, le=100)
     daily_loss_limit_pct: float = Field(default=2, gt=0, le=100)
     max_trades_per_day: int = Field(default=10, gt=0, le=1000)
+    # Cupo diario ADICIONAL por fondo: max_trades_per_day sigue aplicando
+    # como circuit-breaker global (cuenta ordenes de TODOS los fondos +
+    # manuales sin distinguir), pero con 2+ fondos activos ese cupo
+    # compartido dejaba que uno solo lo agotara y bloqueara a los demas por
+    # el resto del dia. None (default) = sin cupo adicional por fondo, solo
+    # el global. Solo se chequea para ordenes atadas a un fondo (fund_id
+    # presente); ordenes de la cuenta general no tienen fondo del que contar.
+    max_trades_per_day_per_fund: int | None = Field(default=None, gt=0, le=1000)
     require_stop_loss_on_buy: bool = True
     max_stop_loss_pct: float = Field(default=5, gt=0, le=100)
     allow_short_selling: bool = False
@@ -200,6 +228,11 @@ class RulesEngine:
         halted: bool,
         order_sector: str | None = None,
         sector_exposure_usd: dict[str, float] | None = None,
+        max_concurrent_positions_per_sector: int | None = None,
+        sector_position_count: dict[str, int] | None = None,
+        total_position_value_usd: float | None = None,
+        open_portfolio_risk_usd: float | None = None,
+        trades_today_for_fund: int | None = None,
     ) -> OrderDecision:
         """`order_sector` y `sector_exposure_usd` son opcionales y se ignoran
         si `order_sector` es None: sin sector conocido para el simbolo no hay
@@ -209,7 +242,43 @@ class RulesEngine:
         screener). `sector_exposure_usd` debe excluir la posicion actual del
         propio simbolo de la orden si correspondiera evitar contarla dos
         veces junto con `resulting_value` (queda a cargo del llamador, que
-        tiene visibilidad del portfolio completo)."""
+        tiene visibilidad del portfolio completo).
+
+        `max_concurrent_positions_per_sector`/`sector_position_count`: limite
+        de CANTIDAD de posiciones distintas abiertas en un mismo sector (no de
+        exposicion en USD, eso ya lo cubre max_sector_concentration_pct arriba).
+        Antes de este chequeo, este limite (ScreenerConfig.
+        max_concurrent_positions_per_sector) solo se aplicaba en el backtest
+        (ver cap_concurrent_positions en backtest.py), nunca en el motor de
+        auto-trading en vivo -- una discrepancia real entre lo que el backtest
+        validaba y lo que la cuenta en vivo permitia hacer. `sector_position_
+        count` debe excluir la posicion actual del propio simbolo de la orden
+        (mismo criterio que sector_exposure_usd); None o 0/falsy en
+        max_concurrent_positions_per_sector desactiva el chequeo. Solo aplica
+        a compras que abren una posicion NUEVA (current_position_qty == 0):
+        agregar a una posicion ya abierta no aumenta la cantidad de simbolos
+        distintos ocupados en ese sector.
+
+        `total_position_value_usd`: valor USD de TODAS las posiciones
+        actuales, excluyendo el propio simbolo de la orden (mismo criterio
+        que sector_exposure_usd), para chequear max_total_exposure_pct
+        (exposicion bruta de TODA la cartera, no de un sector). None
+        desactiva el chequeo (sin dato, no se rechaza).
+
+        `open_portfolio_risk_usd`: suma en USD del riesgo (entrada - stop) x
+        cantidad de todas las posiciones abiertas con stop-loss, excluyendo
+        el propio simbolo de la orden, para chequear max_portfolio_heat_pct
+        (cuanto se perderia en total si TODOS los stops se tocaran a la vez).
+        Solo aplica a compras con stop-loss definido (sin stop no hay riesgo
+        acotado que sumar). None desactiva el chequeo.
+
+        `trades_today_for_fund`: cantidad de operaciones ya ejecutadas HOY
+        para el fondo de `order.fund_id` (ver AuditLog.count_trades_today),
+        para chequear max_trades_per_day_per_fund -- un cupo diario adicional
+        POR fondo, distinto de `trades_today`/max_trades_per_day (el cupo
+        global, que sigue contando todas las ordenes sin distinguir fondo).
+        Solo aplica si la orden esta atada a un fondo (order.fund_id no es
+        None); ordenes de la cuenta general no tienen fondo del que contar."""
         violations: list[RuleViolation] = []
 
         if halted:
@@ -285,6 +354,54 @@ class RulesEngine:
                         ),
                     ))
 
+            if total_position_value_usd is not None:
+                resulting_total_value = total_position_value_usd + resulting_value
+                total_exposure_pct = (resulting_total_value / account.net_liquidation) * 100
+                if total_exposure_pct > self.config.max_total_exposure_pct:
+                    violations.append(RuleViolation(
+                        rule="max_total_exposure_pct",
+                        message=(
+                            f"La exposicion bruta total de la cartera seria "
+                            f"{total_exposure_pct:.1f}% del equity (maximo "
+                            f"{self.config.max_total_exposure_pct}%)."
+                        ),
+                    ))
+
+            if (
+                open_portfolio_risk_usd is not None
+                and order.side == Side.BUY
+                and order.stop_loss_price
+            ):
+                this_order_risk_usd = max(0.0, price - order.stop_loss_price) * order.quantity
+                resulting_risk_usd = open_portfolio_risk_usd + this_order_risk_usd
+                portfolio_heat_pct = (resulting_risk_usd / account.net_liquidation) * 100
+                if portfolio_heat_pct > self.config.max_portfolio_heat_pct:
+                    violations.append(RuleViolation(
+                        rule="max_portfolio_heat_pct",
+                        message=(
+                            f"Si se tocaran todos los stops abiertos (incluido este), la "
+                            f"perdida combinada seria {portfolio_heat_pct:.1f}% del equity "
+                            f"(maximo {self.config.max_portfolio_heat_pct}%)."
+                        ),
+                    ))
+
+        if (
+            order.side == Side.BUY
+            and order_sector
+            and current_position_qty == 0
+            and max_concurrent_positions_per_sector
+        ):
+            current_count = (sector_position_count or {}).get(order_sector, 0)
+            if current_count >= max_concurrent_positions_per_sector:
+                violations.append(RuleViolation(
+                    rule="max_concurrent_positions_per_sector",
+                    message=(
+                        f"El sector {order_sector} ya tiene {current_count} posicion(es) "
+                        f"abierta(s) (maximo {max_concurrent_positions_per_sector}): no se "
+                        "abren mas hasta cerrar alguna."
+                    ),
+                ))
+
         if not account.pnl_data_available:
             # Sin dato real de PnL diario (recien conectado, antes del primer
             # callback de reqPnL, o cuenta sin NetLiquidation), daily_pnl_pct
@@ -314,6 +431,20 @@ class RulesEngine:
             violations.append(RuleViolation(
                 rule="max_trades_per_day",
                 message=f"Ya se alcanzo el maximo de {self.config.max_trades_per_day} operaciones hoy.",
+            ))
+
+        if (
+            order.fund_id is not None
+            and self.config.max_trades_per_day_per_fund is not None
+            and trades_today_for_fund is not None
+            and trades_today_for_fund >= self.config.max_trades_per_day_per_fund
+        ):
+            violations.append(RuleViolation(
+                rule="max_trades_per_day_per_fund",
+                message=(
+                    f"Este fondo ya alcanzo su maximo de "
+                    f"{self.config.max_trades_per_day_per_fund} operaciones hoy."
+                ),
             ))
 
         if order.side == Side.BUY and self.config.require_stop_loss_on_buy:

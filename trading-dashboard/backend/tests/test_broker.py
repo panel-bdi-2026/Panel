@@ -33,6 +33,32 @@ def broker() -> IBKRBroker:
     return IBKRBroker("127.0.0.1", 7497, 17)
 
 
+def test_market_data_type_defaults_to_delayed():
+    broker = IBKRBroker("127.0.0.1", 7497, 17)
+    assert broker.market_data_type == 3
+
+
+def test_market_data_type_configurable_via_constructor():
+    broker = IBKRBroker("127.0.0.1", 7497, 17, market_data_type=1)
+    assert broker.market_data_type == 1
+
+
+def test_connect_requests_configured_market_data_type(monkeypatch):
+    broker = IBKRBroker("127.0.0.1", 7497, 17, market_data_type=1)
+
+    async def fake_connect_async(*args, **kwargs):
+        return None
+
+    calls = []
+    monkeypatch.setattr(broker.ib, "connectAsync", fake_connect_async)
+    monkeypatch.setattr(broker.ib, "reqMarketDataType", lambda t: calls.append(t))
+    monkeypatch.setattr(broker.ib, "managedAccounts", lambda: [])
+
+    asyncio.run(broker.connect())
+
+    assert calls == [1]
+
+
 def test_get_positions_returns_empty_list_without_calling_ib(broker, monkeypatch):
     monkeypatch.setattr(broker.ib, "positions", lambda: [])
 
@@ -618,3 +644,94 @@ def test_place_order_raises_before_resizing_when_stop_is_rejected(broker, monkey
 
     # No se intenta resizear/cancelar un stop que ya esta rechazado.
     assert stub.cancelled == []
+
+
+class _FakeEvent:
+    """Minimo de ib_async.Event: soporta `+=` para suscribirse y `.emit()`
+    para disparar los handlers registrados, sin depender de la libreria real."""
+
+    def __init__(self):
+        self._handlers: list = []
+
+    def __iadd__(self, handler):
+        self._handlers.append(handler)
+        return self
+
+    def emit(self, *args):
+        for handler in list(self._handlers):
+            handler(*args)
+
+
+class _EventTrade:
+    """Como _StubTrade, pero con filledEvent/cancelledEvent reales (Event-like)
+    para simular un fill tardio que llega DESPUES de _register_stop_reconciliation,
+    no resuelto de antemano como en _StubTrade."""
+
+    def __init__(self, order, status):
+        self.order = order
+        self.orderStatus = status
+        self.filledEvent = _FakeEvent()
+        self.cancelledEvent = _FakeEvent()
+
+
+def test_register_stop_reconciliation_waits_for_late_fill_event(broker, monkeypatch):
+    """Si el padre todavia esta vivo (no llego a un estado terminal) al
+    momento de registrar, el ajuste del stop NO debe correr de inmediato --
+    debe esperar al evento real, sin importar cuanto tarde en llegar. Esto es
+    lo que evita que un timeout de _wait_for_fill (5s) se confunda con "la
+    orden ya no va a llenar nada" y cancele un stop que en realidad sigue
+    protegiendo una orden viva (ver docstring de _register_stop_reconciliation)."""
+    parent_status = _StubOrderStatus("Submitted", filled=0.0, remaining=10.0)
+    parent_order = FakeOrder(order_id=1, aux_price=None, total_quantity=10.0)
+    parent_trade = _EventTrade(parent_order, parent_status)
+
+    stop_status = _StubOrderStatus("PreSubmitted", filled=0.0, remaining=10.0)
+    stop_order = FakeOrder(order_id=2, aux_price=90.0, total_quantity=10.0)
+    stop_trade = _StubTrade(stop_order, stop_status)
+
+    placed: list = []
+    cancelled: list = []
+    monkeypatch.setattr(broker.ib, "placeOrder", lambda contract, order: placed.append(order))
+    monkeypatch.setattr(broker.ib, "cancelOrder", lambda order: cancelled.append(order))
+
+    broker._register_stop_reconciliation(parent_trade, stop_trade, contract=object(), requested_qty=10.0)
+
+    # El padre todavia esta "vivo": no se toca el stop todavia.
+    assert placed == []
+    assert cancelled == []
+
+    # Fill tardio parcial (4 de 10), llega mucho despues via el evento real.
+    parent_status.filled = 4.0
+    parent_status.status = "Filled"
+    parent_trade.filledEvent.emit()
+
+    assert cancelled == []
+    assert placed == [stop_order]
+    assert stop_order.totalQuantity == 4.0
+
+
+def test_register_stop_reconciliation_cancels_stop_on_late_zero_fill(broker, monkeypatch):
+    """Si el padre finalmente se cancela sin haber llenado nada (tras seguir
+    vivo un buen rato), el stop huerfano se cancela recien en ese momento --
+    nunca antes, mientras el padre todavia podia llenar."""
+    parent_status = _StubOrderStatus("Submitted", filled=0.0, remaining=10.0)
+    parent_order = FakeOrder(order_id=1, aux_price=None, total_quantity=10.0)
+    parent_trade = _EventTrade(parent_order, parent_status)
+
+    stop_status = _StubOrderStatus("PreSubmitted", filled=0.0, remaining=10.0)
+    stop_order = FakeOrder(order_id=2, aux_price=90.0, total_quantity=10.0)
+    stop_trade = _StubTrade(stop_order, stop_status)
+
+    cancelled: list = []
+    monkeypatch.setattr(broker.ib, "placeOrder", lambda contract, order: (_ for _ in ()).throw(
+        AssertionError("no deberia resizear el stop si el padre nunca lleno nada")
+    ))
+    monkeypatch.setattr(broker.ib, "cancelOrder", lambda order: cancelled.append(order))
+
+    broker._register_stop_reconciliation(parent_trade, stop_trade, contract=object(), requested_qty=10.0)
+    assert cancelled == []
+
+    parent_status.status = "Cancelled"
+    parent_trade.cancelledEvent.emit()
+
+    assert cancelled == [stop_order]

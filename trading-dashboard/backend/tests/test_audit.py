@@ -9,10 +9,13 @@ def make_audit(tmp_path) -> AuditLog:
     return AuditLog(tmp_path / "audit.db")
 
 
-def _insert_at(audit: AuditLog, action: str, ts: datetime) -> None:
+def _insert_at(audit: AuditLog, action: str, ts: datetime, fund_id: str | None = None) -> None:
+    import json
+
+    payload = json.dumps({"fund_id": fund_id} if fund_id is not None else {})
     audit._conn.execute(
-        "INSERT INTO audit_log (ts, action, payload, result) VALUES (?, ?, '{}', '{}')",
-        (ts.isoformat(), action),
+        "INSERT INTO audit_log (ts, action, payload, result) VALUES (?, ?, ?, '{}')",
+        (ts.isoformat(), action, payload),
     )
     audit._conn.commit()
 
@@ -70,6 +73,32 @@ def test_counts_auto_trade_executed_and_auto_trade_exit(tmp_path):
     _insert_at(audit, "auto_trade_executed", now_utc)
     _insert_at(audit, "auto_trade_exit", now_utc)
     assert audit.count_trades_today("America/New_York") == 2
+
+
+def test_count_trades_today_filters_by_fund_id(tmp_path):
+    # RulesConfig.max_trades_per_day_per_fund necesita poder contar solo las
+    # operaciones de UN fondo, distinto del cupo global (sin filtrar).
+    audit = make_audit(tmp_path)
+    now_utc = datetime.now(timezone.utc)
+    _insert_at(audit, "order_executed", now_utc, fund_id="fund-a")
+    _insert_at(audit, "auto_trade_executed", now_utc, fund_id="fund-a")
+    _insert_at(audit, "order_executed", now_utc, fund_id="fund-b")
+
+    assert audit.count_trades_today("America/New_York") == 3
+    assert audit.count_trades_today("America/New_York", fund_id="fund-a") == 2
+    assert audit.count_trades_today("America/New_York", fund_id="fund-b") == 1
+    assert audit.count_trades_today("America/New_York", fund_id="fund-c") == 0
+
+
+def test_count_trades_today_fund_filter_ignores_orders_without_fund_id(tmp_path):
+    # Una orden sin fund_id (cuenta general, no atada a ningun fondo) no debe
+    # contarse para ningun fondo especifico.
+    audit = make_audit(tmp_path)
+    now_utc = datetime.now(timezone.utc)
+    _insert_at(audit, "order_executed", now_utc)  # sin fund_id
+
+    assert audit.count_trades_today("America/New_York") == 1
+    assert audit.count_trades_today("America/New_York", fund_id="fund-a") == 0
 
 
 def test_record_is_serialized_by_internal_lock(tmp_path):

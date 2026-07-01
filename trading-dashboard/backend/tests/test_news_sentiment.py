@@ -49,25 +49,29 @@ class _FakeTicker:
 
 
 def test_fetch_headlines_extracts_nested_content_title(monkeypatch):
-    items = [{"content": {"title": "Empresa anuncia resultados record"}}]
+    # El titulo debe mencionar el ticker o la empresa para pasar el filtro de
+    # relevancia (_is_relevant, ver news_sentiment.py): sin eso, Yahoo mezcla
+    # "editors picks" genericos en el feed de cualquier accion y quedarian
+    # filtrados por diseno, no por un bug de este test.
+    items = [{"content": {"title": "AAPL anuncia resultados record"}}]
     monkeypatch.setattr(news_sentiment_module.yf, "Ticker", lambda symbol: _FakeTicker(items))
-    assert news_sentiment_module._fetch_headlines("AAPL") == ["Empresa anuncia resultados record"]
+    assert news_sentiment_module._fetch_headlines("AAPL") == ["AAPL anuncia resultados record"]
 
 
 def test_fetch_headlines_falls_back_to_top_level_title(monkeypatch):
-    items = [{"title": "Titulo plano sin anidar"}]
+    items = [{"title": "Titulo plano sin anidar sobre AAPL"}]
     monkeypatch.setattr(news_sentiment_module.yf, "Ticker", lambda symbol: _FakeTicker(items))
-    assert news_sentiment_module._fetch_headlines("AAPL") == ["Titulo plano sin anidar"]
+    assert news_sentiment_module._fetch_headlines("AAPL") == ["Titulo plano sin anidar sobre AAPL"]
 
 
 def test_fetch_headlines_skips_items_without_title(monkeypatch):
-    items = [{"content": {}}, {"title": "Si tiene titulo"}]
+    items = [{"content": {}}, {"title": "Si tiene titulo de AAPL"}]
     monkeypatch.setattr(news_sentiment_module.yf, "Ticker", lambda symbol: _FakeTicker(items))
-    assert news_sentiment_module._fetch_headlines("AAPL") == ["Si tiene titulo"]
+    assert news_sentiment_module._fetch_headlines("AAPL") == ["Si tiene titulo de AAPL"]
 
 
 def test_fetch_headlines_caps_at_max_headlines(monkeypatch):
-    items = [{"title": f"Titular {i}"} for i in range(20)]
+    items = [{"title": f"Titular {i} sobre AAPL"} for i in range(20)]
     monkeypatch.setattr(news_sentiment_module.yf, "Ticker", lambda symbol: _FakeTicker(items))
     headlines = news_sentiment_module._fetch_headlines("AAPL")
     assert len(headlines) == news_sentiment_module._MAX_HEADLINES
@@ -296,13 +300,17 @@ def test_positive_sentiment_increases_score(monkeypatch):
 
 
 def test_negative_sentiment_decreases_score(monkeypatch):
-    results = [make_result("AAPL", score=50.0)]
+    # score=70 (bien dentro de la banda [50,100]) para aislar el efecto de
+    # "el sentimiento negativo resta" del clamp de banda (ver tests aparte
+    # mas abajo): un score=50 con -10 caeria exactamente en el limite del
+    # clamp y no distinguiria un bug del comportamiento correcto.
+    results = [make_result("AAPL", score=70.0)]
     monkeypatch.setattr(
         news_sentiment_module, "get_news_sentiment",
         lambda symbol, force=False: NewsSentiment(sentiment="negative", summary="Malas noticias."),
     )
     apply_news_sentiment_adjustment(results, top_n=10, shortlist_multiplier=3.0, max_adjustment=10.0)
-    assert results[0].score == 40.0
+    assert results[0].score == 60.0
 
 
 def test_neutral_sentiment_does_not_change_score(monkeypatch):
@@ -323,6 +331,37 @@ def test_missing_sentiment_data_does_not_change_score_or_fields(monkeypatch):
     assert results[0].score == 50.0
     assert results[0].news_sentiment is None
     assert results[0].news_summary is None
+
+
+def test_passing_candidate_score_never_drops_below_50(monkeypatch):
+    # score=52 (pasa filtros) con -10 daria 42 sin el clamp -- por debajo de
+    # la banda [50,100] que garantiza que un candidato que SI pasa los
+    # filtros de calidad de la estrategia siempre rankea por encima de uno
+    # que no los pasa (ver docstring de apply_news_sentiment_adjustment).
+    results = [make_result("AAPL", score=52.0)]
+    results[0].passes_filters = True
+    monkeypatch.setattr(
+        news_sentiment_module, "get_news_sentiment",
+        lambda symbol, force=False: NewsSentiment(sentiment="negative", summary="Malas noticias."),
+    )
+    apply_news_sentiment_adjustment(results, top_n=10, shortlist_multiplier=3.0, max_adjustment=10.0)
+    assert results[0].score == 50.0
+
+
+def test_non_passing_candidate_score_never_exceeds_49(monkeypatch):
+    # score=45 (NO pasa filtros -- ej. rompe RSI o tendencia) con +10 daria
+    # 55 sin el clamp, cruzando a la banda de los que si pasan -- y si eso
+    # ademas superara el umbral de auto-trading, dispararia una compra en un
+    # simbolo que falla el filtro de calidad de la estrategia solo por una
+    # noticia favorable (el bug que este clamp cierra).
+    results = [make_result("AAPL", score=45.0)]
+    results[0].passes_filters = False
+    monkeypatch.setattr(
+        news_sentiment_module, "get_news_sentiment",
+        lambda symbol, force=False: NewsSentiment(sentiment="positive", summary="Buenas noticias."),
+    )
+    apply_news_sentiment_adjustment(results, top_n=10, shortlist_multiplier=3.0, max_adjustment=10.0)
+    assert results[0].score == 49.0
 
 
 def test_shortlist_size_rounds_and_has_floor_of_one(monkeypatch):

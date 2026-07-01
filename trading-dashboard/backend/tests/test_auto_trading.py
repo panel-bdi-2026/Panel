@@ -486,6 +486,96 @@ def test_check_fund_exit_closes_on_trend_break(monkeypatch):
     assert fund.owned_quantity("AAPL") == 0
 
 
+def test_check_fund_exit_opportunistic_ignores_trend_break(monkeypatch):
+    """Oportunista no exige tendencia en la entrada (ver
+    strategies/opportunistic.py), asi que salir por romper una SMA que nunca
+    formo parte de su señal no tiene tesis detras: _strategy_exit_params
+    debe dejarla sin chequeo de tendencia para esta estrategia, sin importar
+    cuan roto este el precio."""
+    main_module.screener_config.opportunistic.max_holding_days = 30
+    fund = main_module.funds_store.create(
+        "Fondo oportunista", 10_000, auto_trading_enabled=True, strategy_id="opportunistic"
+    )
+    main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=95)
+    monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
+
+    # Cierre muy por debajo de la sma_fast global de Momentum: si el fix no
+    # aplicara, esto cerraria la posicion igual que en Momentum.
+    bars = pd.DataFrame({"Close": pd.Series([110.0, 108.0, 90.0])})
+    monkeypatch.setattr(main_module, "get_daily_bars", lambda symbol, days: bars)
+
+    async def fail_if_called(order):
+        raise AssertionError("Oportunista no deberia salir por ruptura de tendencia")
+
+    monkeypatch.setattr(main_module.broker, "place_order", fail_if_called)
+
+    asyncio.run(main_module._check_fund_exit(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.owned_quantity("AAPL") == 10
+
+
+def test_check_fund_exit_opportunistic_closes_on_its_own_max_holding_days(monkeypatch):
+    """Oportunista si tiene su propio limite de tiempo (opp.max_holding_days),
+    distinto del global de Momentum."""
+    main_module.screener_config.max_holding_days = 999  # el global de Momentum no deberia usarse
+    main_module.screener_config.opportunistic.max_holding_days = 5
+    fund = main_module.funds_store.create(
+        "Fondo oportunista", 10_000, auto_trading_enabled=True, strategy_id="opportunistic"
+    )
+    main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=95)
+    fund = main_module.funds_store.get(fund.id)
+    fund.positions["AAPL"].opened_at = datetime.now(timezone.utc) - timedelta(days=10)
+    monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
+
+    def fail_bars(symbol, days):
+        raise main_module.MarketDataError("sin datos")
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fail_bars)
+
+    async def fake_reference_price(symbol):
+        return 105.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
+    monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
+
+    asyncio.run(main_module._check_fund_exit(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.owned_quantity("AAPL") == 0
+
+
+def test_check_fund_exit_long_term_never_times_out_or_trend_breaks(monkeypatch):
+    """Largo Plazo/Dividendos son fundamentals-first (tesis a meses/año): sin
+    limite de tiempo ni ruptura de tendencia, solo salen por stop-loss."""
+    fund = main_module.funds_store.create(
+        "Fondo largo plazo", 10_000, auto_trading_enabled=True, strategy_id="long_term"
+    )
+    main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=95)
+    fund = main_module.funds_store.get(fund.id)
+    fund.positions["AAPL"].opened_at = datetime.now(timezone.utc) - timedelta(days=1000)
+    monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
+
+    bars = pd.DataFrame({"Close": pd.Series([110.0, 108.0, 90.0])})  # cierre muy roto igual
+
+    def fail_if_bars_requested(symbol, days):
+        raise AssertionError(
+            "Largo Plazo no chequea ruptura de tendencia: no deberia pedir barras para eso"
+        )
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fail_if_bars_requested)
+
+    async def fail_if_called(order):
+        raise AssertionError("Largo Plazo no deberia salir por tiempo ni tendencia")
+
+    monkeypatch.setattr(main_module.broker, "place_order", fail_if_called)
+
+    asyncio.run(main_module._check_fund_exit(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.owned_quantity("AAPL") == 10
+
+
 def test_check_fund_exit_does_nothing_when_neither_condition_met(monkeypatch):
     main_module.screener_config.max_holding_days = 20
     main_module.screener_config.sma_fast = 3

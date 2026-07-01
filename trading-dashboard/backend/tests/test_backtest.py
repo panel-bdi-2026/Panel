@@ -995,9 +995,95 @@ def test_simulate_symbol_populates_stop_loss_pct_from_entry_atr():
 
     assert trades[0].exit_reason == "max_holding_days"
     assert trades[0].entry_atr_pct is not None
+    # rel=1e-3 (no la tolerancia absoluta por default de pytest.approx, mas
+    # estricta): stop_loss_pct se deriva directo de la distancia real
+    # entrada->stop (ver _simulate_symbol), sin pasar por el redondeo
+    # intermedio a 4 decimales de entry_atr_pct que esta formula si tiene --
+    # sin tensado de por medio ambas son equivalentes salvo ese redondeo.
     assert trades[0].stop_loss_pct == pytest.approx(
-        cfg.stop_loss_atr_multiplier * trades[0].entry_atr_pct
+        cfg.stop_loss_atr_multiplier * trades[0].entry_atr_pct, rel=1e-3
     )
+
+
+def test_simulate_symbol_tightens_stop_when_rules_config_caps_max_stop_loss_pct():
+    # Mismo escenario que el test anterior (stop implicado por el ATR ~2.8%),
+    # pero con un RulesConfig cuyo max_stop_loss_pct (1.0%) es mas estricto:
+    # replica el mismo ajuste que _try_auto_trade_entry hace en vivo -- el
+    # stop se tensa al tope en vez de simular la entrada con el stop ancho
+    # original (ver fix de paridad backtest/vivo para el auto-ajuste de
+    # stop-loss).
+    from app.backtest import _simulate_symbol
+    from app.rules import RulesConfig
+
+    closes = [100.0 + i for i in range(30)]
+    bars = _bars(closes)
+
+    cfg = ScreenerConfig(
+        universe=["MOM"],
+        benchmark_symbol="SPY",
+        sma_fast=3,
+        sma_slow=5,
+        momentum_lookback_days=5,
+        momentum_short_days=2,
+        momentum_12_1_lookback_days=5,
+        momentum_12_1_skip_days=2,
+        rsi_period=3,
+        rsi_min=0,
+        rsi_max=100,
+        atr_period=3,
+        stop_loss_atr_multiplier=1.5,
+        max_holding_days=10,
+        regime_filter_enabled=False,
+        near_high_filter_enabled=False,
+        top_n=10,
+    )
+    score_series = pd.Series(1000.0, index=bars.index)
+    regime_ok = pd.Series(True, index=bars.index)
+    rules_config = RulesConfig(max_stop_loss_pct=1.0)
+
+    trades = _simulate_symbol("MOM", bars, cfg, score_series, regime_ok, rules_config=rules_config)
+
+    assert trades[0].stop_loss_pct == pytest.approx(1.0, rel=1e-3)
+
+
+def test_simulate_symbol_blocks_entry_when_trend_fails_despite_high_score():
+    # Serie estrictamente decreciente: la SMA rapida queda por debajo de la
+    # lenta y el precio por debajo de ambas, asi que trend_ok es SIEMPRE
+    # falso -- aunque score_series este muy por encima del umbral de entrada
+    # todos los dias (simulando un simbolo que rankea excelente en el resto
+    # de los componentes del score), no debe generarse ninguna operacion. Sin
+    # este gate, el backtest simularia una entrada que el motor de auto-
+    # trading en vivo jamas tomaria (ver docstring de _simulate_symbol).
+    from app.backtest import _simulate_symbol
+
+    closes = [200.0 - i for i in range(60)]
+    bars = _bars(closes)
+
+    cfg = ScreenerConfig(
+        universe=["MOM"],
+        benchmark_symbol="SPY",
+        sma_fast=3,
+        sma_slow=5,
+        momentum_lookback_days=5,
+        momentum_short_days=2,
+        momentum_12_1_lookback_days=5,
+        momentum_12_1_skip_days=2,
+        rsi_period=3,
+        rsi_min=0,
+        rsi_max=100,  # RSI bien abierto: aislar el gate de tendencia, no el de RSI
+        atr_period=3,
+        stop_loss_atr_multiplier=1.5,
+        max_holding_days=10,
+        regime_filter_enabled=False,
+        near_high_filter_enabled=False,
+        top_n=10,
+    )
+    score_series = pd.Series(1000.0, index=bars.index)
+    regime_ok = pd.Series(True, index=bars.index)
+
+    trades = _simulate_symbol("MOM", bars, cfg, score_series, regime_ok)
+
+    assert trades == []
 
 
 def test_simulate_symbol_opportunistic_populates_stop_loss_pct_from_entry_atr():
@@ -1008,7 +1094,7 @@ def test_simulate_symbol_opportunistic_populates_stop_loss_pct_from_entry_atr():
 
     bars = _opportunistic_uptrend_bars()
     bars.loc[bars.index[264], "Low"] = 50.0
-    cfg = _opportunistic_cfg(max_holding_days=30)
+    cfg = _opportunistic_cfg(max_holding_days=30, rsi_min=0, rsi_max=100)
     opp = cfg.opportunistic
 
     score_series = pd.Series(opp.backtest_score_entry_threshold - 1, index=bars.index)
@@ -1017,9 +1103,35 @@ def test_simulate_symbol_opportunistic_populates_stop_loss_pct_from_entry_atr():
     trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series, pd.Series(True, index=bars.index))
 
     assert trades[0].entry_atr_pct is not None
+    # rel=1e-3: ver el mismo comentario en test_simulate_symbol_populates_
+    # stop_loss_pct_from_entry_atr (Momentum) sobre el redondeo intermedio.
     assert trades[0].stop_loss_pct == pytest.approx(
-        opp.stop_loss_atr_multiplier * trades[0].entry_atr_pct
+        opp.stop_loss_atr_multiplier * trades[0].entry_atr_pct, rel=1e-3
     )
+
+
+def test_simulate_symbol_opportunistic_tightens_stop_when_rules_config_caps_max_stop_loss_pct():
+    # Mismo escenario que el test anterior (stop implicado por el ATR
+    # ~3.5%), pero con un RulesConfig cuyo max_stop_loss_pct (1.0%) es mas
+    # estricto: replica el mismo ajuste que _try_auto_trade_entry hace en
+    # vivo para CUALQUIER estrategia, Oportunista incluida.
+    from app.backtest import _simulate_symbol_opportunistic
+    from app.rules import RulesConfig
+
+    bars = _opportunistic_uptrend_bars()
+    bars.loc[bars.index[264], "Low"] = 50.0
+    cfg = _opportunistic_cfg(max_holding_days=30, rsi_min=0, rsi_max=100)
+    opp = cfg.opportunistic
+
+    score_series = pd.Series(opp.backtest_score_entry_threshold - 1, index=bars.index)
+    score_series.iloc[262:] = opp.backtest_score_entry_threshold + 1
+    rules_config = RulesConfig(max_stop_loss_pct=1.0)
+
+    trades = _simulate_symbol_opportunistic(
+        "OPP", bars, cfg, score_series, pd.Series(True, index=bars.index), rules_config=rules_config
+    )
+
+    assert trades[0].stop_loss_pct == pytest.approx(1.0, rel=1e-3)
 
 
 def test_risk_based_trade_weight_dominated_by_risk_formula():
@@ -1468,14 +1580,16 @@ def _opportunistic_oscillating_bars(n=320, amplitude=2.0, period=4.0):
 
 
 def _opportunistic_uptrend_bars(n=320, slope=0.05, volume=5_000_000):
-    """Tendencia alcista suave y estrictamente monotona (a diferencia de
-    _opportunistic_oscillating_bars, pensada para los tests de integracion
-    donde la entrada/salida la maneja el score real). Con el cierre siempre
-    subiendo, queda siempre por encima de su propia SMA rapida (sma_fast,
-    ver _simulate_symbol_opportunistic) salvo el dia exacto en que un test
-    fuerza una caida puntual -- asi se puede controlar con precision cuando
-    dispara (o no) la salida por ruptura de tendencia, sin que la mecanica
-    de la serie de precios la dispare por accidente en otro dia."""
+    """Tendencia alcista suave y estrictamente monotona, pensada para tests
+    unitarios de MECANICA de entrada/salida (fill, stop-loss, max_holding_days)
+    donde la entrada se fuerza a mano via score_series, no por la calidad real
+    de la serie. Con el incremento diario constante (sin ningun dia de
+    perdida), el RSI de Wilder se satura en 100 pasado el periodo de
+    calentamiento (avg_loss queda en 0 para siempre) -- los tests que usan
+    esta fixture junto con los gates de calidad de _simulate_symbol_
+    opportunistic (momentum_ok/rsi_ok/volatility_ok/room_to_grow_ok) necesitan
+    ensanchar rsi_min/rsi_max (ver _opportunistic_cfg) para que ese gate no
+    interfiera con lo que realmente estan probando."""
     i = np.arange(n)
     close_vals = 100.0 + slope * i
     idx = pd.date_range("2021-01-01", periods=n, freq="D")
@@ -1524,7 +1638,7 @@ def _opportunistic_cfg(**overrides):
     )
 
 
-def test_opportunistic_trend_break_exit_when_price_falls_below_sma_fast():
+def test_opportunistic_ignores_trend_break_and_exits_by_max_holding_days():
     # _simulate_symbol_opportunistic ya no sale por score (ese umbral de
     # salida no existe en vivo, ver _check_fund_exit en main.py): score_series
     # es un insumo externo (el percentil cross-sectional, ver
@@ -1535,18 +1649,17 @@ def test_opportunistic_trend_break_exit_when_price_falls_below_sma_fast():
     # alto, se mantiene alto el resto de la serie ya que ahora es irrelevante
     # para la salida), fill al abrir el dia 263.
     #
-    # _opportunistic_uptrend_bars sube monotonamente, asi que el cierre queda
-    # siempre por encima de su SMA rapida (cfg.sma_fast=20 por default) salvo
-    # el dia 278, donde se fuerza una caida puntual a 111.0 -- por debajo de
-    # la SMA de ese dia (~113.3, el resto de la ventana sigue en la tendencia
-    # normal) pero por encima del stop-loss (~109.15, ver el calculo de ATR
-    # mas abajo), para que la unica condicion de salida que dispare sea la
-    # ruptura de tendencia, no el stop.
+    # Oportunista ya NO sale por ruptura de tendencia (su entrada tampoco
+    # exige ninguna condicion de tendencia, ver _strategy_exit_params en
+    # main.py): la caida puntual del dia 278 (por debajo de la SMA rapida de
+    # ese dia, pero por encima del stop-loss) no debe cerrar la posicion. La
+    # unica salida disponible en esta serie (que nunca toca el stop) es
+    # max_holding_days, a los 30 dias desde la entrada (dia 263 + 30 = 293).
     from app.backtest import _simulate_symbol_opportunistic
 
     bars = _opportunistic_uptrend_bars()
     bars.loc[bars.index[278], ["Open", "High", "Low", "Close"]] = [111.0, 112.0, 110.0, 111.0]
-    cfg = _opportunistic_cfg(max_holding_days=30)
+    cfg = _opportunistic_cfg(max_holding_days=30, rsi_min=0, rsi_max=100)
     opp = cfg.opportunistic
 
     score_series = pd.Series(opp.backtest_score_entry_threshold - 1, index=bars.index)
@@ -1554,32 +1667,9 @@ def test_opportunistic_trend_break_exit_when_price_falls_below_sma_fast():
 
     trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series, pd.Series(True, index=bars.index))
 
-    assert trades[0].exit_reason == "trend_break"
     assert trades[0].entry_date == bars.index[263]
-    assert trades[0].exit_date == bars.index[278]
-
-
-def test_opportunistic_max_holding_days_exit_takes_priority_over_trend_break():
-    # Mismo escenario que el test anterior (misma caida de precio el dia
-    # 278): aqui max_holding_days=15 hace que el timeout se cumpla (278 - 263
-    # = 15 dias en posicion) el MISMO dia en que el precio rompe la SMA
-    # rapida. Verifica que el timeout tiene prioridad sobre la ruptura de
-    # tendencia cuando ambas condiciones de salida coinciden (ver el orden
-    # del ternario en _simulate_symbol_opportunistic).
-    from app.backtest import _simulate_symbol_opportunistic
-
-    bars = _opportunistic_uptrend_bars()
-    bars.loc[bars.index[278], ["Open", "High", "Low", "Close"]] = [111.0, 112.0, 110.0, 111.0]
-    cfg = _opportunistic_cfg(max_holding_days=15)
-    opp = cfg.opportunistic
-
-    score_series = pd.Series(opp.backtest_score_entry_threshold - 1, index=bars.index)
-    score_series.iloc[262:] = opp.backtest_score_entry_threshold + 1
-
-    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series, pd.Series(True, index=bars.index))
-
     assert trades[0].exit_reason == "max_holding_days"
-    assert trades[0].exit_date == bars.index[278]
+    assert trades[0].exit_date == bars.index[263 + 30]
 
 
 def test_opportunistic_stop_loss_triggers_on_intraday_low_not_close():
@@ -1587,7 +1677,7 @@ def test_opportunistic_stop_loss_triggers_on_intraday_low_not_close():
 
     bars = _opportunistic_uptrend_bars()
     bars.loc[bars.index[264], "Low"] = 50.0  # mecha intradiaria el dia siguiente al fill, perfora el stop sin que el cierre lo refleje
-    cfg = _opportunistic_cfg(max_holding_days=30)
+    cfg = _opportunistic_cfg(max_holding_days=30, rsi_min=0, rsi_max=100)
     opp = cfg.opportunistic
 
     # Score alto desde el dia de la senal (262) en adelante: la tendencia de
@@ -1614,11 +1704,35 @@ def test_opportunistic_liquidity_filter_blocks_entry_for_low_volume_symbol():
     from app.backtest import _simulate_symbol_opportunistic
 
     bars = _opportunistic_uptrend_bars(volume=1_000)
-    cfg = _opportunistic_cfg(max_holding_days=30)
+    cfg = _opportunistic_cfg(max_holding_days=30, rsi_min=0, rsi_max=100)
     opp = cfg.opportunistic
 
     score_series = pd.Series(opp.backtest_score_entry_threshold - 1, index=bars.index)
     score_series.iloc[262:] = opp.backtest_score_entry_threshold + 1
+
+    trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series, pd.Series(True, index=bars.index))
+
+    assert trades == []
+
+
+def test_opportunistic_blocks_entry_when_momentum_fails_despite_high_score():
+    # Serie estrictamente decreciente: el retorno reciente (momentum_ok) es
+    # siempre negativo, asi que aunque score_series este muy por encima del
+    # umbral de entrada (simulando un simbolo que rankea excelente en el
+    # resto de los componentes del score), no debe generarse ninguna
+    # operacion -- Oportunista exige giro al alza (momentum corto positivo),
+    # no una caida sostenida (ver docstring de _simulate_symbol_opportunistic).
+    from app.backtest import _simulate_symbol_opportunistic
+
+    idx = pd.date_range("2021-01-01", periods=320, freq="D")
+    close = pd.Series([200.0 - 0.1 * i for i in range(320)], index=idx)
+    bars = pd.DataFrame(
+        {"Open": close, "High": close + 1, "Low": close - 1, "Close": close, "Volume": 5_000_000}, index=idx
+    )
+    cfg = _opportunistic_cfg(max_holding_days=30, rsi_min=0, rsi_max=100)
+    opp = cfg.opportunistic
+
+    score_series = pd.Series(opp.backtest_score_entry_threshold + 1, index=bars.index)
 
     trades = _simulate_symbol_opportunistic("OPP", bars, cfg, score_series, pd.Series(True, index=bars.index))
 

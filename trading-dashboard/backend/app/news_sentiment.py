@@ -179,12 +179,21 @@ def apply_news_sentiment_adjustment(
     a diferencia del resto de este pipeline tiene costo real por llamada.
 
     Positivo suma max_adjustment al score, negativo lo resta, neutral no lo
-    mueve (ya esta percentilado 0-100, asi que un ajuste fijo y acotado no
-    puede sacar a un candidato fuera de ese rango de forma descontrolada).
-    Sin dato (None) tampoco mueve el score: ver docstring de
+    mueve. Sin dato (None) tampoco mueve el score: ver docstring de
     get_news_sentiment. No reordena `results`: el llamador debe volver a
     ordenar despues de este ajuste, igual que despues de
     apply_cross_sectional_normalization.
+
+    Clampeado DESPUES del ajuste a [50, 100] si result.passes_filters, o a
+    [0, 49] si no: preserva la garantia de diseno del llamador (que separa
+    "pasa filtros de calidad" de "no pasa" en dos bandas disjuntas antes de
+    llamar aca, ver screener.py/strategies/*.py) de que un candidato que NO
+    pasa los filtros tecnicos de la estrategia (tendencia, RSI, etc.) nunca
+    puede rankear por encima de uno que si los pasa. Sin este clamp, un
+    ajuste positivo grande sobre un candidato de la banda baja (ej. 49 + 10)
+    podia cruzar a la banda alta y, si superaba ademas el umbral de
+    auto-trading, disparar una compra en un simbolo que fallaba el filtro de
+    calidad de la estrategia solo por una noticia favorable.
     """
     shortlist_size = max(1, round(top_n * shortlist_multiplier))
     for result in results[:shortlist_size]:
@@ -194,6 +203,10 @@ def apply_news_sentiment_adjustment(
         result.news_sentiment = sentiment_data.sentiment
         result.news_summary = sentiment_data.summary
         if sentiment_data.sentiment == "positive":
-            result.score = round(result.score + max_adjustment, 2)
+            result.score = result.score + max_adjustment
         elif sentiment_data.sentiment == "negative":
-            result.score = round(result.score - max_adjustment, 2)
+            result.score = result.score - max_adjustment
+        if result.passes_filters:
+            result.score = round(max(50.0, min(100.0, result.score)), 2)
+        else:
+            result.score = round(max(0.0, min(49.0, result.score)), 2)
