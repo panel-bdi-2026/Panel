@@ -389,8 +389,8 @@ td{padding:8px;border-bottom:1px solid var(--border)}
         <div class="card-hdr">Bitácora de auditoría (últimas 25)</div>
         <div class="card-body">
           <table>
-            <thead><tr><th>Hora</th><th>Acción</th><th>Detalle</th><th></th></tr></thead>
-            <tbody id="auditBody"><tr><td colspan="4" class="empty">Sin datos aún</td></tr></tbody>
+            <thead><tr><th>Hora</th><th>Acción</th><th>Símbolo</th><th>Resultado</th><th></th></tr></thead>
+            <tbody id="auditBody"><tr><td colspan="5" class="empty">Sin datos aún</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -1489,14 +1489,79 @@ async function refreshAudit(){
     const entries = await api('/api/audit?limit=25', { auth:true });
     lastAuditEntries = entries;
     const body = document.getElementById('auditBody');
-    if(!entries.length){ body.innerHTML = '<tr><td colspan="4" class="empty">Sin datos aún</td></tr>'; return; }
-    body.innerHTML = entries.map((e, i) => `
-      <tr>
-        <td>${new Date(e.ts).toLocaleTimeString()}</td>
-        <td>${esc(e.action)}</td>
-        <td>${esc((e.payload && (e.payload.symbol||'')) + ' ' + (e.payload && (e.payload.side||'')))}</td>
-        ${e.result && e.result.signal ? `<td><button class="info-btn" onclick="showAuditSignalDetail(${i})" title="Ver la señal que originó esta acción">ⓘ</button></td>` : ''}
-      </tr>`).join('');
+    if(!entries.length){ body.innerHTML = '<tr><td colspan="5" class="empty">Sin datos aún</td></tr>'; return; }
+    body.innerHTML = entries.map((e, i) => {
+      const p = e.payload || {};
+      const r = e.result || {};
+      const action = e.action || '';
+
+      // Etiqueta legible para la acción
+      const actionLabel = {
+        'auto_trade_executed':                    'Auto-trade ejecutado',
+        'auto_trade_submitted_unfilled':          'Auto-trade (sin fill)',
+        'auto_trade_rejected':                    'Auto-trade rechazado',
+        'auto_trade_stop_loss_rejected':          'Stop-loss rechazado',
+        'auto_trade_stop_loss_reconciled':        'Stop-loss reconciliado',
+        'auto_trade_exit_failed':                 'Salida fallida',
+        'signal_order_rejected':                  'Señal rechazada',
+        'order_executed':                         'Orden ejecutada',
+        'order_submitted_unfilled':               'Orden (sin fill)',
+        'order_executed_after_approval':          'Orden aprobada ejecutada',
+        'order_submitted_unfilled_after_approval':'Orden aprobada (sin fill)',
+        'ibkr_disconnected':                      'IBKR desconectado',
+        'ibkr_connected':                         'IBKR conectado',
+        'auto_trade_fill_late':                   'Fill tardío registrado',
+        'auto_trade_reconciled':                  'Fill reconciliado (startup)',
+      }[action] || action;
+
+      // Columna Símbolo
+      const side = p.side === 'BUY' ? 'Compra' : p.side === 'SELL' ? 'Venta' : (p.side || '');
+      const symbolCell = p.symbol ? `<strong>${esc(p.symbol)}</strong>${side ? ' · ' + esc(side) : ''}` : '—';
+
+      // Columna Resultado
+      let resultHtml = '';
+      const filledQty   = r.filled_qty != null ? r.filled_qty : null;
+      const fillPrice   = r.avg_fill_price != null ? r.avg_fill_price : null;
+      const limitPrice  = p.limit_price != null ? p.limit_price : null;
+      const stopPrice   = p.stop_loss_price != null ? p.stop_loss_price : null;
+      const fundId      = r.fund_id || p.fund_id;
+      const fundName    = fundId ? (lastFundsById[fundId] || fundId.slice(0,8) + '…') : null;
+      const violations  = r.violations || [];
+
+      if(action.includes('executed')){
+        const qtyStr   = filledQty != null ? `${filledQty} acc` : (p.quantity != null ? `${p.quantity} acc` : '');
+        const priceStr = fillPrice  != null ? `$${fillPrice.toFixed(2)}` : (limitPrice != null ? `~$${limitPrice.toFixed(2)}` : '');
+        resultHtml = [qtyStr, priceStr].filter(Boolean).join(' @ ');
+        if(stopPrice) resultHtml += ` · SL $${stopPrice.toFixed(2)}`;
+        if(fundName)  resultHtml += `<br><span class="muted-sm">${esc(fundName)}</span>`;
+      } else if(action.includes('submitted_unfilled')){
+        const qtyStr    = p.quantity != null ? `${p.quantity} acc` : '';
+        const lmtStr    = limitPrice != null ? `lím $${limitPrice.toFixed(2)}` : '';
+        resultHtml = [qtyStr, lmtStr].filter(Boolean).join(' · ') || 'enviada, sin fill en ventana';
+        if(fundName) resultHtml += `<br><span class="muted-sm">${esc(fundName)}</span>`;
+      } else if(violations.length){
+        const msgs = violations.map(v => esc(v.message));
+        resultHtml = `<span class="muted-sm">${msgs.join('<br>')}</span>`;
+      } else if(r.error){
+        resultHtml = `<span class="muted-sm">${esc(r.error)}</span>`;
+      }
+
+      // Hora: fecha si no es hoy
+      const ts = new Date(e.ts);
+      const today = new Date();
+      const sameDay = ts.toDateString() === today.toDateString();
+      const horaStr = sameDay
+        ? ts.toLocaleTimeString()
+        : ts.toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' ' + ts.toLocaleTimeString();
+
+      return `<tr>
+        <td style="white-space:nowrap">${horaStr}</td>
+        <td>${esc(actionLabel)}</td>
+        <td>${symbolCell}</td>
+        <td>${resultHtml || '—'}</td>
+        <td>${r.signal ? `<button class="info-btn" onclick="showAuditSignalDetail(${i})" title="Ver señal">ⓘ</button>` : ''}</td>
+      </tr>`;
+    }).join('');
   }catch(e){ /* ignore */ }
 }
 

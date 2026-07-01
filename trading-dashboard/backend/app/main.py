@@ -496,13 +496,6 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
             audit.record("auto_trade_stop_loss_rejected", order.model_dump(), {"error": str(exc)})
             return
 
-        # Solo se registra en el ledger del fondo lo que IBKR efectivamente
-        # confirmo lleno dentro de la espera de place_order() (ver
-        # broker._wait_for_fill): registrar la cantidad PEDIDA sin importar el
-        # fill real desincroniza cash_usd/posicion del fondo de lo que de
-        # verdad paso en la cuenta. Si no llego a llenar nada en esa ventana,
-        # la orden sigue viva en IBKR pero esta sesion no la sigue rastreando
-        # (limitacion aceptada, ver broker.get_trade_fill).
         filled_qty = result_payload.get("filled_qty") or 0.0
         if filled_qty > 0:
             fill_price = result_payload.get("avg_fill_price") or live_price
@@ -521,6 +514,43 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
             order.model_dump(),
             audit_extra,
         )
+
+        # Si la orden no llenó dentro de la ventana de 5s de place_order(), la
+        # suscribimos a filledEvent/cancelledEvent para capturar el fill cuando
+        # llegue (dentro de esta misma sesión de proceso). No sobrevive reinicios:
+        # para ese caso existe _reconcile_unfilled_on_startup() en lifespan.
+        if filled_qty == 0:
+            _oid      = result_payload.get("order_id")
+            _stop_oid = result_payload.get("stop_order_id")
+            _fund_id  = fund.id
+            _sym      = symbol
+            _stop_px  = effective_stop_loss_price
+
+            def _on_late_fill(qty: float, price: float) -> None:
+                funds_store.record_fill(
+                    _fund_id, _sym, Side.BUY, qty, price,
+                    stop_loss_price=_stop_px,
+                    stop_order_id=_stop_oid,
+                    commission=screener_config.commission_per_trade_usd,
+                )
+                audit.record(
+                    "auto_trade_fill_late",
+                    {"symbol": _sym, "side": "BUY", "fund_id": _fund_id,
+                     "quantity": qty, "order_id": _oid},
+                    {"filled_qty": qty, "avg_fill_price": price,
+                     "fund_id": _fund_id, "order_id": _oid},
+                )
+                logger.info(
+                    "Fill tardío registrado: %s %.0f × $%.4f (fondo %s, orden %s)",
+                    _sym, qty, price, _fund_id, _oid,
+                )
+
+            if _oid and not broker.subscribe_fill(_oid, _on_late_fill):
+                logger.warning(
+                    "subscribe_fill: orden %s no encontrada en trades() — "
+                    "fill tardío solo detectable en próximo startup via reconciliación",
+                    _oid,
+                )
 
 
 def _live_score_entry_threshold(strategy_id: str) -> float:
@@ -1176,6 +1206,70 @@ async def _restore_persisted_mode() -> None:
         logger.warning("No se pudo restaurar el modo persistido tras el reinicio: %s", exc)
 
 
+async def _reconcile_unfilled_on_startup() -> None:
+    """Al arrancar (o reconectar), compara entradas *_submitted_unfilled del
+    audit con las posiciones reales de IBKR. Si IBKR tiene acciones de un
+    símbolo que el fondo correspondiente no registra, asume que el fill llegó
+    tarde (después del timeout de _wait_for_fill o de un reinicio) y lo
+    registra retroactivamente usando el avg_cost de IBKR como precio proxy.
+
+    Es seguro correrlo varias veces: solo reconcilia la diferencia positiva
+    entre lo que IBKR tiene y lo que el fondo ya registra, nunca duplica.
+    """
+    entries = audit.get_untracked_fills(since_days=7)
+    if not entries:
+        return
+
+    try:
+        ibkr_positions = {p.symbol: p for p in await broker.get_positions()}
+    except Exception as exc:
+        logger.warning("reconcile_unfilled: no se pudieron leer posiciones de IBKR: %s", exc)
+        return
+
+    for entry in entries:
+        p   = entry.get("payload", {})
+        r   = entry.get("result", {})
+        sym = p.get("symbol")
+        fund_id = r.get("fund_id") or p.get("fund_id")
+        requested_qty = float(p.get("quantity") or 0)
+        stop_px = p.get("stop_loss_price")
+
+        if not (sym and fund_id and requested_qty > 0):
+            continue
+
+        fund = funds_store.get(fund_id)
+        if fund is None:
+            continue
+
+        ibkr_pos = ibkr_positions.get(sym)
+        if ibkr_pos is None:
+            continue
+
+        # Diferencia entre lo que IBKR tiene y lo que el fondo ya registra;
+        # acotada a lo pedido en la orden para no sobre-asignar si el usuario
+        # tiene acciones adicionales en la cuenta general.
+        untracked = min(requested_qty, ibkr_pos.quantity - fund.owned_quantity(sym))
+        if untracked <= 0:
+            continue
+
+        fill_price = ibkr_pos.avg_cost
+        logger.info(
+            "reconcile_unfilled: %s %.0f × $%.4f → fondo %s (audit id %s)",
+            sym, untracked, fill_price, fund_id, entry["id"],
+        )
+        funds_store.record_fill(
+            fund_id, sym, Side.BUY, untracked, fill_price,
+            stop_loss_price=stop_px,
+            commission=screener_config.commission_per_trade_usd,
+        )
+        audit.record(
+            "auto_trade_reconciled",
+            {"symbol": sym, "side": "BUY", "fund_id": fund_id,
+             "quantity": untracked, "source_audit_id": entry["id"]},
+            {"filled_qty": untracked, "avg_fill_price": fill_price, "fund_id": fund_id},
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -1184,6 +1278,8 @@ async def lifespan(app: FastAPI):
     except IBKRConnectionError as exc:
         state["connected"] = False
         logger.warning("%s", exc)
+    if state["connected"]:
+        await _reconcile_unfilled_on_startup()
     await _restore_persisted_mode()
     task = asyncio.create_task(_broadcast_loop())
     risk_task = asyncio.create_task(_risk_monitor_loop())

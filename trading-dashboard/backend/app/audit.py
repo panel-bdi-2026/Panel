@@ -91,6 +91,35 @@ class AuditLog:
         "auto_trade_exit",
     )
 
+    def get_untracked_fills(self, since_days: int = 7) -> list[dict]:
+        """Retorna entradas *_submitted_unfilled recientes que pueden haber
+        llenado en IBKR sin que el fondo lo registrara (ej. fill llegó tras
+        el timeout de _wait_for_fill o tras un reinicio del backend)."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=since_days)).isoformat()
+        actions = (
+            "auto_trade_submitted_unfilled",
+            "order_submitted_unfilled",
+            "order_submitted_unfilled_after_approval",
+        )
+        placeholders = ", ".join("?" for _ in actions)
+        with self._lock:
+            cur = self._conn.execute(
+                f"SELECT id, ts, action, payload, result FROM audit_log "
+                f"WHERE action IN ({placeholders}) AND ts >= ? ORDER BY id ASC",
+                (*actions, cutoff),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "id": row[0],
+                "ts": row[1],
+                "action": row[2],
+                "payload": json.loads(row[3]),
+                "result": json.loads(row[4]),
+            }
+            for row in rows
+        ]
+
     def count_trades_today(self, tz_name: str = "America/New_York") -> int:
         """Cuenta ordenes ejecutadas hoy segun el dia de trading en `tz_name`
         (no el dia calendario UTC): ts se guarda en UTC, asi que filtrar por el

@@ -313,6 +313,43 @@ class IBKRBroker:
                 return True
         return False
 
+    def subscribe_fill(
+        self,
+        order_id: int,
+        on_fill: "Callable[[float, float], None]",
+    ) -> bool:
+        """Suscribe `on_fill(filled_qty, avg_fill_price)` al evento de fill de
+        la orden `order_id`. Se invoca una sola vez cuando la orden llega a
+        estado terminal con cantidad llenada > 0 (filledEvent si se llena
+        completa, o cancelledEvent si IBKR la cancela tras un fill parcial).
+
+        Cubre el caso en que _wait_for_fill venció el timeout antes de que
+        llegara el fill real: la orden sigue viva en IBKR y este callback la
+        captura cuando finalmente se ejecuta, dentro de la misma sesion de
+        proceso. No sobrevive reinicios del backend (ver la reconciliacion de
+        startup en main.py para cubrir ese escenario).
+
+        Devuelve True si la orden se encontro en trades(), False si no (ej.
+        ya no esta en la sesion actual o nunca se transmitio).
+        """
+        for trade in self.ib.trades():
+            if trade.order.orderId == order_id:
+                _called = [False]  # guard para que el handler corra una sola vez
+
+                def _handler(t=trade):
+                    if _called[0]:
+                        return
+                    filled = t.orderStatus.filled
+                    price = t.orderStatus.avgFillPrice
+                    if filled > 0 and price:
+                        _called[0] = True
+                        on_fill(filled, price)
+
+                trade.filledEvent += _handler
+                trade.cancelledEvent += _handler
+                return True
+        return False
+
     def get_trade_fill(self, order_id: int) -> tuple[str, float, float | None, float] | None:
         """Estado y fill de una orden colocada esta sesion, por order_id.
 
