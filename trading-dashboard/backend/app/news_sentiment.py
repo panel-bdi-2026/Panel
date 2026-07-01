@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Literal, Optional
 
@@ -11,31 +12,22 @@ from .config import settings
 from .market_data import _fetch_with_timeout
 from .models import SignalResult
 
-# El sentimiento de un titular no cambia de un minuto a otro, y a diferencia
-# del resto de market_data.py esta llamada tiene costo real (API de Claude):
-# cache mas agresivo que el de fundamentals (24hs) no haria falta, pero uno
-# mas corto que ese tampoco se justifica solo para "noticias mas frescas".
 _CACHE_TTL_SECONDS = 6 * 3600
-# Si _call_claude fallo (rate limit, timeout, API key invalida transitoriamente),
-# el motivo mas probable es pasajero, no "sin sentimiento": cachear ese None
-# por las 6hs completas lo deja sin reintentar toda esa ventana por un fallo
-# puntual. TTL corto solo para esa rama; "sin titulares" (sin excepcion) sigue
-# usando el TTL largo, igual que get_fundamentals/get_next_earnings_date.
+# TTL corto solo para fallos de la API de Claude (ver _classify).
 _FAILURE_CACHE_TTL_SECONDS = 15 * 60
 _cache: dict[str, tuple[float, "NewsSentiment | None", bool]] = {}  # (timestamp, value, ok)
 
+# Cache de nombre de empresa para filtrado de titulares. Se llena la primera
+# vez que se pide sentimiento de un símbolo y se reutiliza dentro de la sesión.
+_company_name_cache: dict[str, str] = {}
+
 _MODEL = "claude-haiku-4-5"
-# Mas alla de unos pocos titulares no suma precision a la clasificacion y
-# si suma tokens (costo): se toman los mas recientes nada mas.
 _MAX_HEADLINES = 8
-# El SDK de Anthropic, sin `timeout` explicito, usa un default de 600s (10
-# minutos) de read timeout. Esta llamada es sincronica DENTRO del scan de
-# señales (ver apply_news_sentiment_adjustment): clasificar 8 titulares no
-# deberia tardar mas que esto en un dia normal, y si Claude esta colgado o
-# con un incidente, preferimos que falle rapido y caiga al cache de falla de
-# 15 min (ver _classify) en vez de frenar el scan completo varios minutos
-# por un simbolo del shortlist.
+# Cuántos items brutos revisar antes de llegar a _MAX_HEADLINES relevantes.
+_MAX_RAW_ITEMS = 30
 _CLAUDE_TIMEOUT_SECONDS = 20.0
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
 class NewsSentiment(BaseModel):
@@ -43,26 +35,68 @@ class NewsSentiment(BaseModel):
     summary: str
 
 
+def _get_company_filter_word(symbol: str) -> str:
+    """Primera palabra significativa del nombre de la empresa (ej. 'Uber' para
+    UBER, 'Apple' para AAPL). Se usa para filtrar noticias genéricas que Yahoo
+    Finance mezcla en el feed de cualquier acción (ej. 'editors picks' de tech
+    que no mencionan la empresa). Se cachea en memoria por sesión: el nombre
+    comercial de una empresa no cambia entre scans."""
+    if symbol in _company_name_cache:
+        return _company_name_cache[symbol]
+    try:
+        info = _fetch_with_timeout(lambda: yf.Ticker(symbol).info) or {}
+        raw = info.get("shortName") or info.get("longName") or ""
+        # Toma la primera palabra de más de 2 caracteres que no sea un sufijo
+        # corporativo genérico (Inc., Corp., etc.).
+        _CORP_SUFFIXES = {"inc", "corp", "corporation", "company", "group",
+                         "holdings", "technologies", "technology", "ltd", "llc"}
+        words = [w.strip(".,") for w in raw.split() if len(w.strip(".,")) > 2]
+        word = next((w.lower() for w in words if w.lower() not in _CORP_SUFFIXES), symbol.lower())
+    except Exception:
+        word = symbol.lower()
+    _company_name_cache[symbol] = word
+    return word
+
+
+def _is_relevant(item: dict, sym_lower: str, company_word: str) -> bool:
+    """Devuelve True si el item de noticias de yfinance es relevante para el
+    símbolo dado. Filtra 'editors picks' y artículos genéricos que Yahoo
+    incluye en el feed de cualquier acción sin relación directa."""
+    content = item.get("content") if isinstance(item, dict) else None
+    title       = (content.get("title")       if isinstance(content, dict) else None) or item.get("title", "")
+    summary     = (content.get("summary")     if isinstance(content, dict) else None) or ""
+    description = (content.get("description") if isinstance(content, dict) else None) or ""
+    # Elimina tags HTML de la descripción antes de buscar texto
+    clean_desc = _HTML_TAG_RE.sub(" ", description)
+    combined = (title + " " + summary + " " + clean_desc).lower()
+    return sym_lower in combined or company_word in combined
+
+
 def _fetch_headlines(symbol: str) -> list[str]:
-    """Titulares recientes de Yahoo Finance para `symbol` (via yfinance,
-    gratis). Extraccion defensiva: el shape exacto de cada item del feed
-    (titulo anidado en "content" vs. titulo plano) no esta documentado
-    formalmente y puede variar entre versiones de yfinance; probar ambos
-    evita perder todos los titulares por un cambio de formato silencioso."""
+    """Titulares recientes de Yahoo Finance para `symbol`, filtrados para
+    incluir solo artículos que mencionan la empresa o el ticker. Yahoo mezcla
+    'editors picks' genéricos en el feed de cualquier acción; sin filtrar,
+    esos artículos contaminan la clasificación de sentimiento."""
     try:
         items = _fetch_with_timeout(lambda: yf.Ticker(symbol).news) or []
     except Exception:
         return []
+
+    sym_lower    = symbol.lower()
+    company_word = _get_company_filter_word(symbol)
+
     headlines: list[str] = []
-    for item in items[:_MAX_HEADLINES]:
+    for item in items[:_MAX_RAW_ITEMS]:
         if not isinstance(item, dict):
             continue
+        if not _is_relevant(item, sym_lower, company_word):
+            continue
         content = item.get("content")
-        title = content.get("title") if isinstance(content, dict) else None
-        if not title:
-            title = item.get("title")
+        title = (content.get("title") if isinstance(content, dict) else None) or item.get("title")
         if title:
             headlines.append(str(title))
+        if len(headlines) >= _MAX_HEADLINES:
+            break
     return headlines
 
 
