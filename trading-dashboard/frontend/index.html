@@ -219,7 +219,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .toggle-switch input:checked + .toggle-slider{background:var(--green)}
 .toggle-switch input:checked + .toggle-slider:before{transform:translateX(14px)}
 .fund-create-toggle{display:flex;justify-content:space-between;align-items:center;cursor:pointer;
-  padding:8px 0;font-size:12px;font-weight:700;color:var(--primary)}
+  padding:8px 0;margin-top:16px;border-top:1px solid var(--border);font-size:12px;font-weight:700;color:var(--primary)}
 .fund-create-body{display:none;margin-top:6px}
 .fund-create-body.show{display:block}
 
@@ -810,7 +810,9 @@ let roiChart = null;
 
 function renderRoiChart(funds){
   const wrap = document.getElementById('roiChartWrap');
-  if(!funds.length){ wrap.style.display = 'none'; return; }
+  // Con un solo fondo el ROI ya está visible en la tarjeta (PnL total);
+  // el gráfico de barras solo aporta valor como comparación entre fondos.
+  if(funds.length < 2){ wrap.style.display = 'none'; if(roiChart){ roiChart.destroy(); roiChart = null; } return; }
   wrap.style.display = 'block';
   const roiPctOf = f => {
     const net = f.net_contributed_capital;
