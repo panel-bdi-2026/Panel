@@ -2153,82 +2153,34 @@ _EMPTY_ROI_HISTORY = {
     "dates": [],
     "fund_cumulative_return_pct": [],
     "benchmark_cumulative_return_pct": [],
+    "per_fund": [],
 }
 
 
-def _compute_roi_history(funds: list) -> dict:
-    """Compara el retorno acumulado (time-weighted) del capital combinado de
-    TODOS los fondos contra el del S&P 500 (SPY) en la misma ventana, para
-    responder "le estoy ganando al mercado". Se mide combinado (no fondo por
-    fondo) porque lo que importa para esa pregunta es el capital total que el
-    usuario le asigno a esta herramienta, no como se reparte entre fondos.
-
-    Es time-weighted (no dollar-weighted como `net_contributed_capital`/ROI de
-    cada fondo individual en `_fund_view`): un aporte o retiro no debe inflar
-    ni desinflar la curva solo por su timing, o se estaria confundiendo
-    timing de cash-flow con habilidad de inversion. El precio de cierre de
-    SPY del dia de cada flujo/fill es la unica fuente de calendario de
-    trading: si no esta disponible, no hay nada confiable contra que
-    comparar, asi que se devuelve la forma vacia en vez de inventar fechas.
-    """
-    all_flows = [(f.created_at, f) for fund in funds for f in fund.capital_flows]
-    if not all_flows:
-        return dict(_EMPTY_ROI_HISTORY)
-
-    start_date = min(created_at for created_at, _ in all_flows).date()
-    today = datetime.now(timezone.utc).date()
-    lookback_days = max((today - start_date).days + 15, 15)
-
-    try:
-        bench_bars = get_daily_bars("SPY", lookback_days)
-    except MarketDataError:
-        return dict(_EMPTY_ROI_HISTORY)
-
-    calendar_index = bench_bars.index[bench_bars.index.date >= start_date]
-    if len(calendar_index) == 0:
-        return dict(_EMPTY_ROI_HISTORY)
-    bench_close = bench_bars["Close"].reindex(calendar_index)
-
-    symbols = {t.symbol for fund in funds for t in fund.trades}
-    symbol_close: dict[str, "pd.Series | None"] = {}
-    last_trade_price: dict[str, float] = {}
-    for symbol in symbols:
-        try:
-            bars = get_daily_bars(symbol, lookback_days)
-            symbol_close[symbol] = bars["Close"].reindex(calendar_index).ffill()
-        except MarketDataError:
-            symbol_close[symbol] = None
-
-    # Eventos (flujos de capital + fills de TODOS los fondos) agrupados por
-    # dia de calendario de trading: se aplican todos los de un mismo dia
-    # antes de marcar a mercado ese dia, sin importar de que fondo vinieron
-    # (la curva combina el capital de todos como si fuera uno solo).
-    events_by_day: dict = {}
-    for fund in funds:
-        for flow in fund.capital_flows:
-            events_by_day.setdefault(flow.created_at.date(), []).append(("flow", flow.amount))
-        for trade in fund.trades:
-            events_by_day.setdefault(trade.executed_at.date(), []).append(
-                ("trade", trade.side, trade.symbol, trade.quantity, trade.price)
-            )
-
+def _twr_series(
+    events_by_day: dict,
+    calendar_index: "pd.DatetimeIndex",
+    symbol_close: "dict[str, pd.Series | None]",
+) -> "tuple[list[str], list[float], dict[str, float]]":
+    """Calcula la serie TWR (time-weighted return) para un conjunto de eventos
+    agrupados por dia. Devuelve (dates, cum_pct_series, last_trade_price_map).
+    Reutilizable tanto para el consolidado como para cada fondo individual,
+    con el mismo conjunto de precios ya descargado."""
     cash = 0.0
     positions: dict[str, float] = {}
+    last_trade_price: dict[str, float] = {}
     dates: list[str] = []
-    fund_cum_pct: list[float] = []
-    bench_cum_pct: list[float] = []
+    cum_pct: list[float] = []
     cum = 0.0
     prev_equity = None
-    bench_start_close = None
 
     for day_ts in calendar_index:
         day = day_ts.date()
         net_flow = 0.0
         for event in events_by_day.get(day, []):
             if event[0] == "flow":
-                amount = event[1]
-                cash += amount
-                net_flow += amount
+                cash += event[1]
+                net_flow += event[1]
             else:
                 _, side, symbol, quantity, price = event
                 if side == Side.BUY:
@@ -2257,30 +2209,108 @@ def _compute_roi_history(funds: list) -> dict:
                 prev_equity = equity
                 cum = 0.0
             else:
-                continue  # sin equity todavia: no emitir un 0% ficticio
+                continue
         else:
             r_t = (equity - net_flow - prev_equity) / prev_equity if prev_equity > 0 else 0.0
             cum = (1 + cum) * (1 + r_t) - 1
             prev_equity = equity
 
-        bench_close_t = bench_close.get(day_ts)
-        if bench_close_t is None or pd.isna(bench_close_t):
+        dates.append(day.isoformat())
+        cum_pct.append(round(cum * 100, 2))
+
+    return dates, cum_pct, last_trade_price
+
+
+def _compute_roi_history(funds: list) -> dict:
+    """Retorno acumulado time-weighted (TWR) del capital combinado de TODOS los
+    fondos contra el S&P 500 (SPY), mas el TWR de cada fondo individual.
+
+    TWR en vez de dollar-weighted para que aportes/retiros no inflen ni
+    desinflen la curva: mide habilidad de inversion, no timing de cash-flow.
+    El benchmark se alinea al mismo calendario de trading que las posiciones.
+    """
+    all_flows = [(f.created_at, f) for fund in funds for f in fund.capital_flows]
+    if not all_flows:
+        return dict(_EMPTY_ROI_HISTORY)
+
+    start_date = min(created_at for created_at, _ in all_flows).date()
+    today = datetime.now(timezone.utc).date()
+    lookback_days = max((today - start_date).days + 15, 15)
+
+    try:
+        bench_bars = get_daily_bars("SPY", lookback_days)
+    except MarketDataError:
+        return dict(_EMPTY_ROI_HISTORY)
+
+    calendar_index = bench_bars.index[bench_bars.index.date >= start_date]
+    if len(calendar_index) == 0:
+        return dict(_EMPTY_ROI_HISTORY)
+    bench_close = bench_bars["Close"].reindex(calendar_index)
+
+    # Descarga de precios compartida entre combined y per-fund (evita llamadas
+    # duplicadas a yfinance para el mismo simbolo).
+    symbols = {t.symbol for fund in funds for t in fund.trades}
+    symbol_close: dict[str, "pd.Series | None"] = {}
+    for symbol in symbols:
+        try:
+            bars = get_daily_bars(symbol, lookback_days)
+            symbol_close[symbol] = bars["Close"].reindex(calendar_index).ffill()
+        except MarketDataError:
+            symbol_close[symbol] = None
+
+    # Benchmark acumulado (misma referencia de inicio para todos).
+    bench_start_close: float | None = None
+    bench_cum_by_date: dict[str, float] = {}
+    for day_ts in calendar_index:
+        v = bench_close.get(day_ts)
+        if v is None or pd.isna(v):
             continue
         if bench_start_close is None:
-            bench_start_close = float(bench_close_t)
-        bench_cum = bench_close_t / bench_start_close - 1
+            bench_start_close = float(v)
+        bench_cum_by_date[day_ts.date().isoformat()] = round(float(v) / bench_start_close - 1, 4) * 100
 
-        dates.append(day.isoformat())
-        fund_cum_pct.append(round(cum * 100, 2))
-        bench_cum_pct.append(round(bench_cum * 100, 2))
+    # TWR combinado (todos los fondos como si fueran uno solo).
+    combined_events: dict = {}
+    for fund in funds:
+        for flow in fund.capital_flows:
+            combined_events.setdefault(flow.created_at.date(), []).append(("flow", flow.amount))
+        for trade in fund.trades:
+            combined_events.setdefault(trade.executed_at.date(), []).append(
+                ("trade", trade.side, trade.symbol, trade.quantity, trade.price)
+            )
+    combined_dates, combined_pct, _ = _twr_series(combined_events, calendar_index, symbol_close)
 
-    if not dates:
+    # Alinear benchmark con las fechas que el TWR combinado produjo.
+    bench_cum_pct = [round(bench_cum_by_date.get(d, 0.0), 2) for d in combined_dates]
+
+    # TWR por fondo individual, mismo calendario y precios.
+    per_fund = []
+    for fund in funds:
+        fund_events: dict = {}
+        for flow in fund.capital_flows:
+            fund_events.setdefault(flow.created_at.date(), []).append(("flow", flow.amount))
+        for trade in fund.trades:
+            fund_events.setdefault(trade.executed_at.date(), []).append(
+                ("trade", trade.side, trade.symbol, trade.quantity, trade.price)
+            )
+        f_dates, f_pct, _ = _twr_series(fund_events, calendar_index, symbol_close)
+        if f_dates:
+            per_fund.append({
+                "id": fund.id,
+                "name": fund.name,
+                "dates": f_dates,
+                "cumulative_return_pct": f_pct,
+                "benchmark_cumulative_return_pct": [round(bench_cum_by_date.get(d, 0.0), 2) for d in f_dates],
+            })
+
+    if not combined_dates:
         return dict(_EMPTY_ROI_HISTORY)
 
     return {
-        "dates": dates,
-        "fund_cumulative_return_pct": fund_cum_pct,
+        "dates": combined_dates,
+        "fund_cumulative_return_pct": combined_pct,
         "benchmark_cumulative_return_pct": bench_cum_pct,
+        "per_fund": per_fund,
     }
 
 

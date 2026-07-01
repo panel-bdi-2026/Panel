@@ -113,6 +113,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 .fund-name-link{cursor:pointer;text-decoration:underline;text-decoration-style:dotted;color:var(--primary-mid)}
 .chart-wrap{position:relative;height:200px;margin-top:10px}
 .chart-wrap.sm{height:150px}
+.chart-wrap.xs{height:80px}
 .info-btn{background:none;border:none;color:var(--primary-mid);cursor:pointer;font-size:13px;padding:0 4px}
 .modal-overlay{position:fixed;inset:0;background:rgba(2,4,8,.7);display:none;
   align-items:center;justify-content:center;z-index:4000;padding:20px}
@@ -291,6 +292,10 @@ td{padding:8px;border-bottom:1px solid var(--border)}
     <div class="kpi"><span class="kpi-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></span><div class="kpi-body"><div class="kpi-lbl" title="Ganancia o pérdida del día (realizada + no realizada) respecto al cierre anterior, según lo reporta IBKR.">P&L del día</div><div class="kpi-val" id="kv-pnl">—</div><div class="kpi-trend" id="kv-pnl-trend"></div></div></div>
   </div>
 
+  <div id="roiHistoryGlobalWrap" style="display:none;background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px;margin-bottom:18px">
+    <div class="chart-wrap sm" style="margin-top:0"><canvas id="roiHistoryChart"></canvas></div>
+  </div>
+
   <div class="grid2">
     <div style="display:flex;flex-direction:column;gap:18px">
       <div class="card" id="sec-posiciones">
@@ -320,7 +325,6 @@ td{padding:8px;border-bottom:1px solid var(--border)}
             </div>
           </div>
           <div class="chart-wrap sm" id="roiChartWrap" style="display:none"><canvas id="roiChart"></canvas></div>
-          <div class="chart-wrap sm" id="roiHistoryChartWrap" style="display:none"><canvas id="roiHistoryChart"></canvas></div>
           <div class="fund-create-toggle" onclick="toggleFundCreateForm()">
             <span>+ Crear fondo nuevo</span>
             <span id="fundCreateChevron">▾</span>
@@ -789,6 +793,7 @@ function renderFunds(funds){
           <div><span class="fund-stat-lbl" title="Valor estimado del fondo menos lo aportado neto: ganancia o pérdida total (realizada + no realizada) desde su creación.">PnL total</span><br><span class="fund-stat-val" style="color:${pnlTotal>=0?'var(--green)':'var(--red)'}">${fmtUsd(pnlTotal)} (${roiPct>=0?'+':''}${roiPct.toFixed(1)}%)</span></div>
           <div><span class="fund-stat-lbl" title="Ganancia o pérdida ya concretada por ventas cerradas en este fondo (no incluye posiciones abiertas).">PnL realizado</span><br><span class="fund-stat-val">${fmtUsd(f.realized_pnl_total)}</span></div>
         </div>
+        <div class="chart-wrap xs" style="margin-top:10px"><canvas id="fundMiniChart-${f.id}"></canvas></div>
         ${f.closed ? `
         <div class="muted-sm" style="margin-top:8px">Cerrado el ${new Date(f.closed_at).toLocaleDateString()}</div>` : `
         <div style="display:flex;gap:6px;margin-top:10px;align-items:center">
@@ -835,27 +840,49 @@ function renderRoiChart(funds){
 }
 
 let roiHistoryChart = null;
+const _fundMiniCharts = {};
+
+function _buildLineChartConfig(labels, datasets, title){
+  return {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: datasets.length > 1, labels: { boxWidth: 10, font: { size: 10 } } },
+        title: { display: !!title, text: title, font: { size: 11 } },
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 6, font: { size: 9 }, maxRotation: 0 } },
+        y: { ticks: { callback: v => v + '%', font: { size: 9 } } },
+      },
+    },
+  };
+}
 
 function renderRoiHistoryChart(data){
-  const wrap = document.getElementById('roiHistoryChartWrap');
+  const wrap = document.getElementById('roiHistoryGlobalWrap');
   if(!data.dates.length){ wrap.style.display = 'none'; return; }
   wrap.style.display = 'block';
   if(roiHistoryChart) roiHistoryChart.destroy();
-  roiHistoryChart = new Chart(document.getElementById('roiHistoryChart'), {
-    type: 'line',
-    data: {
-      labels: data.dates,
-      datasets: [
-        { label: 'Tu cartera', data: data.fund_cumulative_return_pct, borderColor: THEME.primary, backgroundColor: 'rgba(47,95,168,.15)', fill: false, tension: .15, pointRadius: 0 },
-        { label: 'S&P 500 (SPY)', data: data.benchmark_cumulative_return_pct, borderColor: THEME.slate, backgroundColor: 'rgba(138,125,90,.12)', fill: false, tension: .15, pointRadius: 0 },
-      ],
-    },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { display: true }, title: { display: true, text: 'Tu cartera vs. S&P 500 (retorno acumulado)', font: { size: 11 } } },
-      scales: { y: { ticks: { callback: v => v + '%' } } },
-    },
-  });
+  const datasets = [
+    { label: 'Cartera total', data: data.fund_cumulative_return_pct, borderColor: THEME.primary, backgroundColor: 'rgba(47,95,168,.12)', fill: true, tension: .15, pointRadius: 0, borderWidth: 2 },
+    { label: 'S&P 500 (SPY)', data: data.benchmark_cumulative_return_pct, borderColor: THEME.slate, backgroundColor: 'transparent', fill: false, tension: .15, pointRadius: 0, borderWidth: 1.5, borderDash: [4,3] },
+  ];
+  roiHistoryChart = new Chart(document.getElementById('roiHistoryChart'),
+    _buildLineChartConfig(data.dates, datasets, 'Retorno acumulado — cartera total vs. S&P 500'));
+
+  // Mini-gráficos por fondo (se renderizan en canvases ya insertados por renderFunds).
+  for(const fund of (data.per_fund || [])){
+    const canvas = document.getElementById('fundMiniChart-' + fund.id);
+    if(!canvas) continue;
+    if(_fundMiniCharts[fund.id]) _fundMiniCharts[fund.id].destroy();
+    const ds = [
+      { label: fund.name, data: fund.cumulative_return_pct, borderColor: THEME.primary, backgroundColor: 'rgba(47,95,168,.10)', fill: true, tension: .15, pointRadius: 0, borderWidth: 1.5 },
+      { label: 'S&P 500', data: fund.benchmark_cumulative_return_pct, borderColor: THEME.slate, backgroundColor: 'transparent', fill: false, tension: .15, pointRadius: 0, borderWidth: 1, borderDash: [4,3] },
+    ];
+    _fundMiniCharts[fund.id] = new Chart(canvas, _buildLineChartConfig(fund.dates, ds, null));
+  }
 }
 
 async function refreshFunds(){
