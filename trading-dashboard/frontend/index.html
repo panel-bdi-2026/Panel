@@ -957,6 +957,8 @@ const SCREENER_FIELDS = [
     hint:'Si está activo, cada posición concurrente pesa ~1/ATR en vez de equiponderar (1/top N), igual criterio que el sizing por riesgo en vivo. Sube el Sharpe a retorno similar al dar menos peso a lo más volátil. Cambia los números históricos del backtest.' },
   { key:'deflated_sharpe_num_trials', label:'Backtest: cantidad de variantes probadas (Deflated Sharpe Ratio)', type:'number', min:1, step:1, integer:true,
     hint:'Cuántas configuraciones distintas de parámetros/estrategias probaste (en este backtest o en corridas previas) antes de quedarte con la actual. Se usa para penalizar el Sharpe ratio observado por sesgo de selección: 1 = sin ajuste (no se rastrea automáticamente, hay que estimarlo a mano).' },
+  { key:'live_radar_strategy_filter', section:'Radar en vivo', label:'Estrategias que alimentan el hot-set', type:'strategy-filter',
+    hint:'Qué estrategias compiten por los slots de streaming en vivo (precio actualizado por IBKR). "Todas" = default: los 50 stocks con mayor score en cualquier estrategia. Si solo tenés fondos activos en algunas, elegirlas acá dedica todos los slots a los candidatos que sí podés operar.' },
   { key:'auto_scan_enabled', section:'Escaneo automático y sentimiento', label:'Escaneo proactivo en background activo', type:'checkbox' },
   { key:'auto_scan_interval_minutes', label:'Intervalo del escaneo proactivo (minutos)', type:'number', min:1, step:1, integer:true },
   { key:'max_auto_drafts_per_cycle', label:'Máx. borradores por ciclo de escaneo proactivo', type:'number', min:0, step:1, integer:true },
@@ -1063,6 +1065,20 @@ function renderConfigField(f, values){
       <textarea id="${id}" class="fi" rows="3" style="resize:vertical;font-family:monospace;font-size:11px">${esc((val||[]).join(', '))}</textarea>
       ${hintHtml}</div>`;
   }
+  if(f.type === 'strategy-filter'){
+    // val === null → todas (default); val = ['opportunistic', ...] → filtro
+    const selected = Array.isArray(val) ? val : null;
+    const checkboxes = STRATEGIES.map(s =>
+      `<label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;margin-right:14px;margin-bottom:6px">
+        <input type="checkbox" data-strat-filter="${id}" value="${esc(s.id)}" ${!selected || selected.includes(s.id) ? 'checked' : ''}>
+        ${esc(s.name)}
+      </label>`
+    ).join('');
+    return `<div class="fg" style="grid-column:1/-1"><label class="fl">${esc(f.label)}</label>
+      <div id="${id}" style="display:flex;flex-wrap:wrap;margin-top:4px">${checkboxes}</div>
+      <p class="muted-sm" style="margin-top:3px">Si todas están marcadas (o ninguna), se usan todas — comportamiento por defecto.</p>
+      ${hintHtml}</div>`;
+  }
   if(f.type === 'select'){
     const opts = f.optionsSource === 'strategies'
       ? STRATEGIES.map(s => ({ value: s.id, label: s.name }))
@@ -1109,6 +1125,11 @@ function readConfigFields(fields){
     let value;
     if(f.type === 'checkbox') value = el.checked;
     else if(f.type === 'list') value = el.value.split(/[,\n]/).map(s => s.trim().toUpperCase()).filter(Boolean);
+    else if(f.type === 'strategy-filter'){
+      const checked = [...el.querySelectorAll('input[type=checkbox]')].filter(cb => cb.checked).map(cb => cb.value);
+      // null = todas (default) cuando todas o ninguna marcada
+      value = checked.length === 0 || checked.length === STRATEGIES.length ? null : checked;
+    }
     else if(f.type === 'number') value = f.integer ? parseInt(el.value, 10) : parseFloat(el.value);
     else value = el.value.trim();
     if(f.group){
@@ -1833,8 +1854,12 @@ function renderSignalsMeta(){
   const meta = document.getElementById('signalsMeta');
   const cap = lastStatus.live_hot_cap;
   const count = lastStatus.live_hot_count || 0;
+  const stratFilter = lastStatus.live_radar_strategy_filter;
+  const stratFilterLabel = stratFilter
+    ? stratFilter.map(id => strategyName(id)).join(' + ')
+    : 'todas las estrategias';
   const hotInfo = cap
-    ? ` · ${count ? '🟢' : '⚪'} ${count}/${cap} símbolos con streaming en vivo (compartido entre estrategias, los de mejor score en cualquiera de ellas)${liveStreamingPausedNote(count)}`
+    ? ` · ${count ? '🟢' : '⚪'} ${count}/${cap} símbolos con streaming en vivo (${stratFilterLabel}, los de mejor score)${liveStreamingPausedNote(count)}`
     : '';
   meta.textContent = signalsMetaPrefix + hotInfo;
 }

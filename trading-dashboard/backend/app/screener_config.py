@@ -381,13 +381,20 @@ class ScreenerConfig(BaseModel):
     # precio mostrado y marca is_hot.
     live_radar_enabled: bool = True
     # Tope de simbolos en streaming permanente. Los calientes son los de
-    # mayor score MAXIMO entre las 4 estrategias (ver _scan_general en
+    # mayor score MAXIMO entre las estrategias activas (ver _scan_general en
     # main.py), recalculados cada vez que se refresca el cache de señales.
     # Tratar como techo, no como objetivo fijo: dejar margen bajo 100 (el
     # piso gratuito de IBKR) para las lineas de rotacion del resto del
     # universo y las posiciones abiertas (broker.get_positions tambien
     # consume lineas).
     live_hot_symbols_cap: int = 50
+    # Estrategias que alimentan el hot-set del radar en vivo. None = todas las
+    # estrategias con resultados en cache (comportamiento por defecto). Si se
+    # especifica una lista, solo los simbolos que rankean alto en alguna de esas
+    # estrategias ocupan los slots de streaming: util cuando solo hay fondos
+    # activos en un subconjunto de estrategias y no se quiere gastar lineas de
+    # IBKR en stocks que ningun fondo puede operar.
+    live_radar_strategy_filter: list[str] | None = None
     # Cuantos simbolos del resto del universo (los que no estan calientes) se
     # piden de a uno por ciclo de rotacion (cada poll_interval_seconds). Mas
     # alto rota el universo completo mas rapido, pero ocupa mas lineas libres

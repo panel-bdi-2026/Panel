@@ -1041,8 +1041,11 @@ async def _run_hot_set_cycle() -> None:
     if not screener_config.live_radar_enabled or not state["connected"]:
         return
     try:
+        strategy_filter = screener_config.live_radar_strategy_filter
         best_by_symbol: dict[str, dict] = {}
         for strategy_id, cached in signal_cache.items():
+            if strategy_filter is not None and strategy_id not in strategy_filter:
+                continue
             for r in cached.get("results", []):
                 current = best_by_symbol.get(r["symbol"])
                 if current is None or r["score"] > current["score"]:
@@ -1374,6 +1377,7 @@ def status(_: None = Depends(require_api_key)):
         "live_radar_enabled": screener_config.live_radar_enabled,
         "live_hot_count": len(_hot_symbols),
         "live_hot_cap": screener_config.live_hot_symbols_cap,
+        "live_radar_strategy_filter": screener_config.live_radar_strategy_filter,
     }
 
 
@@ -1676,6 +1680,7 @@ async def scan_signals(force: bool = False, strategy_id: str | None = None, _: N
         "results": _overlay_live_data(results),
         "live_hot_count": len(_hot_symbols),
         "live_hot_cap": screener_config.live_hot_symbols_cap,
+        "live_radar_strategy_filter": screener_config.live_radar_strategy_filter,
     }
 
 
