@@ -120,6 +120,30 @@ class AuditLog:
             for row in rows
         ]
 
+    def was_submitted_by_system(self, symbol: str, since_days: int = 90) -> bool:
+        """Retorna True si el sistema sometió alguna vez una orden de COMPRA para
+        este símbolo (ejecutada, sin fill, o borrador aprobado). Se usa como guard
+        en la reconciliación de huérfanas para evitar adoptar posiciones colocadas
+        manualmente en IBKR fuera del sistema."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=since_days)).isoformat()
+        buy_actions = (
+            "auto_trade_executed",
+            "auto_trade_submitted_unfilled",
+            "order_executed",
+            "order_submitted_unfilled",
+            "order_executed_after_approval",
+            "order_submitted_unfilled_after_approval",
+        )
+        placeholders = ", ".join("?" for _ in buy_actions)
+        with self._lock:
+            cur = self._conn.execute(
+                f"SELECT 1 FROM audit_log "
+                f"WHERE action IN ({placeholders}) AND ts >= ? "
+                f"AND json_extract(payload,'$.symbol') = ? LIMIT 1",
+                (*buy_actions, cutoff, symbol),
+            )
+            return cur.fetchone() is not None
+
     def count_trades_today(self, tz_name: str = "America/New_York", fund_id: str | None = None) -> int:
         """Cuenta ordenes ejecutadas hoy segun el dia de trading en `tz_name`
         (no el dia calendario UTC): ts se guarda en UTC, asi que filtrar por el

@@ -1820,6 +1820,16 @@ async def _reconcile_unfilled_on_startup() -> None:
         orphan_qty = ibkr_pos.quantity - covered_qty
         if orphan_qty <= 0:
             continue
+        # Solo reconciliar posiciones que el propio sistema sometió alguna vez:
+        # posiciones colocadas manualmente en IBKR fuera del sistema se ignoran
+        # para no mezclar capital externo con el presupuesto del fondo.
+        if not audit.was_submitted_by_system(sym):
+            logger.warning(
+                "reconcile_orphan: %s tiene %.0f acc en IBKR sin entrada en el sistema "
+                "— se IGNORA (posición externa, colocar manualmente si corresponde)",
+                sym, orphan_qty,
+            )
+            continue
         fill_price = ibkr_pos.avg_cost
         logger.info(
             "reconcile_orphan: %s %.0f × $%.4f → fondo %s",
