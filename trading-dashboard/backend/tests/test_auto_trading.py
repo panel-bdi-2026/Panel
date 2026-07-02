@@ -227,7 +227,7 @@ def test_auto_trade_entry_does_not_buy_when_broker_rejects_stop_loss(monkeypatch
     fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
 
     async def fail(order):
-        raise StopLossRejectedError("rechazado")
+        raise StopLossRejectedError("rechazado", order_id=9999, stop_order_id=9998)
 
     monkeypatch.setattr(main_module.broker, "place_order", fail)
     asyncio.run(main_module._try_auto_trade_entry(make_signal()))
@@ -647,7 +647,7 @@ def test_check_fund_exit_keeps_position_when_exit_order_fails(monkeypatch):
     monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
 
     async def fail(order):
-        raise StopLossRejectedError("rechazado")
+        raise StopLossRejectedError("rechazado", order_id=9999, stop_order_id=9998)
 
     monkeypatch.setattr(main_module.broker, "place_order", fail)
 
@@ -966,7 +966,7 @@ def test_check_fund_scale_out_keeps_position_when_order_fails(monkeypatch):
     monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
 
     async def fail_place_order(order):
-        raise StopLossRejectedError("rechazada")
+        raise StopLossRejectedError("rechazada", order_id=9999, stop_order_id=9998)
 
     monkeypatch.setattr(main_module.broker, "place_order", fail_place_order)
     asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))

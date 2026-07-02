@@ -129,6 +129,7 @@ class AuditLog:
         buy_actions = (
             "auto_trade_executed",
             "auto_trade_submitted_unfilled",
+            "auto_trade_stop_loss_rejected",  # compra que llenó aunque el stop fallara
             "order_executed",
             "order_submitted_unfilled",
             "order_executed_after_approval",
@@ -143,6 +144,34 @@ class AuditLog:
                 (*buy_actions, cutoff, symbol),
             )
             return cur.fetchone() is not None
+
+    def get_last_stop_price(self, symbol: str, since_days: int = 90) -> "float | None":
+        """Retorna el stop_loss_price de la entrada de compra más reciente para
+        este símbolo. Usado por la reconciliación de arranque para recuperar el
+        precio de stop de posiciones huérfanas (ej. stop-loss rechazado por IBKR
+        en la sesión anterior) y colocar un stop protector de emergencia."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=since_days)).isoformat()
+        buy_actions = (
+            "auto_trade_executed",
+            "auto_trade_submitted_unfilled",
+            "auto_trade_stop_loss_rejected",
+            "order_executed",
+            "order_submitted_unfilled",
+            "order_executed_after_approval",
+            "order_submitted_unfilled_after_approval",
+        )
+        placeholders = ", ".join("?" for _ in buy_actions)
+        with self._lock:
+            cur = self._conn.execute(
+                f"SELECT json_extract(payload,'$.stop_loss_price') FROM audit_log "
+                f"WHERE action IN ({placeholders}) AND ts >= ? "
+                f"AND json_extract(payload,'$.symbol') = ? "
+                f"AND json_extract(payload,'$.stop_loss_price') IS NOT NULL "
+                f"ORDER BY id DESC LIMIT 1",
+                (*buy_actions, cutoff, symbol),
+            )
+            row = cur.fetchone()
+            return float(row[0]) if row and row[0] is not None else None
 
     def count_trades_today(self, tz_name: str = "America/New_York", fund_id: str | None = None) -> int:
         """Cuenta ordenes ejecutadas hoy segun el dia de trading en `tz_name`

@@ -49,8 +49,26 @@ class IBKRConnectionError(RuntimeError):
 class StopLossRejectedError(RuntimeError):
     """La orden padre se transmitio pero IBKR rechazo/cancelo el stop-loss
     asociado. La posicion puede haber quedado abierta sin proteccion --
-    quien llama debe tratar esto como una falla critica, no como exito."""
-    pass
+    quien llama debe tratar esto como una falla critica, no como exito.
+
+    Lleva el fill de la orden PADRE (si ya se ejecutó) para que quien capture
+    esta excepción pueda registrar el fill en el fondo y colocar un stop
+    protector de emergencia, sin perder la posición abierta."""
+
+    def __init__(
+        self,
+        msg: str,
+        *,
+        order_id: int,
+        stop_order_id: int,
+        filled_qty: float = 0.0,
+        avg_fill_price: "float | None" = None,
+    ) -> None:
+        super().__init__(msg)
+        self.order_id = order_id
+        self.stop_order_id = stop_order_id
+        self.filled_qty = filled_qty
+        self.avg_fill_price = avg_fill_price
 
 
 class IBKRBroker:
@@ -532,11 +550,25 @@ class IBKRBroker:
             # como una falla critica, no silenciarlo.
             bad_statuses = {"Cancelled", "ApiCancelled", "Inactive", "PendingCancel"}
             stop_status = stop_trade.orderStatus.status
+            # Calculamos el fill del padre ANTES de decidir si lanzar la excepcion:
+            # si el stop fallo pero el padre ya lleno (total o parcialmente), quien
+            # capture StopLossRejectedError necesita saber cuanto se compro para
+            # poder registrar la posicion en el fondo y poner un stop de emergencia.
+            _fill_for_exc = fill if fill is not None else (
+                parent_trade.orderStatus.status,
+                parent_trade.orderStatus.filled,
+                parent_trade.orderStatus.avgFillPrice or None,
+                parent_trade.orderStatus.remaining,
+            )
             if stop_status in bad_statuses:
                 raise StopLossRejectedError(
                     f"El stop-loss fue rechazado/cancelado por IBKR (estado: {stop_status}). "
                     f"La orden principal (id {parent.orderId}) puede haber quedado activa SIN "
-                    f"proteccion. Revisa la posicion manualmente en TWS antes de seguir operando."
+                    f"proteccion. Revisa la posicion manualmente en TWS antes de seguir operando.",
+                    order_id=parent.orderId,
+                    stop_order_id=stop.orderId,
+                    filled_qty=_fill_for_exc[1] if _fill_for_exc else 0.0,
+                    avg_fill_price=_fill_for_exc[2] if _fill_for_exc else None,
                 )
 
             status, filled_qty, avg_fill_price, _remaining = fill if fill is not None else (

@@ -772,7 +772,33 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
         try:
             result_payload = await broker.place_order(order)
         except StopLossRejectedError as exc:
-            audit.record("auto_trade_stop_loss_rejected", order.model_dump(), {"error": str(exc)})
+            # Si la compra llegó a ejecutarse antes de que fallara el stop,
+            # registrar el fill en el fondo y colocar un stop de emergencia,
+            # para no dejar la posición completamente sin protección ni sin
+            # contabilizar. Sin este bloque, la posición quedaba huérfana en
+            # IBKR y el scanner la volvía a intentar en cada ciclo.
+            if exc.filled_qty > 0:
+                fill_px = exc.avg_fill_price or live_price
+                funds_store.record_fill(
+                    fund.id, symbol, Side.BUY, exc.filled_qty, fill_px,
+                    stop_loss_price=effective_stop_loss_price,
+                    commission=screener_config.commission_per_trade_usd,
+                )
+                asyncio.create_task(
+                    _ensure_protective_stop(fund.id, symbol, effective_stop_loss_price)
+                )
+            audit.record(
+                "auto_trade_stop_loss_rejected",
+                order.model_dump(),
+                {
+                    "error": str(exc),
+                    "order_id": exc.order_id,
+                    "stop_order_id": exc.stop_order_id,
+                    "filled_qty": exc.filled_qty,
+                    "avg_fill_price": exc.avg_fill_price,
+                    "fund_id": fund.id,
+                },
+            )
             return
 
         filled_qty = result_payload.get("filled_qty") or 0.0
@@ -1831,13 +1857,15 @@ async def _reconcile_unfilled_on_startup() -> None:
             )
             continue
         fill_price = ibkr_pos.avg_cost
+        stop_px = audit.get_last_stop_price(sym)
         logger.info(
-            "reconcile_orphan: %s %.0f × $%.4f → fondo %s",
+            "reconcile_orphan: %s %.0f × $%.4f → fondo %s (stop=%s)",
             sym, orphan_qty, fill_price, auto_fund.id,
+            f"${stop_px:.4f}" if stop_px else "no encontrado",
         )
         funds_store.record_fill(
             auto_fund.id, sym, Side.BUY, orphan_qty, fill_price,
-            stop_loss_price=None,
+            stop_loss_price=stop_px,
             commission=0.0,
         )
         audit.record(
@@ -1845,8 +1873,10 @@ async def _reconcile_unfilled_on_startup() -> None:
             {"symbol": sym, "side": "BUY", "fund_id": auto_fund.id,
              "quantity": orphan_qty, "source": "orphan_ibkr_position"},
             {"filled_qty": orphan_qty, "avg_fill_price": fill_price,
-             "fund_id": auto_fund.id},
+             "fund_id": auto_fund.id, "stop_loss_price": stop_px},
         )
+        if stop_px:
+            await _ensure_protective_stop(auto_fund.id, sym, stop_px)
 
 
 @asynccontextmanager

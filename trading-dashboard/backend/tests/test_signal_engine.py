@@ -101,7 +101,7 @@ def reset_state(monkeypatch, tmp_path):
         # IB() sin conexion. Rechazarlo silenciosamente (mismo camino que un
         # StopLossRejectedError real) deja get_position_qty en 0, para que
         # el draft se pueda evaluar tal como este archivo espera probarlo.
-        raise main_module.StopLossRejectedError("test: sin ejecucion real en test_signal_engine.py")
+        raise main_module.StopLossRejectedError("test: sin ejecucion real en test_signal_engine.py", order_id=9999, stop_order_id=9998)
 
     monkeypatch.setattr(main_module.broker, "get_account_summary", fake_get_account_summary)
     # Por defecto no hay precio en vivo de IBKR: cae al last_price de la
