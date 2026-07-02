@@ -71,6 +71,7 @@ def reset_state(monkeypatch, tmp_path):
     main_module.state["halted"] = False
     main_module.state["connected"] = False
     main_module.state["pending_orders"] = {}
+    main_module.state["peak_equity_usd"] = None
     monkeypatch.setattr(main_module, "funds_store", FundsStore(tmp_path / "funds.json"))
     monkeypatch.setattr(main_module, "screener_config", ScreenerConfig())
     main_module.rules_engine.reload(RulesConfig())
@@ -306,6 +307,55 @@ def test_risk_monitor_loop_skips_check_when_already_halted(monkeypatch):
 
     monkeypatch.setattr(main_module.broker, "get_account_summary", fail_if_called)
     asyncio.run(_run_one_cycle(monkeypatch))
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker de drawdown ACUMULADO (mismo _risk_monitor_loop)
+# ---------------------------------------------------------------------------
+
+def test_risk_monitor_loop_sets_initial_peak_equity_without_halting(monkeypatch):
+    main_module.state["connected"] = True
+    main_module.state["halted"] = False
+    main_module.state["peak_equity_usd"] = None
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(net_liq=100_000)))
+    asyncio.run(_run_one_cycle(monkeypatch))
+    assert main_module.state["halted"] is False
+    assert main_module.state["peak_equity_usd"] == 100_000
+
+
+def test_risk_monitor_loop_halts_when_cumulative_drawdown_breached(monkeypatch):
+    main_module.state["connected"] = True
+    main_module.state["halted"] = False
+    main_module.state["peak_equity_usd"] = 100_000
+    main_module.rules_engine.reload(RulesConfig(max_drawdown_pct=15))
+    # 80_000 = 20% por debajo del maximo de 100_000 -> supera el 15%
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(net_liq=80_000)))
+    asyncio.run(_run_one_cycle(monkeypatch))
+    assert main_module.state["halted"] is True
+
+
+def test_risk_monitor_loop_keeps_running_within_drawdown_limit(monkeypatch):
+    main_module.state["connected"] = True
+    main_module.state["halted"] = False
+    main_module.state["peak_equity_usd"] = 100_000
+    main_module.rules_engine.reload(RulesConfig(max_drawdown_pct=15))
+    # 90_000 = 10% por debajo del maximo -> dentro del 15% permitido
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(net_liq=90_000)))
+    asyncio.run(_run_one_cycle(monkeypatch))
+    assert main_module.state["halted"] is False
+    assert main_module.state["peak_equity_usd"] == 100_000  # el maximo no baja
+
+
+def test_risk_monitor_loop_does_not_reset_peak_after_a_new_high_then_a_dip(monkeypatch):
+    main_module.state["connected"] = True
+    main_module.state["halted"] = False
+    main_module.state["peak_equity_usd"] = 100_000
+    main_module.rules_engine.reload(RulesConfig(max_drawdown_pct=50))
+    # Sube a un nuevo maximo de 120_000 dentro del mismo ciclo de polling.
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(net_liq=120_000)))
+    asyncio.run(_run_one_cycle(monkeypatch))
+    assert main_module.state["peak_equity_usd"] == 120_000
+    assert main_module.state["halted"] is False
 
 
 # ---------------------------------------------------------------------------

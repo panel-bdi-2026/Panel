@@ -1464,7 +1464,12 @@ def run_backtest_walk_forward(
     son siempre los mismos en todos los folds, porque esta herramienta no
     hace optimizacion de parametros. "Out of sample" aca significa: ¿el mismo
     set de reglas fijo (el que ya esta configurado) se sostiene en distintos
-    tramos de tiempo, o gano todo en un solo tramo favorable?"""
+    tramos de tiempo, o gano todo en un solo tramo favorable?
+
+    Mismo sesgo de supervivencia que run_backtest (ver su docstring): las
+    operaciones que particiona en folds vienen del mismo universo configurado
+    HOY, asi que ningun fold aisla ese efecto -- esta funcion valida
+    consistencia temporal de las reglas, no corrige el sesgo de universo."""
     all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg, rules_config)
     return _build_walk_forward_result(
         all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds,

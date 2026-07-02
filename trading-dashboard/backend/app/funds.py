@@ -43,6 +43,16 @@ class FundPosition(BaseModel):
     # Al vender, se descuenta la porcion proporcional a la cantidad vendida
     # (ver record_fill) del realized_pnl de esa venta, sin tocar avg_cost.
     cost_basis_commission: float = 0.0
+    # Stop-loss ORIGINAL al abrir la posicion, congelado (a diferencia de
+    # stop_loss_price, que el trailing stop puede subir con el tiempo -- ver
+    # _check_fund_trailing_stop en main.py). Es la base para calcular el "R"
+    # de la salida parcial por conviccion (ver _check_fund_exit en main.py y
+    # ScreenerConfig.scale_out_at_r_multiple): 1R = avg_cost - este valor.
+    initial_stop_loss_price: Optional[float] = None
+    # Marca que ya se ejecuto la salida parcial de esta posicion (ver
+    # ScreenerConfig.scale_out_enabled): evita repetir la venta parcial en
+    # cada ciclo del monitor de salida una vez disparada.
+    scaled_out_at: Optional[datetime] = None
 
 
 class FundTrade(BaseModel):
@@ -204,6 +214,8 @@ class Fund(BaseModel):
                 pos.opened_at = datetime.now(timezone.utc)
                 pos.stop_loss_price = stop_loss_price
                 pos.stop_order_id = stop_order_id
+                pos.initial_stop_loss_price = stop_loss_price
+                pos.scaled_out_at = None
             new_qty = pos.quantity + quantity
             pos.avg_cost = (
                 (pos.avg_cost * pos.quantity + price * quantity) / new_qty if new_qty else 0.0
@@ -232,6 +244,8 @@ class Fund(BaseModel):
                 pos.stop_loss_price = None
                 pos.stop_order_id = None
                 pos.cost_basis_commission = 0.0
+                pos.initial_stop_loss_price = None
+                pos.scaled_out_at = None
             self.cash_usd += price * quantity - commission
 
         trade = FundTrade(
@@ -256,6 +270,28 @@ class Fund(BaseModel):
         pos = self.positions.get(symbol)
         if pos is not None and pos.quantity > 0:
             pos.stop_loss_price = new_stop_price
+
+    def set_stop_order_id(self, symbol: str, stop_order_id: int) -> None:
+        """Registra el stop_order_id de un stop-loss recien colocado sobre
+        una posicion ya abierta, sin tocar price/cash/quantity. Usado por la
+        reconciliacion de arranque (ver _reconcile_unfilled_on_startup en
+        main.py) DESPUES de llamar a broker.place_protective_stop() para una
+        posicion reconciliada que no tenia ningun stop vivo protegiendola
+        (ver broker.has_live_protective_stop) -- el stop original de esa
+        posicion probablemente se cancelo por error cuando la orden padre
+        parecia "Cancelled" transitoriamente en IBKR."""
+        pos = self.positions.get(symbol)
+        if pos is not None and pos.quantity > 0:
+            pos.stop_order_id = stop_order_id
+
+    def mark_scaled_out(self, symbol: str) -> None:
+        """Marca que la salida parcial (scale-out) de esta posicion ya se
+        ejecuto, sin tocar price/cash/quantity. Usado por el monitor de
+        salida (ver _check_fund_exit en main.py) DESPUES de confirmar la
+        venta parcial en el broker, para no repetirla en el proximo ciclo."""
+        pos = self.positions.get(symbol)
+        if pos is not None and pos.quantity > 0:
+            pos.scaled_out_at = datetime.now(timezone.utc)
 
 
 class FundValidationError(ValueError):
@@ -448,6 +484,24 @@ class FundsStore:
             if fund is None:
                 return None
             fund.update_stop_loss(symbol, new_stop_price)
+            self.save()
+            return fund
+
+    def set_stop_order_id(self, fund_id: str, symbol: str, stop_order_id: int) -> Fund | None:
+        with self._lock:
+            fund = self.funds.get(fund_id)
+            if fund is None:
+                return None
+            fund.set_stop_order_id(symbol, stop_order_id)
+            self.save()
+            return fund
+
+    def mark_scaled_out(self, fund_id: str, symbol: str) -> Fund | None:
+        with self._lock:
+            fund = self.funds.get(fund_id)
+            if fund is None:
+                return None
+            fund.mark_scaled_out(symbol)
             self.save()
             return fund
 

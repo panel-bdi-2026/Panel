@@ -29,7 +29,14 @@ from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
 from .funds import FundsStore, FundValidationError
 from .indicators import atr, sma
-from .market_data import MarketDataError, get_daily_bars, get_fundamentals, is_bars_cached, is_fundamentals_cached
+from .market_data import (
+    MarketDataError,
+    get_bars_failure_stats,
+    get_daily_bars,
+    get_fundamentals,
+    is_bars_cached,
+    is_fundamentals_cached,
+)
 from .models import OrderRequest, OrderType, PendingOrder, Position, SignalResult, Side, validate_symbol
 from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
@@ -108,6 +115,21 @@ state: dict = {
     "pending_orders": {
         pid: PendingOrder(**p) for pid, p in _persisted.get("pending_orders", {}).items()
     },
+    # Maximo historico de equity de la cuenta observado por el kill switch de
+    # drawdown acumulado (ver _risk_monitor_loop). Persistido (a diferencia
+    # de connected) a proposito: si no sobreviviera un restart, un crash a
+    # mitad de un drawdown fuerte "perdonaria" la caida silenciosamente (el
+    # proximo arranque tomaria la equity actual, ya deprimida, como nuevo
+    # maximo) justo cuando el circuit breaker mas necesita seguir midiendo
+    # contra el maximo real. None hasta la primera lectura exitosa de
+    # account_summary si nunca se persistio nada (primer arranque).
+    "peak_equity_usd": _persisted.get("peak_equity_usd"),
+    # Flag de degradacion parcial del feed de datos de mercado (ver
+    # _check_market_data_degradation). No persistido a proposito: es una
+    # senal operativa transitoria (se recalcula del cache real en el proximo
+    # ciclo), no un estado de seguridad de trading como halted/peak_equity_usd
+    # que deba sobrevivir un restart.
+    "market_data_degraded": False,
 }
 clients: list[WebSocket] = []
 
@@ -186,6 +208,7 @@ def _persist_state() -> None:
             "mode": state["mode"],
             "halted": state["halted"],
             "pending_orders": {pid: p.model_dump() for pid, p in state["pending_orders"].items()},
+            "peak_equity_usd": state["peak_equity_usd"],
         })
     except OSError:
         logger.exception("no se pudo persistir el estado en %s", settings.state_path)
@@ -381,15 +404,31 @@ def _compute_sector_position_count(positions: list[Position], exclude_symbol: st
     return counts
 
 
-async def _draft_order_from_signal(result: SignalResult, positions: list[Position]) -> PendingOrder | None:
+async def _draft_fund_order_from_signal(result: SignalResult, strategy_id: str) -> PendingOrder | None:
     """Convierte una señal que recien cruzo el umbral de auto-trading (ver
-    _live_score_entry_threshold/operational_gates_ok en _run_signal_scan_cycle)
-    en una orden de compra en borrador, sizeada por riesgo via
-    RulesEngine.suggested_quantity().
+    _live_score_entry_threshold/operational_gates_ok) en una orden de compra
+    en borrador, atada a un fondo REAL y dimensionada contra SU capital
+    disponible (fund.equity_estimate()) -- reemplaza a la vieja
+    _draft_order_from_signal (retirada), que dimensionaba contra el equity
+    de TODA la cuenta sin atar la orden a ningun fondo. Eso generaba
+    borradores de ~$4-5k topeados por max_order_value_usd, sin ninguna
+    relacion con el capital que el fondo realmente tenia disponible.
 
-    Se salta el draft (sin loggear error, es esperable que pase seguido) si ya
-    hay una posicion abierta o una orden pendiente en ese simbolo, o si el
-    sizing por riesgo da cantidad cero (sin equity/cuenta no conectada).
+    Candidatos: los mismos criterios que _try_auto_trade_entry
+    (auto_trading_enabled, sin posicion ya abierta en el simbolo, estrategia
+    coincidente). Se llega aca solo cuando _try_auto_trade_entry ya proceso
+    la señal ese ciclo sin auto-ejecutarla (tipicamente por el tope de
+    max_auto_drafts_per_cycle, o el fondo sin cash suficiente): el borrador
+    es la misma oportunidad que el fondo hubiera tomado automaticamente,
+    para que el usuario decida a mano. Si NINGUN fondo sigue `strategy_id`
+    (con auto_trading_enabled), no se genera ningun borrador -- asi, una
+    estrategia que ningun fondo sigue (ej. Momentum, si el/los fondos activos
+    eligieron Oportunista) deja de inundar la cola de pendientes sin
+    necesitar un chequeo aparte: simplemente no hay candidatos.
+
+    Se salta el draft (sin loggear error, es esperable que pase seguido) si
+    ya hay una posicion abierta o una orden pendiente en ese simbolo, o si el
+    sizing por riesgo da cantidad cero para todos los candidatos.
 
     Importante: el draft SIEMPRE queda en pending_orders para aprobacion
     manual, sin importar lo que diga decision.requires_manual_approval. Una
@@ -398,6 +437,26 @@ async def _draft_order_from_signal(result: SignalResult, positions: list[Positio
     """
     symbol = result.symbol
     if any(p.order.symbol == symbol for p in state["pending_orders"].values()):
+        return None
+
+    # Limitacion conocida, sin resolver a proposito: candidates preserva el
+    # orden de funds_store.list() (orden de INSERCION del dict subyacente,
+    # es decir orden de creacion del fondo -- FIFO), y mas abajo se toma el
+    # primer candidato con cash suficiente. Con 2+ fondos activos siguiendo
+    # la MISMA estrategia, el fondo mas viejo (creado primero) absorbe cada
+    # señal nueva mientras tenga cash, y los mas nuevos solo reciben lo que
+    # el primero no pudo pagar -- no hay rotacion ni reparto proporcional
+    # entre fondos candidatos. Aceptable con el uso actual (un fondo activo
+    # por estrategia a la vez), pero a tener en cuenta si se activan varios
+    # fondos en paralelo sobre la misma estrategia: el despliegue de capital
+    # entre ellos no sera parejo.
+    candidates = [
+        f for f in funds_store.list()
+        if f.auto_trading_enabled
+        and f.owned_quantity(symbol) == 0
+        and (f.strategy_id or screener_config.strategy_id) == strategy_id
+    ]
+    if not candidates:
         return None
 
     position_qty = broker.get_position_qty(symbol)
@@ -413,21 +472,36 @@ async def _draft_order_from_signal(result: SignalResult, positions: list[Positio
     live_price = await broker.get_reference_price(symbol) or result.last_price
 
     account_summary = await broker.get_account_summary()
-    sizing = rules_engine.suggested_quantity(
-        account_summary.net_liquidation, position_qty, live_price, result.suggested_stop_loss_price
-    )
-    if sizing.quantity <= 0:
+    fund = None
+    quantity = 0.0
+    for candidate in candidates:
+        sizing = rules_engine.suggested_quantity(
+            candidate.equity_estimate(), position_qty, live_price, result.suggested_stop_loss_price,
+            score=result.score,
+        )
+        if sizing.quantity <= 0:
+            continue
+        affordable_qty = math.floor(candidate.cash_usd / live_price)
+        qty = min(sizing.quantity, affordable_qty)
+        if qty > 0:
+            fund = candidate
+            quantity = qty
+            break
+    if fund is None:
         return None
 
     order = OrderRequest(
         symbol=symbol,
         side=Side.BUY,
-        quantity=sizing.quantity,
+        quantity=quantity,
         order_type=OrderType.LMT,
         limit_price=live_price,
         stop_loss_price=result.suggested_stop_loss_price,
+        fund_id=fund.id,
     )
+    positions = await broker.get_positions()
     trades_today = audit.count_trades_today(rules_config.trading_hours_timezone)
+    trades_today_for_fund = audit.count_trades_today(rules_config.trading_hours_timezone, fund_id=fund.id)
     decision = rules_engine.evaluate(
         order=order,
         account=account_summary,
@@ -441,6 +515,7 @@ async def _draft_order_from_signal(result: SignalResult, positions: list[Positio
         sector_position_count=_compute_sector_position_count(positions, symbol),
         total_position_value_usd=_compute_total_position_value(positions, symbol),
         open_portfolio_risk_usd=_compute_open_portfolio_risk_usd(symbol),
+        trades_today_for_fund=trades_today_for_fund,
     )
     if not decision.approved:
         audit.record("signal_order_rejected", order.model_dump(), decision.model_dump())
@@ -453,11 +528,60 @@ async def _draft_order_from_signal(result: SignalResult, positions: list[Positio
         decision=decision,
         created_at=datetime.now(timezone.utc),
         source="signal_engine",
+        strategy_id=strategy_id,
     )
     state["pending_orders"][pending_id] = pending
     _persist_state()
-    audit.record("signal_order_drafted", order.model_dump(), {"id": pending_id, "signal": result.model_dump()})
+    audit.record(
+        "signal_order_drafted", order.model_dump(),
+        {"id": pending_id, "signal": result.model_dump(), "strategy_id": strategy_id},
+    )
     return pending
+
+
+async def _ensure_protective_stop(fund_id: str, symbol: str, stop_price: float) -> None:
+    """Si `symbol` no tiene un stop-loss de venta vivo en IBKR (ver
+    broker.has_live_protective_stop), coloca uno nuevo standalone al precio
+    conocido y lo registra en el fondo.
+
+    Se llama tanto despues de un fill tardio (ver _register_fund_fill_
+    reconciliation) como desde la reconciliacion de arranque
+    (_reconcile_unfilled_on_startup): el stop original de una orden que
+    parecio "Cancelled" transitoriamente en IBKR (ver
+    broker._register_stop_reconciliation, que cancela el stop cuando el
+    padre aparenta estar muerto) probablemente ya se cancelo, dejando la
+    posicion sin proteccion real una vez que el fill tardio finalmente
+    llega -- este es exactamente el mecanismo que dejo una posicion real
+    (MAMA, ver incidente de esta noche) sin ningun stop viviendola.
+
+    Best-effort: cualquier error se loguea pero no interrumpe el flujo que
+    llama (un fallo aca no debe tirar abajo el arranque del backend ni la
+    reconciliacion de otros simbolos)."""
+    try:
+        if broker.has_live_protective_stop(symbol):
+            return
+        fund = funds_store.get(fund_id)
+        if fund is None:
+            return
+        qty = fund.owned_quantity(symbol)
+        if qty <= 0:
+            return
+        new_stop_order_id = await broker.place_protective_stop(symbol, qty, stop_price)
+        if new_stop_order_id is not None:
+            funds_store.set_stop_order_id(fund_id, symbol, new_stop_order_id)
+            audit.record(
+                "auto_trade_protective_stop_placed",
+                {"fund_id": fund_id, "symbol": symbol},
+                {"stop_order_id": new_stop_order_id, "stop_price": stop_price},
+            )
+            logger.info(
+                "Stop-loss protector colocado para %s (fondo %s, orden %s, precio $%.4f)",
+                symbol, fund_id, new_stop_order_id, stop_price,
+            )
+    except Exception:
+        logger.exception(
+            "No se pudo asegurar el stop-loss protector de %s (fondo %s)", symbol, fund_id
+        )
 
 
 def _register_fund_fill_reconciliation(
@@ -521,6 +645,13 @@ def _register_fund_fill_reconciliation(
             "Fill tardío registrado: %s %.4f %s × $%.4f (fondo %s, orden %s)",
             side.value, incremental_qty, symbol, incremental_price, fund_id, order_id,
         )
+        # El callback de ib_async es sincronico, pero corre dentro del loop
+        # de asyncio ya en marcha (ib_async es asyncio-nativo): create_task
+        # agenda la verificacion/colocacion del stop sin bloquear el callback
+        # ni requerir que sea async. Solo aplica a compras (una venta no deja
+        # una posicion que proteger).
+        if side == Side.BUY and stop_loss_price:
+            asyncio.create_task(_ensure_protective_stop(fund_id, symbol, stop_loss_price))
 
     if not broker.subscribe_fill(order_id, _on_late_fill):
         logger.warning(
@@ -550,6 +681,10 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
         return
     symbol = result.symbol
     async with _funds_order_lock:
+        # Misma limitacion FIFO documentada en _draft_fund_order_from_signal:
+        # candidates preserva el orden de creacion de los fondos, y mas abajo
+        # gana el primero con cash suficiente -- sin rotacion entre 2+ fondos
+        # activos que sigan la misma estrategia.
         candidates = [
             f for f in funds_store.list()
             if f.auto_trading_enabled
@@ -559,10 +694,10 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
         if not candidates:
             return
 
-        # Igual que en _draft_order_from_signal: result.last_price puede tener
-        # hasta auto_scan_interval_minutes de antiguedad, asi que se refresca
-        # contra IBKR antes de sizear/ejecutar (que es lo sensible al precio
-        # del momento), no antes de evaluar la señal en si.
+        # Igual que en _draft_fund_order_from_signal: result.last_price puede
+        # tener hasta auto_scan_interval_minutes de antiguedad, asi que se
+        # refresca contra IBKR antes de sizear/ejecutar (que es lo sensible
+        # al precio del momento), no antes de evaluar la señal en si.
         live_price = await broker.get_reference_price(symbol) or result.last_price
 
         account_summary = await broker.get_account_summary()
@@ -590,7 +725,8 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
         quantity = 0.0
         for candidate in candidates:
             sizing = rules_engine.suggested_quantity(
-                candidate.equity_estimate(), position_qty, live_price, effective_stop_loss_price
+                candidate.equity_estimate(), position_qty, live_price, effective_stop_loss_price,
+                score=result.score,
             )
             if sizing.quantity <= 0:
                 continue
@@ -738,6 +874,44 @@ def _strategy_exit_params(strategy_id: str) -> _ExitParams:
     raise ValueError(f"strategy_id desconocido: {strategy_id!r}")
 
 
+async def _check_market_data_degradation() -> None:
+    """Detecta un feed de datos de mercado parcialmente degradado (ver
+    market_data.get_bars_failure_stats) y lo hace visible en audit/WS: a
+    diferencia de un feed totalmente caido (que ya corta el scan de entrada
+    con MarketDataError, ver _run_score_recompute_cycle), un feed que solo
+    falla para una FRACCION del universo deja pasar el scan "normalmente"
+    con menos simbolos evaluados, sin ninguna señal para el usuario de que
+    los scores/rankings actuales estan basados en datos incompletos.
+
+    Debounced via state["market_data_degraded"]: solo emite audit/broadcast
+    en la TRANSICION de estado (sano->degradado o degradado->sano), no en
+    cada ciclo mientras el estado no cambia -- sin esto, cada ciclo de
+    recompute (cada auto_scan_interval_minutes) inundaria el audit log
+    mientras el feed sigue degradado.
+    """
+    failed, total = get_bars_failure_stats(screener_config.universe, screener_config.lookback_days)
+    if total == 0:
+        return
+    failure_pct = failed / total * 100
+    is_degraded = failure_pct >= screener_config.market_data_degradation_alert_pct
+    was_degraded = state["market_data_degraded"]
+    if is_degraded == was_degraded:
+        return
+
+    state["market_data_degraded"] = is_degraded
+    payload = {"failed": failed, "total": total, "failure_pct": round(failure_pct, 1)}
+    if is_degraded:
+        audit.record("market_data_degraded", {}, payload)
+        logger.warning(
+            "Feed de datos de mercado degradado: %d/%d simbolos (%.1f%%) sin datos frescos.",
+            failed, total, failure_pct,
+        )
+    else:
+        audit.record("market_data_recovered", {}, payload)
+        logger.info("Feed de datos de mercado recuperado: %d/%d simbolos sin datos frescos.", failed, total)
+    await _broadcast({"type": "market_data_degraded", "degraded": is_degraded, **payload})
+
+
 async def _run_score_recompute_cycle() -> None:
     """Un ciclo de recalculo de scores sobre el cache de datos: lee el cache de
     market_data.py (sin tocar la red), detecta simbolos que recien empiezan a
@@ -761,6 +935,8 @@ async def _run_score_recompute_cycle() -> None:
     except Exception as exc:
         audit.record("signal_scan_failed", {}, {"error": str(exc)})
         return
+
+    await _check_market_data_degradation()
 
     now = datetime.now(timezone.utc)
     signal_cache[screener_config.strategy_id] = {
@@ -818,10 +994,9 @@ async def _run_score_recompute_cycle() -> None:
             free_slots = max(0, screener_config.top_n - len(state["pending_orders"]))
             cap = min(screener_config.max_auto_drafts_per_cycle, free_slots)
             new_signals = new_signals[:cap]
-            positions = await broker.get_positions()
             drafted = []
             for r in new_signals:
-                p = await _draft_order_from_signal(r, positions)
+                p = await _draft_fund_order_from_signal(r, screener_config.strategy_id)
                 if p is not None:
                     drafted.append(p)
 
@@ -856,14 +1031,16 @@ async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
     explicitamente esta estrategia (fund.strategy_id), distinta de
     screener_config.strategy_id.
 
-    A diferencia de _run_score_recompute_cycle, nunca arma borradores manuales
-    (_draft_order_from_signal): esos quedan reservados a la estrategia activa
-    global, que es la unica que se muestra en el Radar para revision humana.
-    Lleva su propio "previously_passing" por estrategia (ver
-    _signal_state["previously_passing_by_strategy"]) para no compartir base
-    con la estrategia activa global ni con otras estrategias de otros fondos.
-    No toma _market_scan_lock: igual que _run_score_recompute_cycle, usa solo
-    el cache de datos.
+    Igual que _run_score_recompute_cycle, arma borradores manuales
+    (_draft_fund_order_from_signal) para las señales que _try_auto_trade_entry
+    no llego a auto-ejecutar ese ciclo (tope de max_auto_drafts_per_cycle
+    superado, o ningun fondo candidato con cash suficiente) -- antes de este
+    fix, esas señales se perdian en silencio sin dejar ningun rastro para
+    que el usuario las tome a mano. Lleva su propio "previously_passing" por
+    estrategia (ver _signal_state["previously_passing_by_strategy"]) para no
+    compartir base con la estrategia activa global ni con otras estrategias
+    de otros fondos. No toma _market_scan_lock: igual que
+    _run_score_recompute_cycle, usa solo el cache de datos.
     """
     active_strategy = strategy_registry[strategy_id]
     try:
@@ -898,6 +1075,21 @@ async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
     for r in new_signals[: screener_config.max_auto_drafts_per_cycle]:
         await _try_auto_trade_entry(r, strategy_id)
 
+    free_slots = max(0, screener_config.top_n - len(state["pending_orders"]))
+    cap = min(screener_config.max_auto_drafts_per_cycle, free_slots)
+    drafted = []
+    for r in new_signals[:cap]:
+        p = await _draft_fund_order_from_signal(r, strategy_id)
+        if p is not None:
+            drafted.append(p)
+
+    if drafted:
+        await _broadcast({
+            "type": "signal_alert",
+            "new_signals": [r.model_dump() for r in new_signals[:cap]],
+            "drafted_orders": [p.model_dump() for p in drafted],
+        })
+
 
 async def _score_recompute_loop() -> None:
     """Recalculo de scores en background: corre cache_only (sin red) cada
@@ -911,7 +1103,18 @@ async def _risk_monitor_loop() -> None:
     """Kill switch automatico: a diferencia de RulesEngine.evaluate(), que solo
     chequea daily_loss_limit_pct cuando llega una orden nueva, esto corre en
     background y pausa el trading aunque no se envie ninguna orden mientras la
-    cuenta sigue perdiendo (ej. por posiciones abiertas moviendose en contra)."""
+    cuenta sigue perdiendo (ej. por posiciones abiertas moviendose en contra).
+
+    Dos circuit breakers independientes, sobre el mismo account_summary leido
+    una sola vez por ciclo:
+    1. daily_loss_limit_pct: perdida del DIA actual (se resetea solo, junto
+       con daily_pnl_pct de IBKR).
+    2. max_drawdown_pct: caida ACUMULADA desde el maximo historico de equity
+       (state["peak_equity_usd"], persistido -- ver su definicion mas
+       arriba). No se resetea nunca: una racha de perdidas repartida en
+       varios dias, cada uno por debajo del umbral diario, igual la dispara
+       si la suma cruza este umbral mas holgado.
+    """
     while True:
         await asyncio.sleep(settings.poll_interval_seconds)
         if not state["connected"] or state["halted"]:
@@ -921,6 +1124,7 @@ async def _risk_monitor_loop() -> None:
         except Exception:
             logger.exception("Kill switch: no se pudo leer el resumen de cuenta, se reintenta en el proximo ciclo")
             continue
+
         if account.daily_pnl_pct <= -abs(rules_config.daily_loss_limit_pct):
             state["halted"] = True
             _persist_state()
@@ -929,13 +1133,120 @@ async def _risk_monitor_loop() -> None:
                 "[KILL SWITCH] Perdida diaria %.2f%% alcanzo el limite. Trading pausado automaticamente.",
                 account.daily_pnl_pct,
             )
+            continue
+
+        equity = account.net_liquidation
+        peak = state["peak_equity_usd"]
+        if peak is None or equity > peak:
+            state["peak_equity_usd"] = equity
+            _persist_state()
+        elif peak > 0:
+            drawdown_pct = (peak - equity) / peak * 100
+            if drawdown_pct >= abs(rules_config.max_drawdown_pct):
+                state["halted"] = True
+                _persist_state()
+                audit.record(
+                    "auto_halt_max_drawdown", {},
+                    {"drawdown_pct": round(drawdown_pct, 2), "peak_equity_usd": peak, "equity_usd": equity},
+                )
+                logger.warning(
+                    "[KILL SWITCH] Drawdown acumulado %.2f%% (maximo $%.2f -> actual $%.2f) alcanzo el limite. "
+                    "Trading pausado automaticamente.",
+                    drawdown_pct, peak, equity,
+                )
+
+
+async def _check_fund_scale_out(fund_id: str, symbol: str) -> None:
+    """Si screener_config.scale_out_enabled y la posicion todavia no tuvo su
+    salida parcial (position.scaled_out_at is None), vende
+    scale_out_pct% de la posicion en cuanto la ganancia no realizada alcanza
+    scale_out_at_r_multiple veces el riesgo inicial ("R" = avg_cost -
+    initial_stop_loss_price, congelado al abrir la posicion -- ver
+    FundPosition.initial_stop_loss_price), y mueve el stop-loss del remanente
+    a breakeven (avg_cost) para que esa parte de la posicion quede sin riesgo
+    de perdida neta.
+
+    Debe llamarse SIEMPRE con _funds_order_lock ya tomado por el caller (ver
+    _check_fund_exit): no lo toma por si sola para evitar un deadlock, ya que
+    asyncio.Lock no es reentrante.
+    """
+    if not screener_config.scale_out_enabled:
+        return
+    fund = funds_store.get(fund_id)
+    if fund is None:
+        return
+    position = fund.positions.get(symbol)
+    if (
+        position is None
+        or position.quantity <= 0
+        or position.scaled_out_at is not None
+        or position.stop_order_id is None
+        or position.initial_stop_loss_price is None
+    ):
+        return
+
+    initial_risk = position.avg_cost - position.initial_stop_loss_price
+    if initial_risk <= 0:
+        return
+
+    live_price = await broker.get_reference_price(symbol)
+    if not live_price:
+        return
+
+    r_multiple = (live_price - position.avg_cost) / initial_risk
+    if r_multiple < screener_config.scale_out_at_r_multiple:
+        return
+
+    sell_qty = math.floor(position.quantity * screener_config.scale_out_pct / 100)
+    if sell_qty <= 0 or sell_qty >= position.quantity:
+        return
+
+    order = OrderRequest(
+        symbol=symbol, side=Side.SELL, quantity=sell_qty, order_type=OrderType.MKT, fund_id=fund_id
+    )
+    try:
+        result_payload = await broker.place_order(order)
+    except StopLossRejectedError as exc:
+        audit.record("auto_trade_scale_out_failed", order.model_dump(), {"error": str(exc)})
+        return
+
+    filled_qty = result_payload.get("filled_qty") or 0.0
+    fill_price = result_payload.get("avg_fill_price") or live_price
+    if filled_qty <= 0:
+        audit.record("auto_trade_scale_out_unfilled", order.model_dump(), result_payload)
+        return
+
+    funds_store.record_fill(
+        fund_id, symbol, Side.SELL, filled_qty, fill_price,
+        commission=screener_config.commission_per_trade_usd,
+    )
+    funds_store.mark_scaled_out(fund_id, symbol)
+
+    new_stop = position.avg_cost
+    if broker.modify_stop_price(position.stop_order_id, new_stop):
+        funds_store.update_stop_loss(fund_id, symbol, new_stop)
+
+    audit.record(
+        "auto_trade_scale_out", order.model_dump(),
+        {"r_multiple": round(r_multiple, 2), "new_stop": new_stop, **result_payload},
+    )
+    await _broadcast({
+        "type": "auto_trade_scale_out", "fund_id": fund_id, "symbol": symbol,
+        "quantity": filled_qty, "price": fill_price,
+    })
 
 
 async def _check_fund_exit(fund_id: str, symbol: str) -> None:
     """Evalua si una posicion abierta por el motor de auto-trading debe
     cerrarse, y si corresponde la vende entera (siempre atada a ese fund_id).
 
-    Tres motivos posibles, en este orden:
+    Antes de evaluar el cierre total, llama a _check_fund_scale_out: si
+    scale_out_enabled esta activo y todavia no se hizo la salida parcial de
+    esta posicion, puede vender una porcion y mover el stop a breakeven,
+    dejando la posicion abierta (mas chica) para lo que sigue de esta
+    funcion.
+
+    Tres motivos posibles de cierre TOTAL, en este orden:
     1. Reconciliacion: si el stop-loss que se coloco como orden bracket al
        abrir la posicion (ver broker.place_order) ya se ejecuto del lado de
        IBKR sin pasar por record_fill, hay que reconciliar la diferencia para
@@ -1022,6 +1333,12 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                 position = fund.positions.get(symbol) if fund else None
                 if position is None or position.quantity <= 0:
                     return
+
+        await _check_fund_scale_out(fund_id, symbol)
+        fund = funds_store.get(fund_id)
+        position = fund.positions.get(symbol) if fund else None
+        if position is None or position.quantity <= 0:
+            return
 
         exit_params = _strategy_exit_params(fund.strategy_id or screener_config.strategy_id)
 
@@ -1387,9 +1704,23 @@ async def _reconcile_unfilled_on_startup() -> None:
     símbolo que el fondo correspondiente no registra, asume que el fill llegó
     tarde (después del timeout de _wait_for_fill o de un reinicio) y lo
     registra retroactivamente usando el avg_cost de IBKR como precio proxy.
+    Si la orden TODAVÍA no muestra una posición en IBKR (sigue pendiente),
+    se suscribe al fill tardío en vez de descartarla para siempre -- ver el
+    incidente que motivó este fix, dos párrafos abajo.
 
     Es seguro correrlo varias veces: solo reconcilia la diferencia positiva
     entre lo que IBKR tiene y lo que el fondo ya registra, nunca duplica.
+
+    Antes de este fix, esta función sólo miraba el estado de IBKR UNA VEZ al
+    arrancar: si la orden aún no había llenado en ese instante exacto (pero
+    seguía viva en IBKR), quedaba descartada para siempre sin que nada
+    volviera a chequearla. Esto dejó una posición real (MAMA) completamente
+    huérfana durante ~3hs: IBKR reportó la orden como "Cancelled" a los 5s de
+    _wait_for_fill (un falso negativo transitorio de paper trading), lo cual
+    canceló su stop-loss protector, y recién llenó de verdad varias horas
+    después -- coincidiendo con dos reinicios del backend en el medio, cada
+    uno perdiendo la suscripción de fill tardío en memoria y encontrando,
+    en su chequeo único de arranque, que la posición todavía no existía.
     """
     entries = audit.get_untracked_fills(since_days=7)
     if not entries:
@@ -1408,6 +1739,7 @@ async def _reconcile_unfilled_on_startup() -> None:
         fund_id = r.get("fund_id") or p.get("fund_id")
         requested_qty = float(p.get("quantity") or 0)
         stop_px = p.get("stop_loss_price")
+        order_id = r.get("order_id")
 
         if not (sym and fund_id and requested_qty > 0):
             continue
@@ -1418,6 +1750,24 @@ async def _reconcile_unfilled_on_startup() -> None:
 
         ibkr_pos = ibkr_positions.get(sym)
         if ibkr_pos is None:
+            # La orden no muestra posicion en IBKR TODAVIA, pero puede seguir
+            # viva y llenar mas tarde (ver docstring). self.ib.trades() SI
+            # recuerda ordenes abiertas de sesiones anteriores tras
+            # reconectar (confirmado en los logs del incidente de MAMA), asi
+            # que subscribe_fill puede encontrarla igual y capturar el fill
+            # sin importar cuanto tarde, mientras el proceso siga vivo.
+            _register_fund_fill_reconciliation(
+                order_id=order_id,
+                fund_id=fund_id,
+                symbol=sym,
+                side=Side.BUY,
+                requested_qty=requested_qty,
+                already_filled_qty=0.0,
+                already_avg_price=0.0,
+                stop_loss_price=stop_px,
+                stop_order_id=r.get("stop_order_id"),
+                audit_action="auto_trade_reconciled_late",
+            )
             continue
 
         # Diferencia entre lo que IBKR tiene y lo que el fondo ya registra;
@@ -1443,6 +1793,12 @@ async def _reconcile_unfilled_on_startup() -> None:
              "quantity": untracked, "source_audit_id": entry["id"]},
             {"filled_qty": untracked, "avg_fill_price": fill_price, "fund_id": fund_id},
         )
+        # La posicion recien reconciliada puede no tener ningun stop vivo
+        # protegiendola (ver docstring de _ensure_protective_stop): se
+        # coloca uno nuevo si hace falta, antes de seguir con el resto de
+        # las entradas.
+        if stop_px:
+            await _ensure_protective_stop(fund_id, sym, stop_px)
 
 
 @asynccontextmanager
@@ -1550,6 +1906,7 @@ def status(_: None = Depends(require_api_key)):
         "live_hot_count": len(_hot_symbols),
         "live_hot_cap": screener_config.live_hot_symbols_cap,
         "live_radar_strategy_filter": screener_config.live_radar_strategy_filter,
+        "market_data_degraded": state["market_data_degraded"],
     }
 
 

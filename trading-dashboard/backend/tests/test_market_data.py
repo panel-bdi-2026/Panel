@@ -6,6 +6,7 @@ import pytest
 from app import market_data as market_data_module
 from app.market_data import (
     MarketDataError,
+    get_bars_failure_stats,
     get_daily_bars,
     get_fundamentals,
     get_next_earnings_date,
@@ -36,10 +37,12 @@ class _FakeTicker:
 @pytest.fixture(autouse=True)
 def _clear_cache():
     market_data_module._cache.clear()
+    market_data_module._bars_failure_cache.clear()
     market_data_module._earnings_cache.clear()
     market_data_module._fundamentals_cache.clear()
     yield
     market_data_module._cache.clear()
+    market_data_module._bars_failure_cache.clear()
     market_data_module._earnings_cache.clear()
     market_data_module._fundamentals_cache.clear()
 
@@ -175,6 +178,44 @@ def test_is_bars_cached_false_after_ttl_expires(monkeypatch):
     expired = timestamp - market_data_module._CACHE_TTL_SECONDS - 1
     market_data_module._cache[("AAPL", 100)] = (expired, df)
     assert is_bars_cached("AAPL", 100) is False
+
+
+def test_get_bars_failure_stats_no_failures():
+    bars = _bars()
+    market_data_module._cache[("AAPL", 100)] = (time.time(), bars)
+    market_data_module._cache[("MSFT", 100)] = (time.time(), bars)
+    failed, total = get_bars_failure_stats(["AAPL", "MSFT"], 100)
+    assert (failed, total) == (0, 2)
+
+
+def test_get_bars_failure_stats_counts_live_failures(monkeypatch):
+    responses = [RuntimeError("fail1"), RuntimeError("fail2"), RuntimeError("fail3")]
+    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, responses))
+    monkeypatch.setattr(market_data_module.time, "sleep", lambda s: None)
+    with pytest.raises(MarketDataError):
+        get_daily_bars("BADSTOCK", 100)
+
+    failed, total = get_bars_failure_stats(["BADSTOCK", "AAPL"], 100)
+    assert (failed, total) == (1, 2)
+
+
+def test_get_bars_failure_stats_ignores_expired_failure_entries(monkeypatch):
+    responses = [RuntimeError("fail1"), RuntimeError("fail2"), RuntimeError("fail3")]
+    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, responses))
+    monkeypatch.setattr(market_data_module.time, "sleep", lambda s: None)
+    with pytest.raises(MarketDataError):
+        get_daily_bars("BADSTOCK", 100)
+
+    ts, msg = market_data_module._bars_failure_cache[("BADSTOCK", 100)]
+    expired = ts - market_data_module._CACHE_TTL_SECONDS - 1
+    market_data_module._bars_failure_cache[("BADSTOCK", 100)] = (expired, msg)
+
+    failed, total = get_bars_failure_stats(["BADSTOCK"], 100)
+    assert (failed, total) == (0, 1)
+
+
+def test_get_bars_failure_stats_empty_symbol_list():
+    assert get_bars_failure_stats([], 100) == (0, 0)
 
 
 # ---------------------------------------------------------------------------

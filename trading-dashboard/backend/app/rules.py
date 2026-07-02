@@ -66,6 +66,16 @@ class RulesConfig(BaseModel):
     # max_position_pct_of_equity y max_order_value_usd.
     risk_per_trade_pct: float = Field(default=1, gt=0, le=100)
     daily_loss_limit_pct: float = Field(default=2, gt=0, le=100)
+    # Circuit breaker de drawdown ACUMULADO (no diario): a diferencia de
+    # daily_loss_limit_pct (que se resetea cada dia junto con daily_pnl_pct de
+    # IBKR, asi que una racha de perdidas repartida en varios dias por debajo
+    # del umbral diario nunca la dispara), este mide la caida desde el maximo
+    # historico de equity de la cuenta (ver state["peak_equity_usd"] en
+    # main.py) y no se resetea nunca -- solo sube cuando la cuenta hace un
+    # nuevo maximo. Default mas holgado que daily_loss_limit_pct (15% vs 2%)
+    # a proposito: una caida acumulada tolerable en varias semanas de trading
+    # normal seria un evento catastrofico si pasara en un solo dia.
+    max_drawdown_pct: float = Field(default=15, gt=0, le=100)
     max_trades_per_day: int = Field(default=10, gt=0, le=1000)
     # Cupo diario ADICIONAL por fondo: max_trades_per_day sigue aplicando
     # como circuit-breaker global (cuenta ordenes de TODOS los fondos +
@@ -495,6 +505,7 @@ class RulesEngine:
         current_position_qty: float,
         entry_price: float,
         stop_loss_price: float,
+        score: float | None = None,
     ) -> PositionSizeSuggestion:
         """Sugiere una cantidad para una compra en base al riesgo, no a un monto
         fijo arbitrario: el tamano se calcula para que, si se toca el
@@ -510,12 +521,22 @@ class RulesEngine:
         uno (ver _try_auto_trade_entry y order_size_suggestion en main.py) --
         asi un fondo chico no recibe una posicion sizeada como si tuviera
         detras el capital de toda la cuenta.
+
+        `score` (0-100, el mismo score de SignalResult/scoring.py) ajusta el
+        presupuesto de riesgo por conviccion: a mayor score, mayor tamano de
+        posicion dentro del riesgo tolerado, sin tocar los topes duros
+        (max_position_pct_of_equity, max_order_value_usd). score=50 (punto
+        medio de la escala 0-100) deja el sizing identico al de antes de este
+        ajuste (multiplicador 1.0); score=100 lo sube a 1.5x, score=0 lo baja
+        a 0.5x. None (default) tampoco ajusta nada -- solo se pasa el score
+        desde las señales del screener, que ya vienen en esa escala.
         """
         risk_per_share = entry_price - stop_loss_price
         if entry_price <= 0 or equity <= 0 or risk_per_share <= 0:
             return PositionSizeSuggestion(quantity=0.0, risk_usd=0.0, limited_by=None)
 
-        risk_budget_usd = equity * self.config.risk_per_trade_pct / 100
+        conviction_multiplier = 1.0 if score is None else min(1.5, max(0.5, 0.5 + score / 100))
+        risk_budget_usd = equity * self.config.risk_per_trade_pct / 100 * conviction_multiplier
         qty_by_risk = risk_budget_usd / risk_per_share
 
         max_position_value = equity * self.config.max_position_pct_of_equity / 100

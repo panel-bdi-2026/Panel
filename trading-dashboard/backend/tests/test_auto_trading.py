@@ -66,6 +66,8 @@ def reset_state(monkeypatch, tmp_path):
     main_module.state["halted"] = False
     main_module.state["connected"] = True
     main_module.state["pending_orders"] = {}
+    main_module.state["peak_equity_usd"] = None
+    main_module.state["market_data_degraded"] = False
     monkeypatch.setattr(main_module, "funds_store", FundsStore(tmp_path / "funds.json"))
     # audit es un AuditLog real compartido a nivel de modulo con
     # test_signal_engine.py (y el resto de la suite): sin aislarlo, los
@@ -819,6 +821,194 @@ def test_check_fund_trailing_stop_noop_when_live_price_unavailable(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _check_fund_scale_out
+# ---------------------------------------------------------------------------
+
+def _setup_scale_out_fund(stop_loss_price=90, qty=10, avg_cost=100):
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, qty, avg_cost, stop_loss_price=stop_loss_price, stop_order_id=1
+    )
+    return fund
+
+
+def test_check_fund_scale_out_noop_when_disabled():
+    main_module.screener_config.scale_out_enabled = False
+    fund = _setup_scale_out_fund()
+
+    asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].quantity == 10
+    assert fund.positions["AAPL"].scaled_out_at is None
+
+
+def test_check_fund_scale_out_noop_when_no_position():
+    main_module.screener_config.scale_out_enabled = True
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))  # no debe lanzar
+
+
+def test_check_fund_scale_out_noop_when_already_scaled_out(monkeypatch):
+    main_module.screener_config.scale_out_enabled = True
+    main_module.screener_config.scale_out_at_r_multiple = 1.0
+    fund = _setup_scale_out_fund()
+    main_module.funds_store.mark_scaled_out(fund.id, "AAPL")
+
+    async def fail_if_called(symbol):
+        raise AssertionError("no deberia pedir precio si ya se hizo scale-out")
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fail_if_called)
+    asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))
+
+
+def test_check_fund_scale_out_noop_when_r_multiple_below_threshold(monkeypatch):
+    main_module.screener_config.scale_out_enabled = True
+    main_module.screener_config.scale_out_at_r_multiple = 1.0
+    fund = _setup_scale_out_fund()  # avg_cost=100, stop=90 -> riesgo=10
+
+    async def fake_reference_price(symbol):
+        return 105.0  # R=0.5, por debajo del umbral 1.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
+
+    def fail_if_called(order):
+        raise AssertionError("no deberia vender si no se alcanzo el R minimo")
+
+    monkeypatch.setattr(main_module.broker, "place_order", fail_if_called)
+    asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].quantity == 10
+
+
+def test_check_fund_scale_out_noop_when_rounded_sell_qty_is_zero(monkeypatch):
+    main_module.screener_config.scale_out_enabled = True
+    main_module.screener_config.scale_out_at_r_multiple = 1.0
+    main_module.screener_config.scale_out_pct = 50
+    fund = _setup_scale_out_fund(qty=1)  # floor(1 * 0.5) == 0
+
+    async def fake_reference_price(symbol):
+        return 110.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
+
+    def fail_if_called(order):
+        raise AssertionError("no deberia vender una cantidad redondeada a 0")
+
+    monkeypatch.setattr(main_module.broker, "place_order", fail_if_called)
+    asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))
+
+
+def test_check_fund_scale_out_sells_partial_and_moves_stop_to_breakeven(monkeypatch):
+    main_module.screener_config.scale_out_enabled = True
+    main_module.screener_config.scale_out_at_r_multiple = 1.0
+    main_module.screener_config.scale_out_pct = 50
+    fund = _setup_scale_out_fund()  # avg_cost=100, stop=90, qty=10
+
+    async def fake_reference_price(symbol):
+        return 110.0  # R = (110-100)/10 = 1.0, cumple el umbral
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
+    monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
+    modify_calls = []
+    monkeypatch.setattr(
+        main_module.broker, "modify_stop_price", lambda order_id, price: modify_calls.append((order_id, price)) or True
+    )
+
+    asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    pos = fund.positions["AAPL"]
+    assert pos.quantity == 5  # 10 - floor(10*0.5)
+    assert pos.avg_cost == 100  # no se toca en una venta
+    assert pos.stop_loss_price == 100  # movido a breakeven
+    assert pos.scaled_out_at is not None
+    assert modify_calls == [(1, 100)]
+    entries = main_module.audit.recent(1)
+    assert entries[0]["action"] == "auto_trade_scale_out"
+
+
+def test_check_fund_scale_out_does_not_repeat_after_first_trigger(monkeypatch):
+    main_module.screener_config.scale_out_enabled = True
+    main_module.screener_config.scale_out_at_r_multiple = 1.0
+    main_module.screener_config.scale_out_pct = 50
+    fund = _setup_scale_out_fund()
+
+    async def fake_reference_price(symbol):
+        return 110.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
+    monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
+    monkeypatch.setattr(main_module.broker, "modify_stop_price", lambda order_id, price: True)
+
+    asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].quantity == 5
+
+    def fail_if_called(order):
+        raise AssertionError("no deberia repetir la venta parcial")
+
+    monkeypatch.setattr(main_module.broker, "place_order", fail_if_called)
+    asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].quantity == 5
+
+
+def test_check_fund_scale_out_keeps_position_when_order_fails(monkeypatch):
+    main_module.screener_config.scale_out_enabled = True
+    main_module.screener_config.scale_out_at_r_multiple = 1.0
+    fund = _setup_scale_out_fund()
+
+    async def fake_reference_price(symbol):
+        return 110.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
+
+    async def fail_place_order(order):
+        raise StopLossRejectedError("rechazada")
+
+    monkeypatch.setattr(main_module.broker, "place_order", fail_place_order)
+    asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    pos = fund.positions["AAPL"]
+    assert pos.quantity == 10
+    assert pos.scaled_out_at is None
+    entries = main_module.audit.recent(1)
+    assert entries[0]["action"] == "auto_trade_scale_out_failed"
+
+
+def test_check_fund_exit_scale_out_leaves_position_open_when_no_full_exit_condition(monkeypatch):
+    # Integracion: _check_fund_exit llama a _check_fund_scale_out antes de
+    # evaluar cierre total. Con max_holding_days/trend_break sin cumplirse,
+    # la posicion debe quedar abierta (mas chica) tras el scale-out, no
+    # cerrada del todo.
+    main_module.screener_config.scale_out_enabled = True
+    main_module.screener_config.scale_out_at_r_multiple = 1.0
+    main_module.screener_config.scale_out_pct = 50
+    main_module.screener_config.max_holding_days = 999
+    main_module.screener_config.strategy_id = "long_term"  # sin trend_break ni timeout cercano
+    fund = _setup_scale_out_fund()
+
+    async def fake_reference_price(symbol):
+        return 110.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
+    monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
+    monkeypatch.setattr(main_module.broker, "modify_stop_price", lambda order_id, price: True)
+    monkeypatch.setattr(main_module.broker, "get_trade_fill", lambda order_id: None)
+    monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
+
+    asyncio.run(main_module._check_fund_exit(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    pos = fund.positions["AAPL"]
+    assert pos.quantity == 5
+    assert pos.scaled_out_at is not None
+
+
+# ---------------------------------------------------------------------------
 # _run_auto_exit_monitor_cycle
 # ---------------------------------------------------------------------------
 
@@ -1247,3 +1437,131 @@ def test_order_size_suggestion_rejects_invalid_symbol():
 def test_order_size_suggestion_normalizes_valid_symbol():
     suggestion = asyncio.run(main_module.order_size_suggestion(symbol="  aapl ", entry_price=100.0, stop_loss_price=90.0))
     assert suggestion.quantity > 0
+
+
+# ---------------------------------------------------------------------------
+# _ensure_protective_stop / _reconcile_unfilled_on_startup: reconciliacion
+# robusta ante el incidente de MAMA (orden que parece "Cancelled" a los 5s en
+# paper trading, cancela su stop, pero en realidad sigue viva y llena horas
+# despues -- posiblemente cruzando un reinicio del backend en el medio).
+# ---------------------------------------------------------------------------
+
+def test_ensure_protective_stop_places_new_stop_when_none_exists(monkeypatch):
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 10, 100)
+
+    monkeypatch.setattr(main_module.broker, "has_live_protective_stop", lambda symbol: False)
+
+    async def fake_place_protective_stop(symbol, quantity, stop_price):
+        assert symbol == "AAPL"
+        assert quantity == 10
+        assert stop_price == 95.0
+        return 555
+
+    monkeypatch.setattr(main_module.broker, "place_protective_stop", fake_place_protective_stop)
+
+    asyncio.run(main_module._ensure_protective_stop(fund.id, "AAPL", 95.0))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].stop_order_id == 555
+
+
+def test_ensure_protective_stop_does_nothing_when_stop_already_live(monkeypatch):
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 10, 100)
+
+    monkeypatch.setattr(main_module.broker, "has_live_protective_stop", lambda symbol: True)
+
+    async def fail_if_called(symbol, quantity, stop_price):
+        raise AssertionError("no deberia colocar un stop si ya hay uno vivo")
+
+    monkeypatch.setattr(main_module.broker, "place_protective_stop", fail_if_called)
+
+    asyncio.run(main_module._ensure_protective_stop(fund.id, "AAPL", 95.0))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.positions["AAPL"].stop_order_id is None  # no se toco
+
+
+def test_ensure_protective_stop_noop_when_fund_has_no_position(monkeypatch):
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    monkeypatch.setattr(main_module.broker, "has_live_protective_stop", lambda symbol: False)
+
+    async def fail_if_called(symbol, quantity, stop_price):
+        raise AssertionError("no deberia colocar un stop sin posicion que proteger")
+
+    monkeypatch.setattr(main_module.broker, "place_protective_stop", fail_if_called)
+
+    asyncio.run(main_module._ensure_protective_stop(fund.id, "AAPL", 95.0))  # no debe explotar
+
+
+def test_reconcile_unfilled_on_startup_places_stop_after_reconciling(monkeypatch):
+    # Escenario MAMA: IBKR ya muestra la posicion (llenó), pero el fondo
+    # todavia no la tiene registrada, y el stop original ya no esta vivo.
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.audit.record(
+        "auto_trade_submitted_unfilled",
+        {"symbol": "MAMA", "quantity": 27.0, "stop_loss_price": 16.91, "fund_id": fund.id},
+        {"fund_id": fund.id, "order_id": 277781, "filled_qty": 0.0},
+    )
+
+    class _FakePosition:
+        symbol = "MAMA"
+        quantity = 27.0
+        avg_cost = 18.417
+        market_price = 18.21
+        unrealized_pnl = None
+
+    async def fake_get_positions():
+        return [_FakePosition()]
+
+    monkeypatch.setattr(main_module.broker, "get_positions", fake_get_positions)
+    monkeypatch.setattr(main_module.broker, "has_live_protective_stop", lambda symbol: False)
+
+    stop_calls = []
+
+    async def fake_place_protective_stop(symbol, quantity, stop_price):
+        stop_calls.append((symbol, quantity, stop_price))
+        return 999
+
+    monkeypatch.setattr(main_module.broker, "place_protective_stop", fake_place_protective_stop)
+
+    asyncio.run(main_module._reconcile_unfilled_on_startup())
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.owned_quantity("MAMA") == 27.0
+    assert fund.positions["MAMA"].stop_order_id == 999
+    assert stop_calls == [("MAMA", 27.0, 16.91)]
+
+
+def test_reconcile_unfilled_on_startup_subscribes_to_late_fill_when_still_pending(monkeypatch):
+    # La orden todavia NO muestra posicion en IBKR (sigue pendiente) -- antes
+    # de este fix, se descartaba para siempre; ahora debe suscribirse al
+    # fill tardio via broker.subscribe_fill.
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.audit.record(
+        "auto_trade_submitted_unfilled",
+        {"symbol": "MAMA", "quantity": 27.0, "stop_loss_price": 16.91, "fund_id": fund.id},
+        {"fund_id": fund.id, "order_id": 277781, "filled_qty": 0.0},
+    )
+
+    async def fake_get_positions():
+        return []  # todavia sin posicion en IBKR
+
+    monkeypatch.setattr(main_module.broker, "get_positions", fake_get_positions)
+
+    subscribe_calls = []
+
+    def fake_subscribe_fill(order_id, callback):
+        subscribe_calls.append(order_id)
+        return True
+
+    monkeypatch.setattr(main_module.broker, "subscribe_fill", fake_subscribe_fill)
+
+    asyncio.run(main_module._reconcile_unfilled_on_startup())
+
+    assert subscribe_calls == [277781]
+    # Todavia no se registro nada en el fondo -- recien cuando el callback
+    # de subscribe_fill dispare (simulado en otros tests de
+    # _register_fund_fill_reconciliation).
+    assert fund.owned_quantity("MAMA") == 0

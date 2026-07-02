@@ -215,6 +215,66 @@ def test_modify_stop_price_returns_false_when_order_already_done(broker, monkeyp
     assert trade.order.auxPrice == 90.0  # no se toco
 
 
+class _StopCheckContract:
+    def __init__(self, symbol, con_id=1):
+        self.symbol = symbol
+        self.conId = con_id
+
+
+class _StopCheckOrder:
+    def __init__(self, action, order_type):
+        self.action = action
+        self.orderType = order_type
+
+
+class _StopCheckTrade:
+    def __init__(self, symbol, action, order_type, status):
+        self.contract = _StopCheckContract(symbol)
+        self.order = _StopCheckOrder(action, order_type)
+        self.orderStatus = FakeOrderStatus(status)
+
+
+def test_has_live_protective_stop_true_when_live_sell_stop_exists(broker, monkeypatch):
+    trade = _StopCheckTrade("AAPL", "SELL", "STOP", "Submitted")
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+    assert broker.has_live_protective_stop("AAPL") is True
+
+
+def test_has_live_protective_stop_false_when_stop_already_done(broker, monkeypatch):
+    trade = _StopCheckTrade("AAPL", "SELL", "STOP", "Filled")
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+    assert broker.has_live_protective_stop("AAPL") is False
+
+
+def test_has_live_protective_stop_false_when_no_matching_symbol(broker, monkeypatch):
+    trade = _StopCheckTrade("MSFT", "SELL", "STOP", "Submitted")
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+    assert broker.has_live_protective_stop("AAPL") is False
+
+
+def test_has_live_protective_stop_false_when_order_is_not_a_stop(broker, monkeypatch):
+    trade = _StopCheckTrade("AAPL", "SELL", "LMT", "Submitted")
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+    assert broker.has_live_protective_stop("AAPL") is False
+
+
+def test_has_live_protective_stop_false_when_order_is_a_buy(broker, monkeypatch):
+    # Un STOP de COMPRA (ej. para cerrar un short) no protege una posicion
+    # larga -- solo cuenta un stop de VENTA.
+    trade = _StopCheckTrade("AAPL", "BUY", "STOP", "Submitted")
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+    assert broker.has_live_protective_stop("AAPL") is False
+
+
+def test_has_live_protective_stop_matches_class_share_symbol_despite_space(broker, monkeypatch):
+    # IBKR reporta el contrato con espacio ("BRK B"), no guion: has_live_
+    # protective_stop debe convertir el simbolo de entrada de la misma forma
+    # que el resto del broker (ver _to_ib_symbol).
+    trade = _StopCheckTrade("BRK B", "SELL", "STOP", "Submitted")
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+    assert broker.has_live_protective_stop("BRK-B") is True
+
+
 async def _noop_qualify(*contracts, **kwargs):
     """Simula una calificacion exitosa: IBKR asigna un conId real a cada
     contrato (a diferencia de un contrato recien construido, que arranca con
@@ -222,6 +282,44 @@ async def _noop_qualify(*contracts, **kwargs):
     for i, c in enumerate(contracts, start=1):
         c.conId = i
     return list(contracts)
+
+
+def test_place_protective_stop_places_standalone_sell_stop_and_returns_order_id(broker, monkeypatch):
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", _noop_qualify)
+    placed = []
+
+    def fake_place_order(contract, order):
+        order.orderId = 999
+        placed.append((contract, order))
+
+    monkeypatch.setattr(broker.ib, "placeOrder", fake_place_order)
+
+    order_id = asyncio.run(broker.place_protective_stop("AAPL", 10, 145.0))
+
+    assert order_id == 999
+    assert len(placed) == 1
+    contract, order = placed[0]
+    assert contract.symbol == "AAPL"
+    assert order.action == "SELL"
+    assert order.totalQuantity == 10
+    assert order.auxPrice == 145.0
+    # Standalone: sin padre, sin bracket.
+    assert getattr(order, "parentId", 0) == 0
+
+
+def test_place_protective_stop_returns_none_when_contract_fails_to_qualify(broker, monkeypatch):
+    async def fail_to_qualify(*contracts, **kwargs):
+        return list(contracts)  # conId se queda en 0
+
+    monkeypatch.setattr(broker.ib, "qualifyContractsAsync", fail_to_qualify)
+
+    def fail_if_called(contract, order):
+        raise AssertionError("no deberia colocar una orden para un contrato sin calificar")
+
+    monkeypatch.setattr(broker.ib, "placeOrder", fail_if_called)
+
+    order_id = asyncio.run(broker.place_protective_stop("BADSYM", 10, 145.0))
+    assert order_id is None
 
 
 def test_stream_subscribe_opens_streaming_only_for_new_symbols(broker, monkeypatch):

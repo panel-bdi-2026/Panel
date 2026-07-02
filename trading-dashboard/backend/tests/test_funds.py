@@ -290,6 +290,29 @@ def test_update_stop_loss_unknown_fund_returns_none(store):
     assert store.update_stop_loss("no-existe", "AAPL", 95) is None
 
 
+def test_set_stop_order_id_registers_id_on_open_position(store):
+    fund = store.create("Test", 5000)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 100, stop_loss_price=90)
+    store.set_stop_order_id(fund.id, "AAPL", 12345)
+    fund = store.get(fund.id)
+    assert fund.positions["AAPL"].stop_order_id == 12345
+    assert fund.positions["AAPL"].stop_loss_price == 90  # no toca el precio
+    assert fund.owned_quantity("AAPL") == 10  # no toca cash/quantity/trades
+    assert fund.cash_usd == 4000
+    assert len(fund.trades) == 1
+
+
+def test_set_stop_order_id_noop_when_no_position(store):
+    fund = store.create("Test", 5000)
+    assert store.set_stop_order_id(fund.id, "AAPL", 12345) is not None
+    fund = store.get(fund.id)
+    assert "AAPL" not in fund.positions
+
+
+def test_set_stop_order_id_unknown_fund_returns_none(store):
+    assert store.set_stop_order_id("no-existe", "AAPL", 12345) is None
+
+
 def test_close_succeeds_when_cash_zero_and_no_positions(store):
     fund = store.create("Test", 5000)
     store.apply_capital_flow(fund.id, -5000, note="Retiro total")

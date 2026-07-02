@@ -284,6 +284,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 <div class="main">
   <div class="banner live" id="bannerLive">⚠️ MODO LIVE — las órdenes usan dinero real.</div>
   <div class="banner halted" id="bannerHalted">⏸ Trading pausado manualmente (kill switch). No se ejecutarán nuevas órdenes.</div>
+  <div class="banner halted" id="bannerDataDegraded">⚠️ Feed de datos de mercado degradado: una porción del universo no tiene datos frescos. Los scores/rankings actuales pueden estar incompletos.</div>
 
   <div class="kpis">
     <div class="kpi"><span class="kpi-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 6v2m0 8v2"/></svg></span><div class="kpi-body"><div class="kpi-lbl" title="Valor total de la cuenta si se liquidaran todas las posiciones al precio de mercado actual: cash + valor de mercado de las posiciones.">Net Liquidation</div><div class="kpi-val" id="kv-netliq">—</div></div></div>
@@ -302,8 +303,8 @@ td{padding:8px;border-bottom:1px solid var(--border)}
         <div class="card-hdr">Posiciones <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="refreshPositionsAndAccount()">↻ Actualizar</button></div>
         <div class="card-body">
           <table id="posTable">
-            <thead><tr><th>Símbolo</th><th>Cantidad</th><th title="Precio promedio de compra de la posición actual.">Costo prom.</th><th title="Último precio de mercado conocido para este símbolo.">Precio mkt.</th><th title="Ganancia o pérdida no realizada: (precio de mercado − costo promedio) × cantidad. No se concreta hasta vender.">P&L no real.</th></tr></thead>
-            <tbody id="posBody"><tr class="skel-row"><td colspan="5"><span class="skel skel-text"></span></td></tr></tbody>
+            <thead><tr><th>Símbolo</th><th>Cantidad</th><th title="Precio promedio de compra de la posición actual.">Costo prom.</th><th title="Último precio de mercado conocido para este símbolo.">Precio mkt.</th><th title="Cantidad × costo promedio: monto total invertido en esta posición.">Costo total</th><th title="Cantidad × precio de mercado: valor total de esta posición al precio actual.">Valor mkt. total</th><th title="Ganancia o pérdida no realizada: (precio de mercado − costo promedio) × cantidad. No se concreta hasta vender.">P&L no real.</th></tr></thead>
+            <tbody id="posBody"><tr class="skel-row"><td colspan="7"><span class="skel skel-text"></span></td></tr></tbody>
           </table>
         </div>
       </div>
@@ -656,6 +657,7 @@ async function refreshStatus(){
     modeBadge.className = 'badge ' + (s.mode === 'live' ? 'live' : 'paper');
     document.getElementById('bannerLive').classList.toggle('show', s.mode === 'live');
     document.getElementById('bannerHalted').classList.toggle('show', s.halted);
+    document.getElementById('bannerDataDegraded').classList.toggle('show', !!s.market_data_degraded);
     document.getElementById('connBadge').className = 'conn ' + (s.connected ? 'on' : 'off');
     document.getElementById('connDot').className = 'dot ' + (s.connected ? 'on' : 'off');
     document.getElementById('connTxt').textContent = s.connected ? 'Conectado' : 'Desconectado';
@@ -729,15 +731,21 @@ function renderPositions(positions){
   const body = document.getElementById('posBody');
   lastPositionPrices = {};
   positions.forEach(p => { if(p.market_price) lastPositionPrices[p.symbol] = p.market_price; });
-  if(!positions.length){ body.innerHTML = '<tr><td colspan="5" class="empty">Sin posiciones abiertas</td></tr>'; return; }
-  body.innerHTML = positions.map(p => `
+  if(!positions.length){ body.innerHTML = '<tr><td colspan="7" class="empty">Sin posiciones abiertas</td></tr>'; return; }
+  body.innerHTML = positions.map(p => {
+    const costTotal = p.quantity * p.avg_cost;
+    const marketTotal = p.market_price ? p.quantity * p.market_price : costTotal;
+    return `
     <tr>
       <td><b>${esc(p.symbol)}</b></td>
       <td>${esc(p.quantity)}</td>
       <td>${fmtUsd(p.avg_cost)}</td>
       <td>${p.market_price ? fmtUsd(p.market_price) : '—'}</td>
+      <td>${fmtUsd(costTotal)}</td>
+      <td>${fmtUsd(marketTotal)}</td>
       <td style="color:${(p.unrealized_pnl||0)>=0?'var(--green)':'var(--red)'}">${p.unrealized_pnl!=null?fmtUsd(p.unrealized_pnl):'—'}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 async function refreshPositions(){
@@ -1559,8 +1567,10 @@ async function refreshPending(){
     body.innerHTML = pending.map(p => `
       <div class="pending-item">
         ${p.source === 'signal_engine' ? '<span title="Generada automaticamente por el escaneo proactivo">🤖 Señal automática</span><br>' : ''}
+        ${p.strategy_id ? `<span class="badge-tag" title="Estrategia que generó esta señal">${esc(strategyName(p.strategy_id))}</span><br>` : ''}
         ${p.order.fund_id ? `<span class="muted-sm">Fondo: ${esc(lastFundsById[p.order.fund_id] || p.order.fund_id)}</span><br>` : ''}
         <b>${esc(p.order.side)} ${esc(p.order.quantity)} ${esc(p.order.symbol)}</b>
+        ${p.order.limit_price ? ' @ ' + fmtUsd(p.order.limit_price) : ''}
         · valor estimado ${fmtUsd(p.decision.estimated_value_usd)}
         ${p.order.stop_loss_price ? ' · stop-loss ' + fmtUsd(p.order.stop_loss_price) : ''}
         <div class="pending-actions">
@@ -1592,7 +1602,18 @@ async function refreshAudit(){
         'auto_trade_stop_loss_rejected':          'Stop-loss rechazado',
         'auto_trade_stop_loss_reconciled':        'Stop-loss reconciliado',
         'auto_trade_exit_failed':                 'Salida fallida',
+        'auto_trade_exit':                        'Posición cerrada',
+        'auto_trade_exit_unfilled':               'Cierre (sin fill)',
+        'auto_trade_trailing_stop_updated':       'Trailing stop actualizado',
+        'auto_trade_scale_out':                   'Salida parcial (scale-out)',
+        'auto_trade_scale_out_failed':             'Salida parcial fallida',
+        'auto_trade_scale_out_unfilled':          'Salida parcial (sin fill)',
+        'auto_trade_protective_stop_placed':      'Stop-loss protector colocado',
+        'auto_trade_reconciled_late':             'Fill tardío reconciliado (startup)',
+        'auto_halt_daily_loss_limit':             '⏸ Kill switch: pérdida diaria',
+        'auto_halt_max_drawdown':                 '⏸ Kill switch: drawdown acumulado',
         'signal_order_rejected':                  'Señal rechazada',
+        'signal_order_drafted':                   'Borrador generado por señal',
         'order_executed':                         'Orden ejecutada',
         'order_submitted_unfilled':               'Orden (sin fill)',
         'order_executed_after_approval':          'Orden aprobada ejecutada',
@@ -2449,6 +2470,14 @@ function connectWs(){
           toast(`🤖 Salida automática: ${msg.symbol} cerrada en el fondo "${msg.fund_id}" (${reasonText}).`, 7000);
           refreshFunds();
           refreshAudit();
+        }
+        if(msg.type === 'market_data_degraded'){
+          document.getElementById('bannerDataDegraded').classList.toggle('show', !!msg.degraded);
+          if(msg.degraded){
+            toast(`⚠️ Feed de datos degradado: ${msg.failed}/${msg.total} símbolos (${msg.failure_pct}%) sin datos frescos.`, 8000);
+          }else{
+            toast('✅ Feed de datos de mercado recuperado.', 5000);
+          }
         }
       }catch(e){}
     };

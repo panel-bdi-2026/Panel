@@ -314,6 +314,46 @@ class IBKRBroker:
                 return True
         return False
 
+    def has_live_protective_stop(self, symbol: str) -> bool:
+        """True si hay una orden STOP de venta viva (no en OrderStatus.
+        DoneStates) para `symbol` en self.ib.trades() de esta sesion.
+
+        Usado por la reconciliacion de arranque (ver _reconcile_unfilled_on_
+        startup en main.py) antes de colocar un stop nuevo sobre una posicion
+        reconciliada: sin este chequeo, una posicion que en realidad SI tiene
+        un stop vivo (ej. el bracket original nunca se cancelo, solo parecia
+        "Cancelled" transitoriamente) terminaria con DOS ordenes de venta
+        simultaneas -- si ambas llegaran a dispararse, se venderia mas
+        cantidad de la que la posicion realmente tiene."""
+        ib_symbol = _to_ib_symbol(symbol)
+        for trade in self.ib.trades():
+            if (
+                trade.contract.symbol == ib_symbol
+                and trade.order.action == "SELL"
+                and trade.order.orderType == "STOP"
+                and trade.orderStatus.status not in OrderStatus.DoneStates
+            ):
+                return True
+        return False
+
+    async def place_protective_stop(self, symbol: str, quantity: float, stop_price: float) -> "int | None":
+        """Coloca un stop-loss de venta STANDALONE (sin padre, sin bracket)
+        para proteger una posicion que ya existe pero no tiene ningun stop
+        vivo -- a diferencia del stop que arma place_order() como hijo de una
+        orden de compra nueva, este protege una posicion que la cuenta ya
+        tiene (ej. una reconciliada por _reconcile_unfilled_on_startup cuyo
+        stop original se cancelo por error, ver has_live_protective_stop).
+
+        Devuelve el order_id de la nueva orden, o None si el contrato no
+        califica en IBKR."""
+        contract = Stock(_to_ib_symbol(symbol), "SMART", "USD")
+        await self.ib.qualifyContractsAsync(contract)
+        if not contract.conId:
+            return None
+        stop = StopOrder("SELL", quantity, stop_price)
+        self.ib.placeOrder(contract, stop)
+        return stop.orderId
+
     def subscribe_fill(
         self,
         order_id: int,

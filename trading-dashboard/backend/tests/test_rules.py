@@ -246,6 +246,42 @@ def test_suggested_quantity_zero_when_stop_not_below_entry(engine):
     assert suggestion.quantity == 0.0
 
 
+def test_suggested_quantity_score_50_matches_no_score_baseline():
+    config = RulesConfig(max_order_value_usd=1_000_000, max_position_pct_of_equity=100, risk_per_trade_pct=1)
+    engine = RulesEngine(config)
+    baseline = engine.suggested_quantity(100_000, 0, entry_price=200, stop_loss_price=150)
+    with_score = engine.suggested_quantity(100_000, 0, entry_price=200, stop_loss_price=150, score=50)
+    assert with_score.quantity == baseline.quantity == 20
+
+
+def test_suggested_quantity_higher_score_increases_risk_based_quantity():
+    config = RulesConfig(max_order_value_usd=1_000_000, max_position_pct_of_equity=100, risk_per_trade_pct=1)
+    engine = RulesEngine(config)
+    suggestion = engine.suggested_quantity(100_000, 0, entry_price=200, stop_loss_price=150, score=100)
+    # multiplicador 1.5x sobre el baseline de 20 (score=None/50)
+    assert suggestion.quantity == 30
+    assert suggestion.risk_usd == 1500.0
+
+
+def test_suggested_quantity_lower_score_decreases_risk_based_quantity():
+    config = RulesConfig(max_order_value_usd=1_000_000, max_position_pct_of_equity=100, risk_per_trade_pct=1)
+    engine = RulesEngine(config)
+    suggestion = engine.suggested_quantity(100_000, 0, entry_price=200, stop_loss_price=150, score=0)
+    # multiplicador 0.5x sobre el baseline de 20
+    assert suggestion.quantity == 10
+    assert suggestion.risk_usd == 500.0
+
+
+def test_suggested_quantity_score_multiplier_does_not_bypass_hard_caps():
+    # Aun con score=100 (multiplicador maximo 1.5x), max_order_value_usd sigue
+    # topeando la cantidad final -- la conviccion solo afecta la pata de riesgo.
+    config = RulesConfig(max_order_value_usd=5_000, max_position_pct_of_equity=100, risk_per_trade_pct=50)
+    engine = RulesEngine(config)
+    suggestion = engine.suggested_quantity(100_000, 0, entry_price=200, stop_loss_price=190, score=100)
+    assert suggestion.quantity == 25
+    assert suggestion.limited_by == "max_order_value_usd"
+
+
 # ---------------------------------------------------------------------------
 # Cotas en los campos numericos de RulesConfig: sin ellas, PUT /api/rules
 # podia recibir un valor absurdamente alto (ej. daily_loss_limit_pct=999999)
@@ -270,6 +306,8 @@ def test_suggested_quantity_zero_when_stop_not_below_entry(engine):
     ("max_stop_loss_pct", 0),
     ("max_stop_loss_pct", 101),
     ("manual_approval_threshold_usd", -1),
+    ("max_drawdown_pct", 0),
+    ("max_drawdown_pct", 101),
 ])
 def test_rules_config_rejects_out_of_range_values(field, value):
     with pytest.raises(ValidationError):
@@ -286,8 +324,10 @@ def test_rules_config_accepts_values_at_the_bounds():
         max_trades_per_day=1000,
         max_stop_loss_pct=100,
         manual_approval_threshold_usd=100_000_000,
+        max_drawdown_pct=100,
     )
     assert config.daily_loss_limit_pct == 100
+    assert config.max_drawdown_pct == 100
     assert config.manual_approval_threshold_usd == 100_000_000
 
 

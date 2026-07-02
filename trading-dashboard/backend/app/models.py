@@ -111,6 +111,11 @@ class PendingOrder(BaseModel):
     created_at: datetime
     status: str = "pending"  # pending | approved | rejected | executed
     source: str = "user"  # user | signal_engine
+    # Estrategia que genero esta señal (ver _draft_fund_order_from_signal en
+    # main.py), para mostrarla en el dashboard cuando hay mas de un fondo
+    # siguiendo estrategias distintas. None para ordenes manuales (source=
+    # "user") o para borradores creados antes de que existiera este campo.
+    strategy_id: Optional[str] = None
 
 
 class SignalResult(BaseModel):

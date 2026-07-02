@@ -281,6 +281,17 @@ class ScreenerConfig(BaseModel):
     benchmark_symbol: str = "SPY"
     lookback_days: int = 400
 
+    # Umbral de alerta de degradacion PARCIAL del feed de datos (% del
+    # universo con fallo de get_daily_bars vigente -- ver
+    # market_data.get_bars_failure_stats y _check_market_data_degradation en
+    # main.py). Distinto del caso "0 de N simbolos respondieron", que ya
+    # corta el scan de entrada con MarketDataError: este cubre el caso mas
+    # insidioso de un feed que solo falla para una FRACCION del universo,
+    # donde el scan "funciona" con menos simbolos evaluados sin ninguna señal
+    # visible de que los scores/rankings actuales estan basados en datos
+    # incompletos.
+    market_data_degradation_alert_pct: float = Field(default=20, gt=0, le=100)
+
     # Pausa entre cada simbolo del universo durante un scan (segundos). Con un
     # universo grande (ej. S&P 500 completo) escanear sin pausa manda cientos
     # de pedidos seguidos a la API gratuita de Yahoo Finance, lo que puede
@@ -369,6 +380,22 @@ class ScreenerConfig(BaseModel):
     # del usuario, no el comportamiento nuevo por defecto de una version
     # anterior que nunca lo tuvo.
     trailing_stop_enabled: bool = False
+
+    # Salida parcial (scale-out): si esta habilitado, cuando una posicion
+    # abierta por el motor de auto-trading alcanza scale_out_at_r_multiple
+    # veces su riesgo inicial en ganancia no realizada (medido en "R", donde
+    # 1R = distancia entre el precio de entrada y el stop-loss INICIAL, no el
+    # actual -- ver FundPosition.initial_stop_loss_price), el monitor de
+    # salida vende scale_out_pct% de la posicion y mueve el stop-loss del
+    # remanente a breakeven (avg_cost). Esto asegura parte de la ganancia sin
+    # cerrar la posicion entera, y deja el resto corriendo sin riesgo de
+    # perdida neta en esa posicion. Solo se aplica una vez por posicion (ver
+    # FundPosition.scaled_out_at): no repite la venta parcial en cada ciclo
+    # del monitor. Apagado por defecto, mismo motivo que trailing_stop_enabled
+    # (cambia el perfil de riesgo, debe ser una decision explicita).
+    scale_out_enabled: bool = False
+    scale_out_at_r_multiple: float = Field(default=1.5, gt=0, le=10)
+    scale_out_pct: float = Field(default=50, gt=0, lt=100)
 
     # Radar en vivo: mantiene un subconjunto "caliente" de simbolos con
     # streaming persistente de IBKR (Nivel 1, gratis hasta 100 lineas

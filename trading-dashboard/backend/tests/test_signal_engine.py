@@ -1,6 +1,7 @@
 import asyncio
 import os
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +20,8 @@ os.environ["STATE_PATH"] = str(Path(_tmp_dir) / "state.json")
 import pytest
 
 from app import main as main_module
+from app import market_data as market_data_module
+from app.funds import FundsStore
 from app.models import AccountSummary, OrderDecision, PendingOrder, SignalResult
 from app.rules import RulesConfig
 from app.screener_config import ScreenerConfig
@@ -54,10 +57,12 @@ def make_signal(symbol="AAPL", last_price=100.0, stop=95.0, passes=True, score=6
 
 
 @pytest.fixture(autouse=True)
-def reset_state(monkeypatch):
+def reset_state(monkeypatch, tmp_path):
     main_module.state["pending_orders"] = {}
     main_module.state["halted"] = False
     main_module.state["connected"] = True
+    main_module.state["peak_equity_usd"] = None
+    main_module.state["market_data_degraded"] = False
     main_module._signal_state["previously_passing"] = None
     # Varios tests mutan atributos de screener_config directamente (ej.
     # auto_scan_enabled, top_n) sin pasar por monkeypatch. Sin aislar el
@@ -71,6 +76,11 @@ def reset_state(monkeypatch):
         allow_extended_hours=True,
         manual_approval_threshold_usd=1_000_000,
     ))
+    # _draft_fund_order_from_signal necesita un fondo aislado por test (mismo
+    # motivo que screener_config arriba): sin esto, los fondos creados por un
+    # test persistirian en el mismo funds_store compartido y contaminarian
+    # los candidatos de otro test de este archivo.
+    monkeypatch.setattr(main_module, "funds_store", FundsStore(tmp_path / "funds.json"))
     monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 0)
 
     async def fake_get_account_summary():
@@ -79,31 +89,75 @@ def reset_state(monkeypatch):
     async def fake_get_reference_price(symbol):
         return None
 
+    async def fake_get_positions():
+        return []
+
+    async def fake_place_order(order):
+        # _run_score_recompute_cycle ahora intenta _try_auto_trade_entry
+        # ANTES del draft manual para cualquier fondo candidato (ver
+        # _draft_fund_order_from_signal): sin este mock, un fondo creado por
+        # un test para servir de candidato del DRAFT tambien calificaria
+        # para el auto-trade, y este intentaria un placeOrder real contra un
+        # IB() sin conexion. Rechazarlo silenciosamente (mismo camino que un
+        # StopLossRejectedError real) deja get_position_qty en 0, para que
+        # el draft se pueda evaluar tal como este archivo espera probarlo.
+        raise main_module.StopLossRejectedError("test: sin ejecucion real en test_signal_engine.py")
+
     monkeypatch.setattr(main_module.broker, "get_account_summary", fake_get_account_summary)
     # Por defecto no hay precio en vivo de IBKR: cae al last_price de la
     # señal (igual que el comportamiento previo a usar precio en vivo), salvo
     # que un test override este mock puntualmente.
     monkeypatch.setattr(main_module.broker, "get_reference_price", fake_get_reference_price)
+    monkeypatch.setattr(main_module.broker, "get_positions", fake_get_positions)
+    monkeypatch.setattr(main_module.broker, "place_order", fake_place_order)
     monkeypatch.setattr(main_module, "_persist_state", lambda: None)
     yield
 
 
-def test_draft_order_from_signal_creates_pending_order_with_signal_source():
-    pending = asyncio.run(main_module._draft_order_from_signal(make_signal(), []))
+def make_auto_trading_fund(strategy_id="momentum", cash=100_000.0):
+    """Fondo candidato para _draft_fund_order_from_signal: auto_trading_
+    enabled=True y con la estrategia indicada, para que aparezca en la lista
+    de candidatos igual que en produccion."""
+    return main_module.funds_store.create(
+        "Fondo de prueba", cash, auto_trading_enabled=True, strategy_id=strategy_id,
+    )
+
+
+def test_draft_fund_order_from_signal_creates_pending_order_with_signal_source():
+    fund = make_auto_trading_fund()
+    pending = asyncio.run(main_module._draft_fund_order_from_signal(make_signal(), "momentum"))
     assert pending is not None
     assert pending.source == "signal_engine"
+    assert pending.strategy_id == "momentum"
     assert pending.order.symbol == "AAPL"
+    assert pending.order.fund_id == fund.id
     assert pending.order.quantity > 0
     assert pending.id in main_module.state["pending_orders"]
 
 
-def test_draft_order_from_signal_records_signal_rationale_in_audit():
+def test_draft_fund_order_from_signal_sizes_against_fund_equity_not_whole_account():
+    # Antes (_draft_order_from_signal, retirada), el sizing usaba
+    # account.net_liquidation (100,000 en make_account()) sin importar el
+    # fondo: un fondo bien mas chico ($2,000) debe producir una cantidad
+    # sugerida mucho menor a la que hubiera dado dimensionar contra toda la
+    # cuenta.
+    make_auto_trading_fund(cash=2_000.0)
+    pending = asyncio.run(main_module._draft_fund_order_from_signal(make_signal(), "momentum"))
+    assert pending is not None
+    # risk_per_trade_pct default 1% de $2,000 = $20 de riesgo; con
+    # stop a $5 de distancia (100 vs 95), la cantidad sugerida es ~4, muy
+    # por debajo de lo que hubiera dado sizear contra $100,000 (~200).
+    assert pending.order.quantity < 20
+
+
+def test_draft_fund_order_from_signal_records_signal_rationale_in_audit():
     # Igual que en auto_trade_executed: el audit trail del draft manual tiene
     # que guardar la señal completa (score/momentum/RSI/notas), no solo el
     # score suelto, para poder revisar despues por que el motor sugirio esta
     # orden.
+    make_auto_trading_fund()
     signal = make_signal(score=7.5)
-    pending = asyncio.run(main_module._draft_order_from_signal(signal, []))
+    pending = asyncio.run(main_module._draft_fund_order_from_signal(signal, "momentum"))
     assert pending is not None
 
     entries = main_module.audit.recent(1)
@@ -111,6 +165,7 @@ def test_draft_order_from_signal_records_signal_rationale_in_audit():
     entry = entries[0]
     assert entry["action"] == "signal_order_drafted"
     assert entry["result"]["id"] == pending.id
+    assert entry["result"]["strategy_id"] == "momentum"
     recorded_signal = entry["result"]["signal"]
     assert recorded_signal["symbol"] == "AAPL"
     assert recorded_signal["score"] == 7.5
@@ -119,14 +174,26 @@ def test_draft_order_from_signal_records_signal_rationale_in_audit():
     assert recorded_signal["notes"] == signal.notes
 
 
-def test_draft_order_from_signal_skips_when_existing_position(monkeypatch):
-    monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
-    pending = asyncio.run(main_module._draft_order_from_signal(make_signal(), []))
+def test_draft_fund_order_from_signal_skips_when_no_fund_follows_strategy():
+    # Ningun fondo creado: sin candidatos, no se genera ningun borrador --
+    # asi una estrategia que ningun fondo sigue (ej. Momentum, si el/los
+    # fondos activos eligieron Oportunista) deja de inundar la cola sin
+    # necesitar un chequeo aparte.
+    pending = asyncio.run(main_module._draft_fund_order_from_signal(make_signal(), "momentum"))
     assert pending is None
     assert main_module.state["pending_orders"] == {}
 
 
-def test_draft_order_from_signal_skips_when_pending_order_already_exists_for_symbol():
+def test_draft_fund_order_from_signal_skips_when_existing_position(monkeypatch):
+    make_auto_trading_fund()
+    monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
+    pending = asyncio.run(main_module._draft_fund_order_from_signal(make_signal(), "momentum"))
+    assert pending is None
+    assert main_module.state["pending_orders"] == {}
+
+
+def test_draft_fund_order_from_signal_skips_when_pending_order_already_exists_for_symbol():
+    make_auto_trading_fund()
     existing = PendingOrder(
         id="existing-1",
         order=main_module.OrderRequest(symbol="AAPL", side=main_module.Side.BUY, quantity=1, stop_loss_price=90),
@@ -136,24 +203,22 @@ def test_draft_order_from_signal_skips_when_pending_order_already_exists_for_sym
     )
     main_module.state["pending_orders"]["existing-1"] = existing
 
-    pending = asyncio.run(main_module._draft_order_from_signal(make_signal(), []))
+    pending = asyncio.run(main_module._draft_fund_order_from_signal(make_signal(), "momentum"))
     assert pending is None
     assert len(main_module.state["pending_orders"]) == 1
 
 
-def test_draft_order_from_signal_skips_when_sizing_zero(monkeypatch):
-    async def fake_get_account_summary():
-        return make_account(net_liq=0)
-
-    monkeypatch.setattr(main_module.broker, "get_account_summary", fake_get_account_summary)
-    pending = asyncio.run(main_module._draft_order_from_signal(make_signal(), []))
+def test_draft_fund_order_from_signal_skips_when_sizing_zero():
+    make_auto_trading_fund(cash=0.01)  # cash insuficiente para ni una accion
+    pending = asyncio.run(main_module._draft_fund_order_from_signal(make_signal(), "momentum"))
     assert pending is None
     assert main_module.state["pending_orders"] == {}
 
 
-def test_draft_order_from_signal_skips_when_rules_engine_rejects():
+def test_draft_fund_order_from_signal_skips_when_rules_engine_rejects():
+    make_auto_trading_fund()
     main_module.rules_engine.reload(RulesConfig(symbol_whitelist=[]))  # rechaza todo
-    pending = asyncio.run(main_module._draft_order_from_signal(make_signal(), []))
+    pending = asyncio.run(main_module._draft_fund_order_from_signal(make_signal(), "momentum"))
     assert pending is None
     assert main_module.state["pending_orders"] == {}
 
@@ -194,10 +259,10 @@ def test_signal_scan_cycle_first_run_establishes_baseline_without_drafting(monke
     main_module.screener_config.auto_scan_enabled = True
     monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [make_signal(passes=True)])
 
-    async def fail_if_called(result):
+    async def fail_if_called(result, strategy_id):
         raise AssertionError("el primer ciclo no deberia draftear ordenes")
 
-    monkeypatch.setattr(main_module, "_draft_order_from_signal", fail_if_called)
+    monkeypatch.setattr(main_module, "_draft_fund_order_from_signal", fail_if_called)
 
     asyncio.run(main_module._run_score_recompute_cycle())
 
@@ -206,6 +271,7 @@ def test_signal_scan_cycle_first_run_establishes_baseline_without_drafting(monke
 
 
 def test_signal_scan_cycle_drafts_order_for_new_passing_symbol(monkeypatch):
+    make_auto_trading_fund()
     main_module.screener_config.auto_scan_enabled = True
     main_module._signal_state["previously_passing"] = set()  # baseline ya establecida, nada pasaba
     monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [make_signal(symbol="AAPL", passes=True)])
@@ -217,6 +283,7 @@ def test_signal_scan_cycle_drafts_order_for_new_passing_symbol(monkeypatch):
     drafted = list(main_module.state["pending_orders"].values())[0]
     assert drafted.source == "signal_engine"
     assert drafted.order.symbol == "AAPL"
+    assert drafted.strategy_id == "momentum"
 
 
 def test_signal_scan_cycle_does_not_redraft_symbol_already_passing(monkeypatch):
@@ -343,6 +410,7 @@ def test_sync_whitelist_with_universe_is_noop_when_already_synced(monkeypatch):
 
 
 def test_signal_scan_cycle_caps_drafts_per_cycle(monkeypatch):
+    make_auto_trading_fund()
     main_module.screener_config.auto_scan_enabled = True
     main_module.screener_config.top_n = 10
     main_module.screener_config.max_auto_drafts_per_cycle = 3
@@ -366,6 +434,7 @@ def test_signal_scan_cycle_caps_drafts_per_cycle(monkeypatch):
 
 
 def test_signal_scan_cycle_respects_free_slots_vs_top_n(monkeypatch):
+    make_auto_trading_fund()
     main_module.screener_config.auto_scan_enabled = True
     main_module.screener_config.top_n = 2
     main_module.screener_config.max_auto_drafts_per_cycle = 5
@@ -394,3 +463,75 @@ def test_signal_scan_cycle_respects_free_slots_vs_top_n(monkeypatch):
     drafted = [p for p in main_module.state["pending_orders"].values() if p.source == "signal_engine"]
     assert len(drafted) == 1
     assert drafted[0].order.symbol == "S0"
+
+
+# ---------------------------------------------------------------------------
+# _check_market_data_degradation
+# ---------------------------------------------------------------------------
+
+def _set_universe_with_failures(failed_symbols, ok_symbols, lookback_days=400):
+    market_data_module._bars_failure_cache.clear()
+    market_data_module._cache.clear()
+    now = time.time()
+    for s in failed_symbols:
+        market_data_module._bars_failure_cache[(s, lookback_days)] = (now, "fallo simulado")
+    for s in ok_symbols:
+        market_data_module._cache[(s, lookback_days)] = (now, object())
+    main_module.screener_config.universe = failed_symbols + ok_symbols
+    main_module.screener_config.lookback_days = lookback_days
+
+
+def test_check_market_data_degradation_noop_when_below_threshold():
+    main_module.screener_config.market_data_degradation_alert_pct = 20
+    _set_universe_with_failures(failed_symbols=["S0"], ok_symbols=[f"S{i}" for i in range(1, 10)])  # 10%
+
+    asyncio.run(main_module._check_market_data_degradation())
+
+    assert main_module.state["market_data_degraded"] is False
+    assert all(e["action"] != "market_data_degraded" for e in main_module.audit.recent(10))
+
+
+def test_check_market_data_degradation_flags_and_audits_on_breach():
+    main_module.screener_config.market_data_degradation_alert_pct = 20
+    _set_universe_with_failures(failed_symbols=["S0", "S1", "S2"], ok_symbols=["S3", "S4"])  # 60%
+
+    asyncio.run(main_module._check_market_data_degradation())
+
+    assert main_module.state["market_data_degraded"] is True
+    entry = main_module.audit.recent(1)[0]
+    assert entry["action"] == "market_data_degraded"
+    assert entry["result"]["failed"] == 3
+    assert entry["result"]["total"] == 5
+
+
+def test_check_market_data_degradation_does_not_repeat_audit_while_still_degraded():
+    main_module.screener_config.market_data_degradation_alert_pct = 20
+    _set_universe_with_failures(failed_symbols=["S0", "S1", "S2"], ok_symbols=["S3", "S4"])
+
+    asyncio.run(main_module._check_market_data_degradation())
+    count_after_first = len(main_module.audit.recent(10))
+
+    asyncio.run(main_module._check_market_data_degradation())  # sigue degradado, mismo % de fallo
+    count_after_second = len(main_module.audit.recent(10))
+
+    assert count_after_second == count_after_first  # sin nueva entrada de audit
+
+
+def test_check_market_data_degradation_recovers():
+    main_module.screener_config.market_data_degradation_alert_pct = 20
+    _set_universe_with_failures(failed_symbols=["S0", "S1", "S2"], ok_symbols=["S3", "S4"])
+    asyncio.run(main_module._check_market_data_degradation())
+    assert main_module.state["market_data_degraded"] is True
+
+    _set_universe_with_failures(failed_symbols=[], ok_symbols=["S0", "S1", "S2", "S3", "S4"])
+    asyncio.run(main_module._check_market_data_degradation())
+
+    assert main_module.state["market_data_degraded"] is False
+    entry = main_module.audit.recent(1)[0]
+    assert entry["action"] == "market_data_recovered"
+
+
+def test_check_market_data_degradation_noop_when_universe_empty():
+    main_module.screener_config.universe = []
+    asyncio.run(main_module._check_market_data_degradation())  # no debe lanzar
+    assert main_module.state["market_data_degraded"] is False

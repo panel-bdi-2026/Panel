@@ -212,6 +212,29 @@ def is_bars_cached(symbol: str, lookback_days: int) -> bool:
     return failed is not None and now - failed[0] < _CACHE_TTL_SECONDS
 
 
+def get_bars_failure_stats(symbols: list[str], lookback_days: int) -> tuple[int, int]:
+    """Devuelve (fallidos, total) de `symbols` mirando el cache de fallos de
+    get_daily_bars vigente en este momento (mismo TTL que el cache de exito,
+    ver _bars_failure_cache), sin tocar la red.
+
+    Usado por main.py (ver _check_market_data_degradation) para detectar una
+    degradacion PARCIAL del feed de datos: a diferencia del caso "0 de N
+    simbolos respondieron" (que MomentumScreener.scan y las demas estrategias
+    ya rechazan de entrada con MarketDataError), un scan donde una porcion
+    grande pero no total del universo fallo silenciosamente devuelve
+    resultados "normales" (con menos simbolos evaluados) sin ninguna senal de
+    que el feed esta degradado -- justo el caso que este helper hace visible.
+    """
+    now = time.time()
+    failed = 0
+    for symbol in symbols:
+        key = (symbol.upper(), lookback_days)
+        entry = _bars_failure_cache.get(key)
+        if entry is not None and now - entry[0] < _CACHE_TTL_SECONDS:
+            failed += 1
+    return failed, len(symbols)
+
+
 def is_fundamentals_cached(symbol: str) -> bool:
     """True si get_fundamentals(symbol) devolveria el cache sin tocar la red."""
     cached = _fundamentals_cache.get(symbol.upper())
