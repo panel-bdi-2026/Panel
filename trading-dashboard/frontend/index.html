@@ -1,287 +1,275 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Trading Dashboard · IBKR</title>
 <style>
 :root{
-  color-scheme:light;
-  --primary:#2f5fa8;--primary-mid:#5b9bd5;--on-primary:#ffffff;
-  --bg:#f2eee3;--card:#fffdf8;--card2:#ece4d1;--border:#dcd0b4;
-  --text:#262521;--muted:#615a49;--sh:0 1px 3px rgba(40,32,16,.08),0 1px 2px rgba(40,32,16,.06);
-  --sh2:0 10px 30px rgba(40,32,16,.16),0 2px 8px rgba(40,32,16,.10);--r:10px;--r2:6px;
-  --green:#1f6e44;--green-bg:rgba(31,110,68,.10);--red:#9c3b2e;--red-bg:rgba(156,59,46,.10);
-  --amber:#a3700f;--amber-bg:rgba(163,112,15,.10);
+  color-scheme:dark;
+  --bg:#0d1117;--sb:#010409;--card:#161b22;--card2:#21262d;--border:#30363d;
+  --text:#e6edf3;--muted:#8b949e;--primary:#58a6ff;--primary-mid:#79c0ff;--on-primary:#0d1117;
+  --green:#3fb950;--green-bg:rgba(63,185,80,.12);--red:#f85149;--red-bg:rgba(248,81,73,.12);
+  --amber:#d29922;--amber-bg:rgba(210,153,34,.12);
+  --sh:0 1px 3px rgba(0,0,0,.4);--sh2:0 8px 24px rgba(0,0,0,.5);--r:10px;--r2:6px;--sbw:220px;
   --mono:ui-monospace,'SF Mono','Cascadia Mono','Roboto Mono',Consolas,monospace;
   --serif:ui-serif,'Iowan Old Style','Palatino Linotype',Palatino,Georgia,Cambria,serif;
 }
+[data-theme="light"]{
+  color-scheme:light;
+  --bg:#f2eee3;--sb:#e8e0cc;--card:#fffdf8;--card2:#ece4d1;--border:#dcd0b4;
+  --text:#262521;--muted:#615a49;--primary:#2f5fa8;--primary-mid:#5b9bd5;--on-primary:#ffffff;
+  --green:#1f6e44;--green-bg:rgba(31,110,68,.10);--red:#9c3b2e;--red-bg:rgba(156,59,46,.10);
+  --amber:#a3700f;--amber-bg:rgba(163,112,15,.10);
+  --sh:0 1px 3px rgba(40,32,16,.08),0 1px 2px rgba(40,32,16,.06);
+  --sh2:0 10px 30px rgba(40,32,16,.16),0 2px 8px rgba(40,32,16,.10);
+}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;background:var(--bg);color:var(--text)}
-::-webkit-scrollbar{width:10px;height:10px}
+body{font-family:-apple-system,'Segoe UI',Roboto,system-ui,sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh}
+::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-track{background:var(--bg)}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:6px}
 ::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 code{background:var(--card2);color:var(--primary-mid);padding:1px 5px;border-radius:4px;font-family:var(--mono);font-size:.92em}
-.hdr{background:linear-gradient(180deg,#3a6bb3 0%,#22487f 100%);color:#fff;border-bottom:1px solid #1b3a66;
-  padding:14px 28px;display:flex;align-items:center;justify-content:space-between;
-  box-shadow:0 2px 14px rgba(20,32,56,.28);flex-wrap:wrap;gap:10px}
-.hdr-l h1{font-size:19px;font-weight:600;font-family:var(--serif);letter-spacing:.01em;color:#fff}
-.hdr-l p{font-size:12px;opacity:.9;margin-top:2px;color:rgba(255,255,255,.78)}
-.hdr-r{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.badge{font-size:11px;font-weight:800;padding:5px 11px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}
-.badge.paper{background:rgba(255,255,255,.92);color:var(--primary)}
-.badge.live{background:rgba(255,255,255,.92);color:var(--red);animation:pulse 1.8s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
-.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:5px}
-.dot.on{background:var(--green)}.dot.off{background:var(--red)}
-.conn{font-size:12px;font-weight:700;display:flex;align-items:center;background:var(--card2);border:1px solid var(--border);
-  padding:5px 11px;border-radius:20px}
-/* Fondo casi opaco (no var(--green-bg)/--red-bg, pensados para tarjetas
-   claras): sobre el degradado azul oscuro del header, un tinte al 10% queda
-   casi invisible. */
-.conn.on{background:rgba(255,255,255,.95);color:var(--green);border:1px solid rgba(31,110,68,.4)}
-.conn.off{background:rgba(255,255,255,.95);color:var(--red);border:1px solid rgba(156,59,46,.4)}
-.btn{padding:7px 15px;border-radius:var(--r2);border:none;cursor:pointer;font-size:12px;
-  font-weight:700;font-family:inherit}
-.btn-halt{background:#b5651d;color:#fff}.btn-halt.on{background:var(--red)}
-.btn-mode{background:var(--primary);color:var(--on-primary);border:1.5px solid rgba(255,255,255,.55)}.btn-mode.danger{background:var(--red);color:#fff;border:1.5px solid rgba(255,255,255,.55)}
-.btn-ghost{background:var(--card2);color:var(--text);border:1px solid var(--border)}
-.main{padding:22px 28px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
-.banner{padding:11px 16px;border-radius:var(--r2);font-size:13px;font-weight:600;display:none}
+.sidebar{width:var(--sbw);background:var(--sb);border-right:1px solid var(--border);position:fixed;top:0;left:0;height:100vh;overflow-y:auto;z-index:800;display:flex;flex-direction:column}
+.sb-brand{display:flex;align-items:center;gap:10px;padding:16px 14px 12px;border-bottom:1px solid var(--border)}
+.sb-logo{font-size:22px;flex-shrink:0}
+.sb-name{font-size:13.5px;font-weight:700;font-family:var(--serif);color:var(--text);letter-spacing:.01em}
+.sb-sub{font-size:10.5px;color:var(--muted);margin-top:1px;line-height:1.3}
+.sb-status{display:flex;align-items:center;gap:6px;padding:9px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.section-nav{flex:1;padding:8px 0}
+.section-nav a{display:block;padding:8px 14px;font-size:12.5px;font-weight:500;color:var(--muted);text-decoration:none;border-left:2px solid transparent;white-space:nowrap}
+.section-nav a:hover{color:var(--text);background:rgba(255,255,255,.04);border-left-color:var(--border)}
+.section-nav a.active{color:var(--primary);background:rgba(88,166,255,.08);border-left-color:var(--primary);font-weight:600}
+.nav-icon{width:20px;display:inline-block;margin-right:6px;text-align:center;font-size:13px}
+.sb-actions{padding:8px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:2px}
+.sb-actions .btn{width:100%;text-align:left;padding:8px 10px;font-size:12.5px;font-weight:500;background:none;border:1px solid transparent;color:var(--muted);cursor:pointer;border-radius:var(--r2);font-family:inherit}
+.sb-actions .btn:hover{background:rgba(255,255,255,.06);color:var(--text);border-color:var(--border)}
+.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:799}
+.sidebar-overlay.show{display:block}
+.mobile-topbar{display:none;position:fixed;top:0;left:0;right:0;z-index:700;height:56px;background:var(--sb);border-bottom:1px solid var(--border);padding:0 16px;align-items:center;justify-content:space-between;box-shadow:0 1px 8px rgba(0,0,0,.3)}
+.mobile-title{font-size:15px;font-weight:700;font-family:var(--serif);color:var(--text)}
+.mobile-hamburger{background:none;border:1px solid var(--border);border-radius:var(--r2);color:var(--text);cursor:pointer;font-size:16px;padding:5px 10px;line-height:1}
+.page-content{margin-left:var(--sbw);flex:1;min-width:0;padding:22px 24px}
+.banner{padding:10px 14px;border-radius:var(--r2);font-size:13px;font-weight:600;display:none;margin-bottom:12px}
 .banner.show{display:block}
-.banner.live{background:var(--red-bg);color:var(--red);border:1.5px solid rgba(156,59,46,.35)}
-.banner.halted{background:var(--amber-bg);color:var(--amber);border:1.5px solid rgba(163,112,15,.35)}
-.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
-.kpi{background:var(--card);border-radius:var(--r);padding:14px 16px;box-shadow:var(--sh);border:1px solid var(--border);border-left:3px solid var(--primary)}
-.kpi-lbl{font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
-.kpi-val{font-size:26px;font-weight:800;margin-top:5px;font-family:var(--mono)}
+.banner.live{background:var(--red-bg);color:var(--red);border:1.5px solid rgba(248,81,73,.3)}
+.banner.halted{background:var(--amber-bg);color:var(--amber);border:1.5px solid rgba(210,153,34,.3)}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+.kpi{background:var(--card);border-radius:var(--r);padding:14px 16px;box-shadow:var(--sh);border:1px solid var(--border);border-left:3px solid var(--primary);display:flex;align-items:flex-start;gap:10px}
+.kpi:nth-child(2){border-left-color:var(--green)}
+.kpi:nth-child(3){border-left-color:var(--amber)}
+.kpi:nth-child(4){border-left-color:var(--primary-mid)}
+.kpi-ico{display:inline-flex;color:var(--primary-mid);opacity:.75;margin-top:1px;flex-shrink:0}
+.kpi-ico svg{display:block}
+.kpi-body{flex:1;min-width:0}
+.kpi-lbl{font-size:10.5px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.kpi-val{font-size:22px;font-weight:800;margin-top:4px;font-family:var(--mono)}
 .kpi-val.pos{color:var(--green)}.kpi-val.neg{color:var(--red)}
-.grid2{display:grid;grid-template-columns:1.3fr 1fr;gap:18px;align-items:start}
-.grid2 > *{min-width:0}
+.kpi-trend{font-size:11px;font-weight:700;margin-top:3px}
+.kpi-trend.pos{color:var(--green)}.kpi-trend.neg{color:var(--red)}
+@keyframes val-flash{0%{background:rgba(88,166,255,.2)}100%{background:transparent}}
+.flash{animation:val-flash .6s ease;border-radius:4px;padding:0 2px;margin:0 -2px}
+.sections-grid{display:grid;grid-template-columns:1.3fr 1fr;gap:18px;align-items:start}
+.sections-grid > *{min-width:0}
+.sections-col{display:flex;flex-direction:column;gap:18px}
+.order-col{position:sticky;top:20px;align-self:start}
+#roiHistoryGlobalWrap{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px;margin-bottom:18px}
 .card{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);border:1px solid var(--border);overflow:hidden}
-.card-hdr{padding:12px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--primary);
-  text-transform:uppercase;letter-spacing:.03em;
-  display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.card-hdr{padding:12px 16px;border-bottom:1px solid var(--border);font-size:12.5px;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:.04em;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
 .card-body{padding:14px 16px;overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12.5px;font-family:var(--mono)}
-th{text-align:left;color:var(--muted);font-weight:700;font-size:11px;text-transform:uppercase;
-  letter-spacing:.03em;padding:6px 8px;border-bottom:2px solid var(--border)}
-td{padding:8px;border-bottom:1px solid var(--border)}
+th{text-align:left;color:var(--muted);font-weight:700;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;padding:6px 8px;border-bottom:2px solid var(--border)}
+td{padding:7px 8px;border-bottom:1px solid var(--border)}
+tr:last-child td{border-bottom:none}
 .empty{color:var(--muted);font-size:12px;text-align:center;padding:18px;opacity:.7}
+.pos-pnl-bar-wrap{height:3px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden;min-width:40px}
+.pos-pnl-bar{height:100%;border-radius:2px;transition:width .3s}
+.score-bar-wrap{height:3px;background:var(--border);border-radius:2px;margin-bottom:4px;overflow:hidden;min-width:40px;width:80px}
+.score-bar{height:100%;border-radius:2px;transition:width .3s}
+.score-bar--hi{background:var(--green)}.score-bar--mid{background:var(--amber)}.score-bar--lo{background:var(--red)}
+.scores-cell{display:flex;flex-wrap:wrap;gap:4px;max-width:160px}
+.score-badge{display:inline-flex;gap:3px;align-items:baseline;padding:2px 5px;border-radius:5px;background:var(--card2);border:1px solid var(--border);font-size:11px;color:var(--muted);white-space:nowrap}
+.score-badge b{color:var(--text);font-weight:700}
+.score-badge.active{border-color:var(--primary);color:var(--primary-mid);background:rgba(88,166,255,.08)}
+.score-badge.active b{color:var(--primary)}
+.score-more-btn{display:inline-flex;align-items:center;padding:2px 6px;border-radius:5px;background:var(--card2);border:1px solid var(--border);font-size:11px;color:var(--muted);cursor:pointer;font-family:inherit}
+.score-more-btn:hover{background:var(--border);color:var(--text)}
+.score-popover{position:fixed;background:var(--card);border:1px solid var(--border);border-radius:var(--r2);box-shadow:var(--sh2);padding:8px;z-index:3500;display:none;flex-direction:column;gap:4px;min-width:140px}
+.score-popover.show{display:flex}
+.pcard{background:var(--card2);border:1px solid var(--border);border-left:3px solid var(--amber);border-radius:var(--r);padding:12px 14px;margin-bottom:10px}
+.pcard-header{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11.5px;color:var(--muted)}
+.pcard-main{display:flex;align-items:baseline;gap:8px;margin-bottom:6px;flex-wrap:wrap}
+.pcard-symbol{font-size:20px;font-weight:800;font-family:var(--mono);color:var(--text)}
+.pcard-side-buy{color:var(--green);font-weight:700;font-size:13px}
+.pcard-side-sell{color:var(--red);font-weight:700;font-size:13px}
+.pcard-qty{font-family:var(--mono);font-size:14px;color:var(--text)}
+.pcard-price{font-family:var(--mono);color:var(--primary-mid);font-size:13px}
+.pcard-details{font-size:11.5px;color:var(--muted);margin-bottom:10px;display:flex;flex-wrap:wrap;gap:4px 12px}
+.pcard-actions{display:flex;gap:8px}
+.btn-approve{flex:1;background:var(--green);color:#fff;border:none;border-radius:var(--r2);padding:9px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-approve:hover{filter:brightness(1.1)}
+.btn-reject{flex:1;background:var(--red);color:#fff;border:none;border-radius:var(--r2);padding:9px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-reject:hover{filter:brightness(1.1)}
+.audit-timeline{display:flex;flex-direction:column}
+.audit-event{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
+.audit-event:last-child{border-bottom:none}
+.audit-icon{width:26px;height:26px;border-radius:50%;background:var(--card2);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;margin-top:1px}
+.audit-content{flex:1;min-width:0}
+.audit-action{font-size:12px;font-weight:600;color:var(--text);margin-bottom:1px}
+.audit-symbol{font-size:12px;color:var(--text)}
+.audit-result{font-size:11.5px;color:var(--muted);margin-top:2px}
+.audit-time{font-size:10.5px;color:var(--muted);white-space:nowrap;flex-shrink:0;margin-top:3px}
 .fg{margin-bottom:11px}
 .fl{display:block;font-size:11px;font-weight:700;color:var(--text);margin-bottom:4px}
-.fi,.fs{width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:var(--r2);
-  font-size:13px;font-family:inherit;background:var(--card2);color:var(--text);outline:none}
-.fi:focus,.fs:focus{border-color:var(--primary-mid);background:var(--card2)}
+.fi,.fs{width:100%;padding:8px 10px;border:1.5px solid var(--border);border-radius:var(--r2);font-size:13px;font-family:inherit;background:var(--card2);color:var(--text);outline:none}
+.fi:focus,.fs:focus{border-color:var(--primary-mid)}
 .frow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
 .toolbar .fi,.toolbar .fs{width:auto;min-width:140px}
-.scores-cell{display:flex;flex-wrap:wrap;gap:4px;max-width:160px}
-.score-badge{display:inline-flex;gap:3px;align-items:baseline;padding:2px 5px;border-radius:5px;
-  background:var(--bg);border:1px solid var(--border);font-size:11px;color:var(--muted);white-space:nowrap}
-.score-badge b{color:var(--text);font-weight:700}
-.score-badge.active{border-color:var(--primary);color:var(--primary-mid);background:rgba(47,95,168,0.10)}
-.score-badge.active b{color:var(--primary)}
-.badge-tag{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;
-  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
-.badge-live{background:var(--green-bg);color:var(--green);border:1px solid rgba(31,110,68,.35)}
-.badge-fail{background:var(--red-bg);color:var(--red);border:1px solid rgba(156,59,46,.3)}
-.via-strategy{color:var(--muted);font-size:11px;margin-left:6px}
-.price-age{color:var(--muted);font-size:10px;margin-left:6px}
 .side-sel{display:flex;border:1.5px solid var(--border);border-radius:var(--r2);overflow:hidden;margin-bottom:11px}
 .side-opt{flex:1;padding:8px;border:none;background:var(--card2);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;color:var(--muted)}
 .side-opt.on-buy{background:var(--green-bg);color:var(--green)}
 .side-opt.on-sell{background:var(--red-bg);color:var(--red)}
-.btn-submit{width:100%;padding:10px;background:var(--primary);color:var(--on-primary);border:none;border-radius:var(--r2);
-  font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
-.btn-submit:hover{background:var(--primary-mid)}
-.violations{margin-top:10px;font-size:12px;background:var(--red-bg);color:var(--red);
-  border:1px solid rgba(156,59,46,.35);border-radius:var(--r2);padding:8px 10px;display:none}
+.btn-submit{width:100%;padding:10px;background:var(--primary);color:var(--on-primary);border:none;border-radius:var(--r2);font-size:13px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-submit:hover{filter:brightness(1.08)}
+.violations{margin-top:10px;font-size:12px;background:var(--red-bg);color:var(--red);border:1px solid rgba(248,81,73,.3);border-radius:var(--r2);padding:8px 10px;display:none}
 .violations.show{display:block}
 .violations ul{margin-left:16px;margin-top:4px}
-.pending-item{padding:9px;border:1.5px solid var(--amber);background:var(--amber-bg);border-radius:var(--r2);
-  margin-bottom:8px;font-size:12px}
-.pending-actions{display:flex;gap:6px;margin-top:7px}
-.btn-approve{background:var(--green);color:#fffaf0;border:none;border-radius:4px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer}
-.btn-reject{background:var(--red);color:#fff;border:none;border-radius:4px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer}
-.toast{position:fixed;bottom:22px;right:22px;background:var(--card2);color:var(--text);border:1px solid var(--border);padding:11px 18px;
-  border-radius:var(--r2);font-size:13px;box-shadow:var(--sh2);transform:translateY(80px);opacity:0;
-  transition:all .3s;z-index:3000;pointer-events:none;max-width:380px}
-.toast.show{transform:translateY(0);opacity:1}
-.muted-sm{font-size:11px;color:var(--muted)}
-.fund-name-link{cursor:pointer;text-decoration:underline;text-decoration-style:dotted;color:var(--primary-mid)}
-.chart-wrap{position:relative;height:200px;margin-top:10px}
-.chart-wrap.sm{height:150px}
-.chart-wrap.xs{height:80px}
-.info-btn{background:none;border:none;color:var(--primary-mid);cursor:pointer;font-size:13px;padding:0 4px}
-.modal-overlay{position:fixed;inset:0;background:rgba(2,4,8,.7);display:none;
-  align-items:center;justify-content:center;z-index:4000;padding:20px}
-.modal-overlay.show{display:flex}
-.modal-box{background:var(--card);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh2);
-  width:100%;max-width:680px;max-height:88vh;overflow:auto}
-.modal-hdr{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;
-  justify-content:space-between;align-items:center;font-weight:700;color:var(--primary);
-  position:sticky;top:0;background:var(--card)}
-.modal-close{background:none;border:none;font-size:18px;cursor:pointer;color:var(--muted);line-height:1}
-.modal-body{padding:16px 18px;overflow-x:auto}
-.modal-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-.cfg-tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
-.cfg-tab{padding:7px 15px;border-radius:var(--r2);border:1.5px solid var(--border);
-  background:var(--card2);color:var(--muted);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit}
-.cfg-tab.on{background:var(--primary);color:var(--on-primary);border-color:var(--primary)}
-.login-overlay{position:fixed;inset:0;background:var(--bg);display:none;
-  align-items:center;justify-content:center;z-index:5000;padding:20px}
-.login-overlay.show{display:flex}
-.login-box{background:var(--card);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh2);
-  width:100%;max-width:360px;padding:26px 24px}
-.login-box h1{font-size:17px;font-weight:600;font-family:var(--serif);color:var(--primary);margin-bottom:4px}
-.login-box p{font-size:12px;color:var(--muted);margin-bottom:18px}
-.login-error{font-size:12px;color:var(--red);min-height:16px;margin-top:8px}
-@media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.modal-grid{grid-template-columns:1fr}}
-@media(max-width:560px){
-  .hdr{padding:12px 16px}
-  .hdr-l h1{font-size:16px}
-  .main{padding:14px 16px}
-  .kpis{grid-template-columns:1fr}
-  .frow{grid-template-columns:1fr}
-}
-
-/* --- A: navegación por secciones (scrollspy) --- */
-.section-nav{position:sticky;top:0;z-index:600;background:var(--card);border-bottom:1px solid var(--border);
-  display:flex;gap:4px;padding:8px 28px;overflow-x:auto;box-shadow:0 1px 4px rgba(40,32,16,.06)}
-.section-nav a{padding:6px 12px;border-radius:var(--r2);font-size:12px;font-weight:700;color:var(--muted);
-  text-decoration:none;white-space:nowrap;flex-shrink:0}
-.section-nav a:hover{background:var(--card2);color:var(--text)}
-.section-nav a.active{background:var(--primary);color:var(--on-primary)}
-@media(max-width:560px){.section-nav{padding:8px 16px}}
-[id^="sec-"]{scroll-margin-top:54px}
-
-/* --- B: panel "Nueva orden" sticky + KPIs con icono --- */
-.order-panel{position:sticky;top:54px}
-@media(max-width:900px){.order-panel{position:static}}
-.kpi{display:flex;align-items:flex-start;gap:10px}
-.kpi-ico{display:inline-flex;color:var(--primary-mid);opacity:.85;margin-top:1px}
-.kpi-ico svg{display:block}
-.kpi-body{flex:1;min-width:0}
-.kpi-trend{font-size:11px;font-weight:700;margin-top:3px}
-.kpi-trend.pos{color:var(--green)}.kpi-trend.neg{color:var(--red)}
-
-/* --- C: popover de scores --- */
-.score-more-btn{display:inline-flex;align-items:center;padding:2px 6px;border-radius:5px;
-  background:var(--card2);border:1px solid var(--border);font-size:11px;color:var(--muted);
-  cursor:pointer;font-family:inherit}
-.score-more-btn:hover{background:var(--bg);color:var(--text)}
-.score-popover{position:fixed;background:var(--card);border:1px solid var(--border);border-radius:var(--r2);
-  box-shadow:var(--sh2);padding:8px;z-index:3500;display:none;flex-direction:column;gap:4px;min-width:140px}
-.score-popover.show{display:flex}
-
-/* --- D: skeletons de carga + indicador de escaneo pesado --- */
-@keyframes skel-shimmer{0%{background-position:-120px 0}100%{background-position:120px 0}}
-.skel{display:inline-block;height:12px;border-radius:4px;background:linear-gradient(90deg,var(--card2) 0%,var(--border) 50%,var(--card2) 100%);
-  background-size:240px 100%;animation:skel-shimmer 1.2s infinite linear}
-.skel-text{width:70%}
-.skel-row td{padding:10px 8px}
-.badge-busy{padding:3px 9px;border-radius:20px;gap:5px;margin-left:8px;
-  background:var(--amber-bg);color:var(--amber);border:1px solid rgba(163,112,15,.35)}
-.badge-busy .dot-spin{width:7px;height:7px;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;
-  animation:spin .7s linear infinite}
+.btn{padding:7px 14px;border-radius:var(--r2);border:none;cursor:pointer;font-size:12px;font-weight:700;font-family:inherit}
+.btn-halt{background:rgba(248,81,73,.1);color:var(--red);border:1px solid rgba(248,81,73,.25)}
+.btn-halt.on{background:rgba(63,185,80,.1);color:var(--green);border-color:rgba(63,185,80,.3)}
+.btn-mode{background:rgba(210,153,34,.1);color:var(--amber);border:1px solid rgba(210,153,34,.25)}
+.btn-mode.danger{background:rgba(88,166,255,.1);color:var(--primary);border-color:rgba(88,166,255,.3)}
+.btn-ghost{background:var(--card2);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{border-color:var(--muted)}
+.btn-ghost.btn-action-heavy{border-color:var(--primary-mid);color:var(--primary)}
+.btn-fund-add{background:var(--green-bg);color:var(--green);border:1px solid rgba(63,185,80,.3);border-radius:var(--r2);padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-fund-remove{background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:var(--r2);padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-fund-close{background:var(--red-bg);color:var(--red);border:1px solid rgba(248,81,73,.3);border-radius:var(--r2);padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:6px}
+.btn-fund-close:disabled{opacity:.45;cursor:not-allowed}
+.badge{font-size:11px;font-weight:800;padding:4px 10px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}
+.badge.paper{background:rgba(88,166,255,.15);color:var(--primary);border:1px solid rgba(88,166,255,.3)}
+.badge.live{background:var(--red-bg);color:var(--red);border:1px solid rgba(248,81,73,.3);animation:pulse 1.8s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.65}}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:5px;flex-shrink:0}
+.dot.on{background:var(--green)}.dot.off{background:var(--red)}
+.conn{font-size:12px;font-weight:600;display:flex;align-items:center;padding:4px 10px;border-radius:20px;border:1px solid var(--border);background:var(--card2)}
+.conn.on{color:var(--green);border-color:rgba(63,185,80,.35);background:var(--green-bg)}
+.conn.off{color:var(--red);border-color:rgba(248,81,73,.35);background:var(--red-bg)}
+.badge-tag{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:5px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;margin-left:4px}
+.badge-live{background:var(--green-bg);color:var(--green);border:1px solid rgba(63,185,80,.3)}
+.badge-fail{background:var(--red-bg);color:var(--red);border:1px solid rgba(248,81,73,.25)}
+.badge-busy{padding:3px 9px;border-radius:20px;gap:5px;margin-left:8px;background:var(--amber-bg);color:var(--amber);border:1px solid rgba(210,153,34,.3);display:inline-flex;align-items:center}
+.badge-busy .dot-spin{width:7px;height:7px;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;animation:spin .7s linear infinite;display:inline-block}
 @keyframes spin{to{transform:rotate(360deg)}}
-
-/* --- E: header mobile colapsado --- */
-.mobile-kebab{display:none}
-.hdr-more{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.lbl-short{display:none}
-@media(max-width:560px){
-  .mobile-kebab{display:inline-flex}
-  .hdr-more{position:absolute;top:100%;right:16px;margin-top:6px;background:var(--card2);
-    border:1px solid var(--border);border-radius:var(--r2);box-shadow:var(--sh2);padding:8px;
-    flex-direction:column;align-items:stretch;display:none;z-index:700}
-  .hdr-more.show{display:flex}
-  .hdr-r{position:relative}
-  .lbl-full{display:none}
-  .lbl-short{display:inline}
-}
-
-/* --- F: badges consolidados (icono+texto compartiendo estilo) --- */
-.icon-inline{display:inline-block;vertical-align:-2px;margin-right:3px}
-
-/* --- G: tarjeta de fondo con stat-grid + toggle switch --- */
-.fund-card{border:1px solid var(--border);background:var(--bg);border-radius:var(--r2);padding:11px;margin-bottom:10px}
+.via-strategy{color:var(--muted);font-size:11px;margin-left:6px}
+.price-age{color:var(--muted);font-size:10px;margin-left:4px}
+.fund-card{border:1px solid var(--border);background:var(--bg);border-radius:var(--r2);padding:12px;margin-bottom:10px}
 .fund-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:6px 14px;margin-top:8px;font-size:11.5px}
-@media(max-width:560px){.fund-stats{grid-template-columns:1fr}}
 .fund-stat-lbl{color:var(--muted);font-weight:600}
 .fund-stat-val{font-family:var(--mono);font-weight:700}
 .toggle-switch{position:relative;display:inline-block;width:32px;height:18px;flex-shrink:0}
 .toggle-switch input{opacity:0;width:0;height:0}
 .toggle-slider{position:absolute;inset:0;background:var(--border);border-radius:18px;cursor:pointer;transition:.15s}
-.toggle-slider:before{content:'';position:absolute;width:14px;height:14px;left:2px;top:2px;background:#fff;
-  border-radius:50%;transition:.15s;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.toggle-slider:before{content:'';position:absolute;width:14px;height:14px;left:2px;top:2px;background:#ccc;border-radius:50%;transition:.15s}
 .toggle-switch input:checked + .toggle-slider{background:var(--green)}
-.toggle-switch input:checked + .toggle-slider:before{transform:translateX(14px)}
-.fund-create-toggle{display:flex;justify-content:space-between;align-items:center;cursor:pointer;
-  padding:8px 0;margin-top:16px;border-top:1px solid var(--border);font-size:12px;font-weight:700;color:var(--primary)}
+.toggle-switch input:checked + .toggle-slider:before{transform:translateX(14px);background:#fff}
+.fund-create-toggle{display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:8px 0;margin-top:14px;border-top:1px solid var(--border);font-size:12px;font-weight:700;color:var(--primary)}
 .fund-create-body{display:none;margin-top:6px}
 .fund-create-body.show{display:block}
-
-/* --- H: tooltips propios accesibles --- */
-[title],[data-tip-text]{cursor:help}
-.tooltip-bubble{position:fixed;background:#1d1a14;color:#fdf9ee;font-size:11.5px;line-height:1.35;
-  padding:7px 10px;border-radius:6px;max-width:280px;z-index:5500;box-shadow:var(--sh2);
-  pointer-events:none;opacity:0;transition:opacity .1s}
-.tooltip-bubble.show{opacity:1}
-
-/* --- I: sub-secciones del modal de configuración --- */
-.cfg-section-title{font-size:11.5px;font-weight:800;color:var(--primary);text-transform:uppercase;
-  letter-spacing:.04em;margin:18px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--border)}
+.fund-name-link{cursor:pointer;text-decoration:underline;text-decoration-style:dotted;color:var(--primary-mid)}
+.muted-sm{font-size:12px;color:var(--muted)}
+.icon-inline{display:inline-block;vertical-align:-2px;margin-right:3px}
+.info-btn{background:none;border:none;color:var(--primary-mid);cursor:pointer;font-size:13px;padding:0 4px}
+.chart-wrap{position:relative;height:200px;margin-top:10px}
+.chart-wrap.sm{height:150px}
+.chart-wrap.xs{height:80px}
+@keyframes skel-shimmer{0%{background-position:-120px 0}100%{background-position:120px 0}}
+.skel{display:inline-block;height:12px;border-radius:4px;background:linear-gradient(90deg,var(--card2) 0%,var(--border) 50%,var(--card2) 100%);background-size:240px 100%;animation:skel-shimmer 1.2s infinite linear}
+.skel-text{width:70%}
+.skel-row td{padding:10px 8px}
+.toast{position:fixed;bottom:22px;right:22px;background:var(--card2);color:var(--text);border:1px solid var(--border);padding:11px 18px;border-radius:var(--r2);font-size:13px;box-shadow:var(--sh2);transform:translateY(80px);opacity:0;transition:all .3s;z-index:3000;pointer-events:none;max-width:380px}
+.toast.show{transform:translateY(0);opacity:1}
+.modal-overlay{position:fixed;inset:0;background:rgba(1,4,9,.82);display:none;align-items:center;justify-content:center;z-index:4000;padding:20px}
+.modal-overlay.show{display:flex}
+.modal-box{background:var(--card);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh2);width:100%;max-width:680px;max-height:88vh;overflow:auto}
+.modal-hdr{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-weight:700;color:var(--primary);position:sticky;top:0;background:var(--card)}
+.modal-close{background:none;border:none;font-size:18px;cursor:pointer;color:var(--muted);line-height:1}
+.modal-body{padding:16px 18px;overflow-x:auto}
+.modal-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.cfg-tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.cfg-tab{padding:6px 13px;border-radius:var(--r2);border:1.5px solid var(--border);background:var(--card2);color:var(--muted);cursor:pointer;font-size:12px;font-weight:700;font-family:inherit}
+.cfg-tab.on{background:var(--primary);color:var(--on-primary);border-color:var(--primary)}
+.cfg-section-title{font-size:11px;font-weight:800;color:var(--primary);text-transform:uppercase;letter-spacing:.05em;margin:18px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--border)}
 .cfg-section-title:first-child{margin-top:0}
-
-/* --- J: jerarquía de botones por riesgo --- */
-.btn-ghost.btn-action-heavy{border-color:var(--primary-mid);color:var(--primary)}
-.btn-fund-add{background:var(--green-bg);color:var(--green);border:1px solid rgba(31,110,68,.35);
-  border-radius:var(--r2);padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit}
-.btn-fund-remove{background:var(--card2);color:var(--text);border:1px solid var(--border);
-  border-radius:var(--r2);padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit}
-.btn-fund-close{background:var(--red-bg);color:var(--red);border:1px solid rgba(156,59,46,.35);
-  border-radius:var(--r2);padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;margin-top:6px}
-.btn-fund-close:disabled{opacity:.45;cursor:not-allowed}
-
-/* --- K: contraste y legibilidad de texto secundario --- */
-.muted-sm{font-size:12px}
-.via-strategy{font-size:11.5px}
-.price-age{font-size:11px}
+.login-overlay{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;justify-content:center;z-index:5000;padding:20px}
+.login-overlay.show{display:flex}
+.login-box{background:var(--card);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh2);width:100%;max-width:360px;padding:28px 24px}
+.login-box h1{font-size:17px;font-weight:600;font-family:var(--serif);color:var(--primary);margin-bottom:4px}
+.login-box p{font-size:12px;color:var(--muted);margin-bottom:18px}
+.login-error{font-size:12px;color:var(--red);min-height:16px;margin-top:8px}
+[title],[data-tip-text]{cursor:help}
+.tooltip-bubble{position:fixed;background:var(--card);color:var(--text);font-size:11.5px;line-height:1.4;padding:7px 10px;border-radius:6px;max-width:280px;z-index:5500;box-shadow:var(--sh2);pointer-events:none;opacity:0;transition:opacity .1s;border:1px solid var(--border)}
+.tooltip-bubble.show{opacity:1}
+.lbl-short{display:none}
+@media(max-width:900px){
+  .sidebar{transform:translateX(-100%);transition:transform .22s cubic-bezier(.4,0,.2,1)}
+  .sidebar.sb-open{transform:translateX(0);box-shadow:4px 0 20px rgba(0,0,0,.5)}
+  .page-content{margin-left:0;padding-top:72px}
+  .mobile-topbar{display:flex}
+  .sections-grid{grid-template-columns:1fr}
+  .order-col{position:static}
+  .kpis{grid-template-columns:repeat(2,1fr)}
+  .modal-grid{grid-template-columns:1fr}
+}
+@media(max-width:560px){
+  .kpis{grid-template-columns:1fr}
+  .frow{grid-template-columns:1fr}
+  .fund-stats{grid-template-columns:1fr}
+  .page-content{padding:68px 14px 20px}
+}
+[id^="sec-"]{scroll-margin-top:20px}
+@media(max-width:900px){[id^="sec-"]{scroll-margin-top:68px}}
 </style>
 </head>
 <body>
 
-<header class="hdr">
-  <div class="hdr-l">
-    <h1>Trading Dashboard · Interactive Brokers</h1>
-    <p id="hdr-sub">cargando estado…</p>
-  </div>
-  <div class="hdr-r">
-    <span class="conn" id="connBadge"><span class="dot off" id="connDot"></span><span id="connTxt">sin datos</span></span>
-    <span class="badge paper" id="modeBadge">PAPER</span>
-    <button class="btn btn-ghost mobile-kebab" onclick="toggleHdrMenu()" title="Más opciones">⋮</button>
-    <div class="hdr-more" id="hdrMore">
-      <button class="btn btn-mode" id="modeBtn" onclick="toggleMode()"><span class="lbl-full">🔴 Activar modo LIVE</span><span class="lbl-short">🔴 LIVE</span></button>
-      <button class="btn btn-halt" id="haltBtn" onclick="toggleHalt()"><span class="lbl-full">⏸ Pausar trading</span><span class="lbl-short">⏸ Pausar</span></button>
-      <button class="btn btn-ghost" onclick="openConfigModal()"><span class="lbl-full">⚙️ Configuración</span><span class="lbl-short">⚙️</span></button>
-      <button class="btn btn-ghost" onclick="logout()"><span class="lbl-full">🚪 Salir</span><span class="lbl-short">🚪</span></button>
+<aside class="sidebar" id="sidebar">
+  <div class="sb-brand">
+    <span class="sb-logo">📈</span>
+    <div>
+      <div class="sb-name">Trading Dashboard</div>
+      <div class="sb-sub" id="hdr-sub">cargando estado…</div>
     </div>
   </div>
-</header>
+  <div class="sb-status">
+    <span class="conn" id="connBadge"><span class="dot off" id="connDot"></span><span id="connTxt">sin datos</span></span>
+    <span class="badge paper" id="modeBadge">PAPER</span>
+  </div>
+  <nav class="section-nav" id="sectionNav">
+    <a href="#sec-posiciones"><span class="nav-icon">📊</span>Posiciones</a>
+    <a href="#sec-fondos"><span class="nav-icon">💼</span>Fondos</a>
+    <a href="#sec-radar"><span class="nav-icon">📡</span>Radar</a>
+    <a href="#sec-pendientes"><span class="nav-icon">⏳</span>Pendientes</a>
+    <a href="#sec-auditoria"><span class="nav-icon">📋</span>Auditoría</a>
+    <a href="#sec-orden"><span class="nav-icon">➕</span>Nueva orden</a>
+  </nav>
+  <div class="sb-actions" id="hdrMore">
+    <button class="btn btn-mode" id="modeBtn" onclick="toggleMode()">🔴 Activar modo LIVE</button>
+    <button class="btn btn-halt" id="haltBtn" onclick="toggleHalt()">⏸ Pausar trading</button>
+    <button class="btn btn-ghost" onclick="openConfigModal()">⚙️ Configuración</button>
+    <button class="btn btn-ghost" onclick="toggleTheme()">🌙 Tema</button>
+    <button class="btn btn-ghost" onclick="logout()">🚪 Salir</button>
+  </div>
+</aside>
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+<div class="mobile-topbar">
+  <span class="mobile-title">Trading Dashboard</span>
+  <button class="mobile-hamburger" onclick="toggleSidebar()">☰</button>
+</div>
 
-<nav class="section-nav" id="sectionNav">
-  <a href="#sec-posiciones">Posiciones</a>
-  <a href="#sec-fondos">Fondos</a>
-  <a href="#sec-radar">Radar</a>
-  <a href="#sec-pendientes">Pendientes</a>
-  <a href="#sec-auditoria">Auditoría</a>
-  <a href="#sec-orden">Nueva orden</a>
-</nav>
-
-<div class="main">
+<div class="page-content">
   <div class="banner live" id="bannerLive">⚠️ MODO LIVE — las órdenes usan dinero real.</div>
   <div class="banner halted" id="bannerHalted">⏸ Trading pausado manualmente (kill switch). No se ejecutarán nuevas órdenes.</div>
   <div class="banner halted" id="bannerDataDegraded">⚠️ Feed de datos de mercado degradado: una porción del universo no tiene datos frescos. Los scores/rankings actuales pueden estar incompletos.</div>
@@ -297,8 +285,8 @@ td{padding:8px;border-bottom:1px solid var(--border)}
     <div class="chart-wrap sm" style="margin-top:0"><canvas id="roiHistoryChart"></canvas></div>
   </div>
 
-  <div class="grid2">
-    <div style="display:flex;flex-direction:column;gap:18px">
+  <div class="sections-grid">
+    <div class="sections-col">
       <div class="card" id="sec-posiciones">
         <div class="card-hdr">Posiciones <button class="btn btn-ghost" style="background:var(--bg);color:var(--muted)" onclick="refreshPositionsAndAccount()">↻ Actualizar</button></div>
         <div class="card-body">
@@ -393,14 +381,12 @@ td{padding:8px;border-bottom:1px solid var(--border)}
       <div class="card" id="sec-auditoria">
         <div class="card-hdr">Bitácora de auditoría (últimas 25)</div>
         <div class="card-body">
-          <table>
-            <thead><tr><th>Hora</th><th>Acción</th><th>Símbolo</th><th>Resultado</th><th></th></tr></thead>
-            <tbody id="auditBody"><tr><td colspan="5" class="empty">Sin datos aún</td></tr></tbody>
-          </table>
+          <div id="auditBody" class="audit-timeline"><div class="empty">Sin datos aún</div></div>
         </div>
       </div>
     </div>
 
+    <div class="order-col">
     <div class="card order-panel" id="sec-orden">
       <div class="card-hdr">Nueva orden</div>
       <div class="card-body">
@@ -451,6 +437,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
         </p>
       </div>
     </div>
+    </div>
   </div>
 </div>
 
@@ -482,14 +469,27 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 // Paleta compartida por todos los Chart.js de este dashboard, alineada con
 // las variables CSS de :root (Chart.js no puede leer var(--x) directo: solo
 // acepta colores resueltos).
-const THEME = {
-  primary: '#2f5fa8', primaryMid: '#5b9bd5', green: '#1f6e44', red: '#9c3b2e',
-  amber: '#a3700f', muted: '#766f5e', border: '#dcd0b4', slate: '#8a7d5a', violet: '#7d5a82',
+const THEMES = {
+  dark:  { primary:'#58a6ff', primaryMid:'#79c0ff', green:'#3fb950', red:'#f85149',
+           amber:'#d29922', muted:'#8b949e', border:'#30363d', slate:'#6e7681', violet:'#d2a8ff' },
+  light: { primary:'#2f5fa8', primaryMid:'#5b9bd5', green:'#1f6e44', red:'#9c3b2e',
+           amber:'#a3700f', muted:'#766f5e', border:'#dcd0b4', slate:'#8a7d5a', violet:'#7d5a82' },
 };
-if(window.Chart){
+let THEME = THEMES.dark;
+function updateChartDefaults(){
+  const isDark = document.documentElement.dataset.theme !== 'light';
+  THEME = isDark ? THEMES.dark : THEMES.light;
+  if(!window.Chart) return;
   Chart.defaults.color = THEME.muted;
   Chart.defaults.borderColor = THEME.border;
   Chart.defaults.font.family = "-apple-system,'Segoe UI',Roboto,system-ui,sans-serif";
+}
+function toggleTheme(){
+  const root = document.documentElement;
+  const next = root.dataset.theme === 'light' ? 'dark' : 'light';
+  root.dataset.theme = next;
+  localStorage.setItem('theme', next);
+  updateChartDefaults();
 }
 
 let currentSide = 'BUY';
@@ -628,15 +628,15 @@ function setBtnLabel(btn, full, short){
   btn.innerHTML = `<span class="lbl-full">${full}</span><span class="lbl-short">${short}</span>`;
 }
 
-function toggleHdrMenu(){
-  document.getElementById('hdrMore').classList.toggle('show');
+function toggleSidebar(){
+  document.getElementById('sidebar').classList.toggle('sb-open');
+  document.getElementById('sidebarOverlay').classList.toggle('show');
 }
-document.addEventListener('click', (ev) => {
-  const menu = document.getElementById('hdrMore');
-  if(!menu || !menu.classList.contains('show')) return;
-  if(ev.target.closest('.hdr-more') || ev.target.closest('.mobile-kebab')) return;
-  menu.classList.remove('show');
-});
+function closeSidebar(){
+  document.getElementById('sidebar').classList.remove('sb-open');
+  document.getElementById('sidebarOverlay').classList.remove('show');
+}
+function toggleHdrMenu(){ toggleSidebar(); }
 
 // Ultimo /api/status conocido, para que scanSignals() pueda explicar un
 // "0/50 streaming en vivo" sin pedirlo de nuevo: a diferencia de
@@ -706,14 +706,23 @@ async function toggleHalt(){
   }
 }
 
+function flashOnChange(id, text){
+  const el = document.getElementById(id);
+  if(!el || el.textContent === text) return;
+  el.textContent = text;
+  el.classList.remove('flash');
+  void el.offsetWidth;
+  el.classList.add('flash');
+  el.addEventListener('animationend', () => el.classList.remove('flash'), { once: true });
+}
 function renderAccount(a){
-  document.getElementById('kv-netliq').textContent = fmtUsd(a.net_liquidation);
-  document.getElementById('kv-cash').textContent = fmtUsd(a.cash);
-  document.getElementById('kv-bp').textContent = fmtUsd(a.buying_power);
-  const pnlEl = document.getElementById('kv-pnl');
+  flashOnChange('kv-netliq', fmtUsd(a.net_liquidation));
+  flashOnChange('kv-cash',   fmtUsd(a.cash));
+  flashOnChange('kv-bp',     fmtUsd(a.buying_power));
   const pnlPos = (a.daily_pnl || 0) >= 0;
-  pnlEl.textContent = fmtUsd(a.daily_pnl);
+  const pnlEl = document.getElementById('kv-pnl');
   pnlEl.className = 'kpi-val ' + (pnlPos ? 'pos' : 'neg');
+  flashOnChange('kv-pnl', fmtUsd(a.daily_pnl));
   const trendEl = document.getElementById('kv-pnl-trend');
   trendEl.textContent = `${pnlPos ? '▲' : '▼'} ${(a.daily_pnl_pct ?? 0).toFixed(2)}% hoy`;
   trendEl.className = 'kpi-trend ' + (pnlPos ? 'pos' : 'neg');
@@ -732,9 +741,14 @@ function renderPositions(positions){
   lastPositionPrices = {};
   positions.forEach(p => { if(p.market_price) lastPositionPrices[p.symbol] = p.market_price; });
   if(!positions.length){ body.innerHTML = '<tr><td colspan="7" class="empty">Sin posiciones abiertas</td></tr>'; return; }
+  const maxAbsPnl = Math.max(1, ...positions.map(p => Math.abs(p.unrealized_pnl || 0)));
   body.innerHTML = positions.map(p => {
     const costTotal = p.quantity * p.avg_cost;
     const marketTotal = p.market_price ? p.quantity * p.market_price : costTotal;
+    const pnl = p.unrealized_pnl || 0;
+    const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const pnlBarW = Math.round(Math.min(100, Math.abs(pnl) / maxAbsPnl * 100));
+    const pnlBar = `<div class="pos-pnl-bar-wrap"><div class="pos-pnl-bar" style="width:${pnlBarW}%;background:${pnlColor}"></div></div>`;
     return `
     <tr>
       <td><b>${esc(p.symbol)}</b></td>
@@ -743,7 +757,7 @@ function renderPositions(positions){
       <td>${p.market_price ? fmtUsd(p.market_price) : '—'}</td>
       <td>${fmtUsd(costTotal)}</td>
       <td>${fmtUsd(marketTotal)}</td>
-      <td style="color:${(p.unrealized_pnl||0)>=0?'var(--green)':'var(--red)'}">${p.unrealized_pnl!=null?fmtUsd(p.unrealized_pnl):'—'}</td>
+      <td style="color:${pnlColor}">${p.unrealized_pnl!=null?fmtUsd(p.unrealized_pnl):'—'}${pnlBar}</td>
     </tr>`;
   }).join('');
 }
@@ -1564,37 +1578,61 @@ async function refreshPending(){
     const pending = await api('/api/orders/pending', { auth:true });
     const body = document.getElementById('pendingBody');
     if(!pending.length){ body.innerHTML = '<div class="empty">No hay órdenes pendientes</div>'; return; }
-    body.innerHTML = pending.map(p => `
-      <div class="pending-item">
-        ${p.source === 'signal_engine' ? '<span title="Generada automaticamente por el escaneo proactivo">🤖 Señal automática</span><br>' : ''}
-        ${p.strategy_id ? `<span class="badge-tag" title="Estrategia que generó esta señal">${esc(strategyName(p.strategy_id))}</span><br>` : ''}
-        ${p.order.fund_id ? `<span class="muted-sm">Fondo: ${esc(lastFundsById[p.order.fund_id] || p.order.fund_id)}</span><br>` : ''}
-        <b>${esc(p.order.side)} ${esc(p.order.quantity)} ${esc(p.order.symbol)}</b>
-        ${p.order.limit_price ? ' @ ' + fmtUsd(p.order.limit_price) : ''}
-        · valor estimado ${fmtUsd(p.decision.estimated_value_usd)}
-        ${p.order.stop_loss_price ? ' · stop-loss ' + fmtUsd(p.order.stop_loss_price) : ''}
-        <div class="pending-actions">
+    body.innerHTML = pending.map(p => {
+      const isBuy = p.order.side === 'BUY';
+      const sideLabel = isBuy ? 'COMPRAR' : 'VENDER';
+      const sideCls = isBuy ? 'pcard-side-buy' : 'pcard-side-sell';
+      const headerParts = [];
+      if(p.source === 'signal_engine') headerParts.push('🤖 señal automática');
+      if(p.strategy_id) headerParts.push(`<span class="badge-tag badge-live">${esc(strategyName(p.strategy_id))}</span>`);
+      if(p.order.fund_id) headerParts.push(`Fondo: ${esc(lastFundsById[p.order.fund_id] || p.order.fund_id)}`);
+      const details = [];
+      details.push(`Valor estimado: ${fmtUsd(p.decision.estimated_value_usd)}`);
+      if(p.order.stop_loss_price) details.push(`Stop-loss: ${fmtUsd(p.order.stop_loss_price)}`);
+      return `<div class="pcard">
+        ${headerParts.length ? `<div class="pcard-header">${headerParts.join(' · ')}</div>` : ''}
+        <div class="pcard-main">
+          <span class="pcard-symbol">${esc(p.order.symbol)}</span>
+          <span class="${sideCls}">${sideLabel}</span>
+          <span class="pcard-qty">${esc(p.order.quantity)} acc</span>
+          ${p.order.limit_price ? `<span class="pcard-price">@ ${fmtUsd(p.order.limit_price)}</span>` : ''}
+        </div>
+        <div class="pcard-details">${details.map(d => `<span>${d}</span>`).join('')}</div>
+        <div class="pcard-actions">
           <button class="btn-approve" onclick="approveOrder(${escJsArg(p.id)})">✓ Aprobar</button>
           <button class="btn-reject" onclick="rejectOrder(${escJsArg(p.id)})">✕ Rechazar</button>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   }catch(e){ /* ignore */ }
 }
 
 let lastAuditEntries = [];
+
+function auditIcon(action){
+  if(action.includes('executed') || action.includes('fill')) return '✅';
+  if(action.includes('rejected') || action.includes('failed')) return '❌';
+  if(action.includes('exit') || action.includes('scale_out')) return '📤';
+  if(action.includes('stop')) return '🛡';
+  if(action.includes('halt')) return '⏸';
+  if(action.includes('drafted')) return '📝';
+  if(action.includes('connected')) return '🔗';
+  if(action.includes('disconnected')) return '🔌';
+  if(action.includes('reconciled') || action.includes('late')) return '🔄';
+  return '📋';
+}
 
 async function refreshAudit(){
   try{
     const entries = await api('/api/audit?limit=25', { auth:true });
     lastAuditEntries = entries;
     const body = document.getElementById('auditBody');
-    if(!entries.length){ body.innerHTML = '<tr><td colspan="5" class="empty">Sin datos aún</td></tr>'; return; }
+    if(!entries.length){ body.innerHTML = '<div class="empty">Sin datos aún</div>'; return; }
     body.innerHTML = entries.map((e, i) => {
       const p = e.payload || {};
       const r = e.result || {};
       const action = e.action || '';
 
-      // Etiqueta legible para la acción
       const actionLabel = {
         'auto_trade_executed':                    'Auto-trade ejecutado',
         'auto_trade_submitted_unfilled':          'Auto-trade (sin fill)',
@@ -1605,58 +1643,54 @@ async function refreshAudit(){
         'auto_trade_exit':                        'Posición cerrada',
         'auto_trade_exit_unfilled':               'Cierre (sin fill)',
         'auto_trade_trailing_stop_updated':       'Trailing stop actualizado',
-        'auto_trade_scale_out':                   'Salida parcial (scale-out)',
-        'auto_trade_scale_out_failed':             'Salida parcial fallida',
+        'auto_trade_scale_out':                   'Salida parcial',
+        'auto_trade_scale_out_failed':            'Salida parcial fallida',
         'auto_trade_scale_out_unfilled':          'Salida parcial (sin fill)',
         'auto_trade_protective_stop_placed':      'Stop-loss protector colocado',
-        'auto_trade_reconciled_late':             'Fill tardío reconciliado (startup)',
-        'auto_halt_daily_loss_limit':             '⏸ Kill switch: pérdida diaria',
-        'auto_halt_max_drawdown':                 '⏸ Kill switch: drawdown acumulado',
+        'auto_trade_reconciled_late':             'Fill tardío reconciliado',
+        'auto_halt_daily_loss_limit':             'Kill switch: pérdida diaria',
+        'auto_halt_max_drawdown':                 'Kill switch: drawdown',
         'signal_order_rejected':                  'Señal rechazada',
-        'signal_order_drafted':                   'Borrador generado por señal',
+        'signal_order_drafted':                   'Borrador generado',
         'order_executed':                         'Orden ejecutada',
         'order_submitted_unfilled':               'Orden (sin fill)',
-        'order_executed_after_approval':          'Orden aprobada ejecutada',
+        'order_executed_after_approval':          'Orden aprobada',
         'order_submitted_unfilled_after_approval':'Orden aprobada (sin fill)',
         'ibkr_disconnected':                      'IBKR desconectado',
         'ibkr_connected':                         'IBKR conectado',
         'auto_trade_fill_late':                   'Fill tardío registrado',
-        'auto_trade_reconciled':                  'Fill reconciliado (startup)',
+        'auto_trade_reconciled':                  'Fill reconciliado',
       }[action] || action;
 
-      // Columna Símbolo
       const side = p.side === 'BUY' ? 'Compra' : p.side === 'SELL' ? 'Venta' : (p.side || '');
-      const symbolCell = p.symbol ? `<strong>${esc(p.symbol)}</strong>${side ? ' · ' + esc(side) : ''}` : '—';
+      const symbolPart = p.symbol ? `<strong>${esc(p.symbol)}</strong>${side ? ' · ' + esc(side) : ''}` : '';
+      const actionLine = [esc(actionLabel), symbolPart].filter(Boolean).join(' · ');
 
-      // Columna Resultado
+      const filledQty  = r.filled_qty != null ? r.filled_qty : null;
+      const fillPrice  = r.avg_fill_price != null ? r.avg_fill_price : null;
+      const limitPrice = p.limit_price != null ? p.limit_price : null;
+      const stopPrice  = p.stop_loss_price != null ? p.stop_loss_price : null;
+      const fundId     = r.fund_id || p.fund_id;
+      const fundName   = fundId ? (lastFundsById[fundId] || fundId.slice(0,8) + '…') : null;
+      const violations = r.violations || [];
       let resultHtml = '';
-      const filledQty   = r.filled_qty != null ? r.filled_qty : null;
-      const fillPrice   = r.avg_fill_price != null ? r.avg_fill_price : null;
-      const limitPrice  = p.limit_price != null ? p.limit_price : null;
-      const stopPrice   = p.stop_loss_price != null ? p.stop_loss_price : null;
-      const fundId      = r.fund_id || p.fund_id;
-      const fundName    = fundId ? (lastFundsById[fundId] || fundId.slice(0,8) + '…') : null;
-      const violations  = r.violations || [];
-
       if(action.includes('executed')){
         const qtyStr   = filledQty != null ? `${filledQty} acc` : (p.quantity != null ? `${p.quantity} acc` : '');
         const priceStr = fillPrice  != null ? `$${fillPrice.toFixed(2)}` : (limitPrice != null ? `~$${limitPrice.toFixed(2)}` : '');
         resultHtml = [qtyStr, priceStr].filter(Boolean).join(' @ ');
         if(stopPrice) resultHtml += ` · SL $${stopPrice.toFixed(2)}`;
-        if(fundName)  resultHtml += `<br><span class="muted-sm">${esc(fundName)}</span>`;
+        if(fundName)  resultHtml += ` · <span class="muted-sm">${esc(fundName)}</span>`;
       } else if(action.includes('submitted_unfilled')){
-        const qtyStr    = p.quantity != null ? `${p.quantity} acc` : '';
-        const lmtStr    = limitPrice != null ? `lím $${limitPrice.toFixed(2)}` : '';
-        resultHtml = [qtyStr, lmtStr].filter(Boolean).join(' · ') || 'enviada, sin fill en ventana';
-        if(fundName) resultHtml += `<br><span class="muted-sm">${esc(fundName)}</span>`;
+        const qtyStr = p.quantity != null ? `${p.quantity} acc` : '';
+        const lmtStr = limitPrice != null ? `lím $${limitPrice.toFixed(2)}` : '';
+        resultHtml = [qtyStr, lmtStr].filter(Boolean).join(' · ') || 'enviada, sin fill';
+        if(fundName) resultHtml += ` · <span class="muted-sm">${esc(fundName)}</span>`;
       } else if(violations.length){
-        const msgs = violations.map(v => esc(v.message));
-        resultHtml = `<span class="muted-sm">${msgs.join('<br>')}</span>`;
+        resultHtml = `<span class="muted-sm">${violations.map(v => esc(v.message)).join(' · ')}</span>`;
       } else if(r.error){
         resultHtml = `<span class="muted-sm">${esc(r.error)}</span>`;
       }
 
-      // Hora: fecha si no es hoy
       const ts = new Date(e.ts);
       const today = new Date();
       const sameDay = ts.toDateString() === today.toDateString();
@@ -1664,13 +1698,15 @@ async function refreshAudit(){
         ? ts.toLocaleTimeString()
         : ts.toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' ' + ts.toLocaleTimeString();
 
-      return `<tr>
-        <td style="white-space:nowrap">${horaStr}</td>
-        <td>${esc(actionLabel)}</td>
-        <td>${symbolCell}</td>
-        <td>${resultHtml || '—'}</td>
-        <td>${r.signal ? `<button class="info-btn" onclick="showAuditSignalDetail(${i})" title="Ver señal">ⓘ</button>` : ''}</td>
-      </tr>`;
+      const infoBtn = r.signal ? `<button class="info-btn" onclick="showAuditSignalDetail(${i})" title="Ver señal">ⓘ</button>` : '';
+      return `<div class="audit-event">
+        <div class="audit-icon">${auditIcon(action)}</div>
+        <div class="audit-content">
+          <div class="audit-action">${actionLine}${infoBtn}</div>
+          ${resultHtml ? `<div class="audit-result">${resultHtml}</div>` : ''}
+        </div>
+        <div class="audit-time">${horaStr}</div>
+      </div>`;
     }).join('');
   }catch(e){ /* ignore */ }
 }
@@ -1802,6 +1838,12 @@ function strategyDescription(strategyId){
 // estrategia activa y manda el resto a un popover ("ver N más") -- el dato
 // secundario dejaba de competir visualmente con el que de verdad importa al
 // mirar el ranking.
+function scoreBarHtml(score){
+  if(score == null) return '';
+  const pct = Math.round(Math.min(100, Math.max(0, score)));
+  const cls = pct >= 70 ? 'score-bar--hi' : pct >= 40 ? 'score-bar--mid' : 'score-bar--lo';
+  return `<div class="score-bar-wrap" style="width:100%"><div class="score-bar ${cls}" style="width:${pct}%"></div></div>`;
+}
 function scoreBadgeHtml(id, value, highlightId){
   const label = esc(strategyShortLabel(id));
   const strat = STRATEGIES.find(s => s.id === id);
@@ -1822,7 +1864,7 @@ function scoresCellHtml(r){
   // primaria de /api/signals/scan); el resto viene del merge de
   // /api/signals/scan/all, que puede no haber resuelto todavia.
   const highlightHtml = highlightId
-    ? scoreBadgeHtml(highlightId, r.score, highlightId)
+    ? scoreBarHtml(r.score) + scoreBadgeHtml(highlightId, r.score, highlightId)
     : ids.map(id => scoreBadgeHtml(id, scores[id], highlightId)).join('');
   const moreBtn = others.length
     ? `<button type="button" class="score-more-btn" onclick="event.stopPropagation();toggleScorePopover(event,'${esc(r.symbol)}')">ver ${others.length} más</button>`
@@ -2531,9 +2573,12 @@ function setupScrollspy(){
   const observer = new IntersectionObserver((entries) => {
     const visible = entries.filter(e => e.isIntersecting);
     if(visible.length) setActive(visible[0].target.id);
-  }, { rootMargin: '-54px 0px -70% 0px', threshold: 0 });
+  }, { rootMargin: '-64px 0px -60% 0px', threshold: 0 });
   sections.forEach(s => observer.observe(s));
-  links.forEach(a => a.addEventListener('click', () => setActive(a.getAttribute('href').slice(1))));
+  links.forEach(a => a.addEventListener('click', () => {
+    setActive(a.getAttribute('href').slice(1));
+    closeSidebar();
+  }));
 }
 
 // --- H: tooltips propios (reemplazan el title= nativo lento, sin tocar el markup) ---
@@ -2601,6 +2646,11 @@ function toggleFundCreateForm(){
 }
 
 function boot(){
+  const savedTheme = localStorage.getItem('theme');
+  if(savedTheme === 'light' || savedTheme === 'dark'){
+    document.documentElement.dataset.theme = savedTheme;
+  }
+  updateChartDefaults();
   onTypeChange();
   refreshAll();        // ya incluye un refreshFunds() propio (ver refreshAll)
   refreshAccount();    // carga inicial; despues el WS la mantiene en vivo
