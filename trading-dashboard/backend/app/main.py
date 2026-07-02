@@ -1800,6 +1800,44 @@ async def _reconcile_unfilled_on_startup() -> None:
         if stop_px:
             await _ensure_protective_stop(fund_id, sym, stop_px)
 
+    # Segunda pasada: posiciones en IBKR que no están en ningún fondo.
+    # Cubre el caso donde órdenes se ejecutaron antes de que los trades
+    # estuvieran atados al fondo (código anterior al fix #28), o cuando un
+    # crash-loop impidió que record_fill se guardara a disco.
+    try:
+        ibkr_positions_all = {p.symbol: p for p in await broker.get_positions()}
+    except Exception as exc:
+        logger.warning("reconcile_orphan: no se pudieron leer posiciones de IBKR: %s", exc)
+        return
+
+    all_funds = funds_store.list()
+    auto_fund = next((f for f in all_funds if f.auto_trading_enabled), None)
+    if auto_fund is None:
+        return
+
+    for sym, ibkr_pos in ibkr_positions_all.items():
+        covered_qty = sum(f.owned_quantity(sym) for f in all_funds)
+        orphan_qty = ibkr_pos.quantity - covered_qty
+        if orphan_qty <= 0:
+            continue
+        fill_price = ibkr_pos.avg_cost
+        logger.info(
+            "reconcile_orphan: %s %.0f × $%.4f → fondo %s",
+            sym, orphan_qty, fill_price, auto_fund.id,
+        )
+        funds_store.record_fill(
+            auto_fund.id, sym, Side.BUY, orphan_qty, fill_price,
+            stop_loss_price=None,
+            commission=0.0,
+        )
+        audit.record(
+            "auto_trade_reconciled",
+            {"symbol": sym, "side": "BUY", "fund_id": auto_fund.id,
+             "quantity": orphan_qty, "source": "orphan_ibkr_position"},
+            {"filled_qty": orphan_qty, "avg_fill_price": fill_price,
+             "fund_id": auto_fund.id},
+        )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
