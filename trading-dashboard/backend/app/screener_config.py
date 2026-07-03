@@ -144,6 +144,21 @@ class OpportunisticConfig(BaseModel):
     stop_loss_atr_multiplier: float = 2.0
     max_holding_days: int = 15
 
+    # ── Gates de calidad de entrada ─────────────────────────────────────────
+    # Gate activo: MACD debe haber cruzado de negativo a positivo en los
+    # últimos N días. En backtest: Sharpe +19% (0.81→0.96), DD -11pp
+    # (-37%→-26%), retorno prácticamente igual. Captura el inflection point
+    # real; elimina entradas donde el MACD lleva semanas positivo y ya perdió
+    # impulso. Valor 0 deshabilita el gate (usado en tests con data sintética).
+    macd_crossover_lookback_days: int = 3
+    # Gates desactivados por defecto (backtest mostró que no discriminan):
+    # rsi_rising y sma incluso degradaron el rendimiento al forzar entradas más
+    # tardías. Se dejan en config para experimentación vía screener.yaml.
+    rsi_rising_min_days: int = 0        # 0 = desactivado (all([]) = True)
+    max_volatility_pct_gate: float = 100.0  # 100% = sin techo duro de ATR
+    max_5d_run_pct: float = 1000.0      # muy alto = desactivado
+    require_above_sma_period: int = 0   # 0 = desactivado
+
     # Pesos normalizados a suma 1.0 (percentiles 0-100 por componente).
     score_weight_momentum: float = 0.3077
     score_weight_volatility: float = 0.1538

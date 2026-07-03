@@ -580,19 +580,15 @@ def _simulate_symbol_opportunistic(
     opp = cfg.opportunistic
     close = bars["Close"]
     atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
-    # Gates de calidad de la entrada (momentum_ok/rsi_ok/volatility_ok/
-    # room_to_grow_ok): en evaluate_symbol (strategies/opportunistic.py) son
-    # las 4 condiciones booleanas de passes_filters, ademas de ser cada una un
-    # componente continuo del score. Sin exigirlas tambien aca como gate duro,
-    # el backtest podia simular una entrada en un dia donde, por ejemplo, el
-    # retorno reciente es negativo (falla momentum_ok) pero el score compuesto
-    # es igual alto por los demas componentes -- algo que en vivo cae del lado
-    # "no pasa" (0-49) y rara vez cruza el umbral de entrada (ver la banda
-    # 50-100/0-49 en screener.py/strategies/opportunistic.py).
     roc_short_s = rate_of_change(close, opp.momentum_lookback_days)
     rsi_s = rsi(close, opp.rsi_period)
     from_high_s = pct_from_high(close, 252)
     dollar_volume_s = bars["Volume"].rolling(20, min_periods=1).mean() * close
+    # Series pre-computadas para los gates de calidad de entrada.
+    # Períodos=0 deshabilitan el gate respectivo (ver checks más abajo).
+    _, _, macd_hist_s = macd(close)
+    sma_s = sma(close, opp.require_above_sma_period) if opp.require_above_sma_period > 0 else close
+    roc_5d_s = rate_of_change(close, 5)
 
     notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
 
@@ -705,10 +701,48 @@ def _simulate_symbol_opportunistic(
         momentum_ok = not pd.isna(roc_today) and roc_today > 0
         rsi_ok = not pd.isna(rsi_today) and opp.rsi_min <= rsi_today <= opp.rsi_max
         volatility_ok = volatility_pct >= opp.min_volatility_pct
+        volatility_max_ok = volatility_pct <= opp.max_volatility_pct_gate
         room_to_grow_ok = pd.isna(fh_today) or fh_today <= -opp.min_pct_below_52w_high
 
-        if not (momentum_ok and rsi_ok and volatility_ok and room_to_grow_ok):
+        if not (momentum_ok and rsi_ok and volatility_ok and volatility_max_ok and room_to_grow_ok):
             continue
+
+        # Gate: MACD cruzó de negativo a positivo en los últimos N días.
+        # Lookback=0 deshabilita el gate (usado en tests de mecánica pura).
+        lb = opp.macd_crossover_lookback_days
+        if lb > 0:
+            macd_crossover_ok = False
+            if i >= lb + 1:
+                for j in range(i - lb, i):
+                    v0, v1 = macd_hist_s.iloc[j], macd_hist_s.iloc[j + 1]
+                    if not pd.isna(v0) and not pd.isna(v1) and v0 < 0 and v1 >= 0:
+                        macd_crossover_ok = True
+                        break
+            if not macd_crossover_ok:
+                continue
+
+        # Gate: RSI subiendo N días consecutivos.
+        # rsi_rising_min_days=0: all([]) = True vacuamente (gate desactivado).
+        n_rsi = opp.rsi_rising_min_days
+        rsi_rising_ok = i >= n_rsi and all(
+            not pd.isna(rsi_s.iloc[i - k]) and not pd.isna(rsi_s.iloc[i - k - 1])
+            and rsi_s.iloc[i - k - 1] < rsi_s.iloc[i - k]
+            for k in range(n_rsi)
+        )
+        if not rsi_rising_ok:
+            continue
+
+        # Gate: no entrar tarde en rally ya corrido
+        roc5 = roc_5d_s.iloc[i]
+        if not pd.isna(roc5) and roc5 > opp.max_5d_run_pct:
+            continue
+
+        # Gate: precio por encima de SMA(N).
+        # require_above_sma_period=0 deshabilita el gate.
+        if opp.require_above_sma_period > 0:
+            sma_val = sma_s.iloc[i]
+            if not pd.isna(sma_val) and price <= sma_val:
+                continue
 
         pending_entry_atr = atr_today
 

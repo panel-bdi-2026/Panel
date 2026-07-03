@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from ..indicators import market_regime_ok, rate_of_change, rsi
+from ..indicators import macd as compute_macd, market_regime_ok, rate_of_change, rsi, sma as compute_sma
 from ..market_data import MarketDataError, get_daily_bars, is_bars_cached
 from ..models import SignalResult
 from ..scoring import finalize_scan_results
@@ -102,6 +102,51 @@ class OpportunisticStrategy:
         # Momentum, que no exige ningun minimo.
         volatility_pct = (last_atr / last_price * 100) if last_price else 0.0
 
+        # ── Gates de calidad de entrada ──────────────────────────────────────
+        # Gate 1: MACD cruzó de negativo a positivo en los últimos N días.
+        # lookback=0 deshabilita el gate.
+        lookback = opp.macd_crossover_lookback_days
+        if lookback > 0:
+            _, _, macd_hist = compute_macd(close)
+            if len(macd_hist) >= lookback + 2:
+                recent_hist = macd_hist.iloc[-(lookback + 1):]
+                macd_crossover_ok = any(
+                    not pd.isna(recent_hist.iloc[j]) and not pd.isna(recent_hist.iloc[j + 1])
+                    and recent_hist.iloc[j] < 0 and recent_hist.iloc[j + 1] >= 0
+                    for j in range(len(recent_hist) - 1)
+                )
+            else:
+                macd_crossover_ok = False
+        else:
+            macd_crossover_ok = True
+
+        # Gate 2: RSI subiendo N días consecutivos.
+        # rsi_rising_min_days=0: all([]) = True vacuamente (gate desactivado).
+        n_rsi = opp.rsi_rising_min_days
+        if len(rsi_short) >= n_rsi + 1:
+            rsi_rising_ok = all(
+                rsi_short.iloc[-(k + 1)] < rsi_short.iloc[-k]
+                for k in range(1, n_rsi + 1)
+            )
+        else:
+            rsi_rising_ok = n_rsi == 0
+
+        # Gate 3: ATR máximo duro. Nombres con ATR >N% tienen stop de 5% < 1×ATR.
+        volatility_max_ok = volatility_pct <= opp.max_volatility_pct_gate
+
+        # Gate 4: No entrar tarde en un rally ya corrido.
+        roc_5d = rate_of_change(close, 5)
+        last_roc_5d = float(roc_5d.iloc[-1]) if not roc_5d.empty and not pd.isna(roc_5d.iloc[-1]) else 0.0
+        run_ok = last_roc_5d <= opp.max_5d_run_pct
+
+        # Gate 5: Precio por encima de SMA(N). Period=0 deshabilita el gate.
+        if opp.require_above_sma_period > 0:
+            sma_s = compute_sma(close, opp.require_above_sma_period)
+            last_sma = float(sma_s.iloc[-1]) if not sma_s.empty and not pd.isna(sma_s.iloc[-1]) else 0.0
+            above_sma_ok = last_price > last_sma if last_sma > 0 else False
+        else:
+            above_sma_ok = True
+
         momentum_ok = last_roc > 0
         rsi_ok = opp.rsi_min <= last_rsi <= opp.rsi_max
         volatility_ok = volatility_pct >= opp.min_volatility_pct
@@ -110,7 +155,12 @@ class OpportunisticStrategy:
 
         days_to_earnings: int | None = None
         earnings_ok = True
-        if momentum_ok and rsi_ok and volatility_ok and liquidity_ok and room_to_grow_ok and regime_ok:
+        all_quality_gates_ok = (
+            momentum_ok and rsi_ok and volatility_ok and liquidity_ok and room_to_grow_ok
+            and regime_ok and macd_crossover_ok and rsi_rising_ok and volatility_max_ok
+            and run_ok and above_sma_ok
+        )
+        if all_quality_gates_ok:
             earnings_ok, days_to_earnings = earnings_blackout_ok(symbol, cfg.earnings_blackout_days, force=force, cache_only=cache_only)
 
         notes: list[str] = []
@@ -120,12 +170,22 @@ class OpportunisticStrategy:
             notes.append(f"RSI {last_rsi:.1f} fuera del rango de recuperacion configurado ({opp.rsi_min}-{opp.rsi_max}).")
         if not volatility_ok:
             notes.append(f"Volatilidad {volatility_pct:.1f}% (ATR/precio) por debajo del minimo ({opp.min_volatility_pct}%).")
+        if not volatility_max_ok:
+            notes.append(f"Volatilidad {volatility_pct:.1f}% (ATR/precio) por encima del techo ({opp.max_volatility_pct_gate}%): demasiado erratico para el stop de 5%.")
         if not liquidity_ok:
             notes.append("Volumen promedio por debajo del minimo de liquidez configurado.")
         if not room_to_grow_ok:
             notes.append(f"Solo {abs(last_from_high):.1f}% por debajo del maximo de 52 semanas: poco espacio de crecimiento.")
         if not regime_ok:
             notes.append("Filtro de regimen: el benchmark no esta en regimen alcista de fondo.")
+        if not macd_crossover_ok:
+            notes.append(f"MACD no cruzó a positivo en los últimos {opp.macd_crossover_lookback_days} días: sin inflection point reciente.")
+        if not rsi_rising_ok:
+            notes.append(f"RSI no lleva {opp.rsi_rising_min_days} días consecutivos subiendo: recuperacion no confirmada.")
+        if not run_ok:
+            notes.append(f"Rally de 5 días de {last_roc_5d:.1f}% supera el máximo ({opp.max_5d_run_pct}%): entrada tardía.")
+        if not above_sma_ok:
+            notes.append(f"Precio por debajo de SMA({opp.require_above_sma_period}): giro todavía no establecido como tendencia.")
         if not earnings_ok:
             notes.append(f"Earnings estimados en {days_to_earnings} dia(s): dentro de la ventana de blackout.")
 
@@ -169,8 +229,10 @@ class OpportunisticStrategy:
             suggested_stop_loss_price=round(stop_loss_price, 2),
             suggested_stop_loss_pct=round(stop_loss_pct, 2),
             passes_filters=(
-                momentum_ok and rsi_ok and volatility_ok and liquidity_ok and room_to_grow_ok
-                and regime_ok and earnings_ok
+                momentum_ok and rsi_ok and volatility_ok and volatility_max_ok
+                and liquidity_ok and room_to_grow_ok and regime_ok
+                and macd_crossover_ok and rsi_rising_ok and run_ok and above_sma_ok
+                and earnings_ok
             ),
             liquidity_ok=liquidity_ok,
             earnings_ok=earnings_ok,

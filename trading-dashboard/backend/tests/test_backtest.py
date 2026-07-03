@@ -1622,6 +1622,10 @@ def _opportunistic_cfg(**overrides):
     # oscilacion pura tiene muy poca amplitud y no aleja el precio de su
     # maximo de 52 semanas, asi que esos dos filtros (irrelevantes para lo
     # que testean estos casos) se dejan siempre pasantes.
+    # Los nuevos gates de calidad (MACD crossover, RSI rising, SMA) también se
+    # deshabilitan aquí via sentinels (0 = desactivado): la data sintética
+    # lineal no tiene varianza real, y estos tests comprueban MECÁNICA de
+    # entrada/salida (fill, stop, holding), no calidad de la señal.
     defaults = dict(
         momentum_lookback_days=10,
         rsi_period=14,
@@ -1631,6 +1635,11 @@ def _opportunistic_cfg(**overrides):
         min_pct_below_52w_high=0,
         stop_loss_atr_multiplier=2.0,
         max_holding_days=30,
+        macd_crossover_lookback_days=0,   # gate desactivado para data sintética
+        rsi_rising_min_days=0,             # gate desactivado para data sintética
+        max_volatility_pct_gate=100.0,     # siempre pasa
+        max_5d_run_pct=1000.0,             # siempre pasa
+        require_above_sma_period=0,        # gate desactivado para data sintética
     )
     defaults.update(overrides)
     return ScreenerConfig(
