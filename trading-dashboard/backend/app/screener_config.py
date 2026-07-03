@@ -158,6 +158,11 @@ class OpportunisticConfig(BaseModel):
     max_volatility_pct_gate: float = 100.0  # 100% = sin techo duro de ATR
     max_5d_run_pct: float = 1000.0      # muy alto = desactivado
     require_above_sma_period: int = 0   # 0 = desactivado
+    # Salida temprana por sector débil: si el ETF del sector bajó más de
+    # |sector_exit_roc_threshold| % en los últimos sector_exit_roc_days días,
+    # se cierra la posición antes de max_holding_days. 0 = deshabilitado.
+    sector_exit_roc_days: int = 5
+    sector_exit_roc_threshold: float = -3.0
 
     # Pesos normalizados a suma 1.0 (percentiles 0-100 por componente).
     score_weight_momentum: float = 0.3077

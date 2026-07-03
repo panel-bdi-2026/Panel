@@ -28,7 +28,7 @@ from .backtest import (
 from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
 from .funds import FundsStore, FundValidationError
-from .indicators import atr, sma
+from .indicators import atr, rate_of_change, sma
 from .market_data import (
     MarketDataError,
     get_bars_failure_stats,
@@ -41,7 +41,7 @@ from .models import OrderRequest, OrderType, PendingOrder, Position, SignalResul
 from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
 from .screener_config import ScreenerConfig
-from .sectors import get_sector, refresh_sector
+from .sectors import SECTOR_ETF, get_sector, refresh_sector
 from .state_store import load_state, save_state
 from .strategies import STRATEGY_CLASSES, reload_strategy_registry
 
@@ -864,10 +864,13 @@ class _ExitParams(NamedTuple):
     propios de cada estrategia (ver _strategy_exit_params). `max_holding_days`
     None = sin limite de tiempo; `trend_break_enabled` False = no se chequea
     ruptura de tendencia en absoluto para esa estrategia (ni se pide la barra
-    de precio de mas, ver _check_fund_exit)."""
+    de precio de mas, ver _check_fund_exit). `sector_exit_roc_days` 0 =
+    sin chequeo de sector."""
     max_holding_days: "int | None"
     trend_break_enabled: bool
     sma_period: "int | None"
+    sector_exit_roc_days: int
+    sector_exit_roc_threshold: float
 
 
 def _strategy_exit_params(strategy_id: str) -> _ExitParams:
@@ -892,11 +895,12 @@ def _strategy_exit_params(strategy_id: str) -> _ExitParams:
     """
     cfg = screener_config
     if strategy_id == "momentum":
-        return _ExitParams(cfg.max_holding_days, True, cfg.sma_fast)
+        return _ExitParams(cfg.max_holding_days, True, cfg.sma_fast, 0, 0.0)
     if strategy_id == "opportunistic":
-        return _ExitParams(cfg.opportunistic.max_holding_days, False, None)
+        opp = cfg.opportunistic
+        return _ExitParams(opp.max_holding_days, False, None, opp.sector_exit_roc_days, opp.sector_exit_roc_threshold)
     if strategy_id in ("long_term", "dividend"):
-        return _ExitParams(None, False, None)
+        return _ExitParams(None, False, None, 0, 0.0)
     raise ValueError(f"strategy_id desconocido: {strategy_id!r}")
 
 
@@ -1381,7 +1385,21 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
             except MarketDataError:
                 pass
 
-        if not (timed_out or trend_broke):
+        sector_broke = False
+        if exit_params.sector_exit_roc_days > 0:
+            sector = get_sector(symbol)
+            etf = SECTOR_ETF.get(sector) if sector else None
+            if etf:
+                try:
+                    n = exit_params.sector_exit_roc_days
+                    etf_bars = await asyncio.to_thread(get_daily_bars, etf, n + 5)
+                    etf_roc = rate_of_change(etf_bars["Close"], n)
+                    if len(etf_roc) and not pd.isna(etf_roc.iloc[-1]):
+                        sector_broke = float(etf_roc.iloc[-1]) < exit_params.sector_exit_roc_threshold
+                except MarketDataError:
+                    pass
+
+        if not (timed_out or trend_broke or sector_broke):
             return
 
         reference_price = await broker.get_reference_price(symbol)
@@ -1409,7 +1427,7 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                 fund_id, symbol, Side.SELL, filled_qty, fill_price,
                 commission=screener_config.commission_per_trade_usd,
             )
-        reason = "max_holding_days" if timed_out else "trend_break"
+        reason = "max_holding_days" if timed_out else ("trend_break" if trend_broke else "sector_exit")
         audit.record(
             "auto_trade_exit" if filled_qty > 0 else "auto_trade_exit_unfilled",
             order.model_dump(),

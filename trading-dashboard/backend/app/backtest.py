@@ -23,7 +23,7 @@ from .models import BacktestSummary, BacktestTrade, EquityCurvePoint, WalkForwar
 from .rules import RulesConfig
 from .screener_config import GROWTH_TICKERS, ScreenerConfig
 from .sector_strength import sector_relative_strength_series
-from .sectors import get_sector
+from .sectors import SECTOR_ETF, get_sector
 
 # Misma ventana fija que _CONTEXT_MOMENTUM_3M_DAYS en strategies/common.py
 # (el momentum "de contexto" que usa Oportunista para su propio
@@ -542,6 +542,7 @@ def _simulate_symbol_opportunistic(
     benchmark_regime_ok: pd.Series,
     marks_by_trade_id: dict | None = None,
     rules_config: RulesConfig | None = None,
+    sector_etf_close: "pd.Series | None" = None,
 ) -> list[BacktestTrade]:
     """Misma logica score-driven que _simulate_symbol (ver ese docstring para
     el detalle de fills/stop-loss/comision/slippage/salida), aplicada a
@@ -589,6 +590,12 @@ def _simulate_symbol_opportunistic(
     _, _, macd_hist_s = macd(close)
     sma_s = sma(close, opp.require_above_sma_period) if opp.require_above_sma_period > 0 else close
     roc_5d_s = rate_of_change(close, 5)
+    # ROC del ETF de sector alineado al índice de la acción (point-in-time).
+    # sector_exit_roc_days=0 o sector_etf_close=None → sin chequeo de sector.
+    sector_roc_s: "pd.Series | None" = None
+    if sector_etf_close is not None and opp.sector_exit_roc_days > 0:
+        raw_sector_roc = rate_of_change(sector_etf_close, opp.sector_exit_roc_days)
+        sector_roc_s = raw_sector_roc.reindex(close.index, method="ffill")
 
     notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
 
@@ -628,8 +635,13 @@ def _simulate_symbol_opportunistic(
             held_days = i - entry_idx
             hit_stop = low_price <= stop_price
             timed_out = held_days >= opp.max_holding_days
-            if hit_stop or timed_out:
-                exit_reason = "stop_loss" if hit_stop else "max_holding_days"
+            sector_broke = False
+            if sector_roc_s is not None:
+                sr = sector_roc_s.iloc[i]
+                if not pd.isna(sr):
+                    sector_broke = float(sr) < opp.sector_exit_roc_threshold
+            if hit_stop or timed_out or sector_broke:
+                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "sector_exit")
                 raw_exit_price = min(open_price, stop_price) if hit_stop else price
 
                 entry_slippage_pct = _effective_slippage_pct(
@@ -815,13 +827,30 @@ def _collect_opportunistic_trades(
         "sector_relative_strength": opp.score_weight_sector_relative_strength,
     })
 
+    # Pre-fetch sector ETF close series para la simulación de salida por sector.
+    # Las barras ya están en caché por _opportunistic_raw_components (via
+    # sector_relative_strength_series), así que no hay fetches de red nuevos.
+    sector_etf_close_by_symbol: dict[str, "pd.Series | None"] = {}
+    if opp.sector_exit_roc_days > 0:
+        for symbol in bars_by_symbol:
+            sector = get_sector(symbol)
+            etf = SECTOR_ETF.get(sector) if sector else None
+            if etf:
+                try:
+                    sector_etf_close_by_symbol[symbol] = get_daily_bars(etf, history_days)["Close"]
+                except MarketDataError:
+                    sector_etf_close_by_symbol[symbol] = None
+            else:
+                sector_etf_close_by_symbol[symbol] = None
+
     all_trades: list[BacktestTrade] = []
     marks_by_trade_id: dict = {}
     for symbol, bars in bars_by_symbol.items():
         aligned_regime_ok = benchmark_regime_ok.reindex(bars.index, method="ffill").fillna(True)
         all_trades.extend(
             _simulate_symbol_opportunistic(
-                symbol, bars, cfg, score_panel[symbol], aligned_regime_ok, marks_by_trade_id, rules_config
+                symbol, bars, cfg, score_panel[symbol], aligned_regime_ok, marks_by_trade_id, rules_config,
+                sector_etf_close=sector_etf_close_by_symbol.get(symbol),
             )
         )
 
