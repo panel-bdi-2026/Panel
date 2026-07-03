@@ -2855,6 +2855,31 @@ def _twr_series(
     cum = 0.0
     prev_equity = None
 
+    # Pre-aplicar eventos ANTERIORES al primer día del calendario para que el
+    # saldo inicial de cash y posiciones sea correcto cuando empiece el loop.
+    # Sin esto, un aporte de capital registrado antes de la ventana de precios
+    # disponible (ej. primer aporte del fondo hecho semanas antes de la primera
+    # barra de SPY en caché) nunca se suma al cash, lo que hace que el equity
+    # de arranque sea ≈$0 y divide el TWR por ese denominador microscópico,
+    # produciendo retornos ficticios de ±1000%.
+    if len(calendar_index) > 0:
+        first_day = calendar_index[0].date()
+        for ev_day, day_events in sorted(events_by_day.items()):
+            if ev_day >= first_day:
+                break
+            for event in day_events:
+                if event[0] == "flow":
+                    cash += event[1]
+                else:
+                    _, side, symbol, quantity, price = event
+                    if side == Side.BUY:
+                        cash -= quantity * price
+                        positions[symbol] = positions.get(symbol, 0.0) + quantity
+                    else:
+                        cash += quantity * price
+                        positions[symbol] = positions.get(symbol, 0.0) - quantity
+                    last_trade_price[symbol] = price
+
     for day_ts in calendar_index:
         day = day_ts.date()
         net_flow = 0.0
