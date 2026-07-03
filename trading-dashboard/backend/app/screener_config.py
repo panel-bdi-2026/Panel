@@ -158,6 +158,10 @@ class OpportunisticConfig(BaseModel):
     max_volatility_pct_gate: float = 100.0  # 100% = sin techo duro de ATR
     max_5d_run_pct: float = 1000.0      # muy alto = desactivado
     require_above_sma_period: int = 0   # 0 = desactivado
+    # Confirmación de volumen en el cruce MACD: el día en que el histograma
+    # cruzó de negativo a positivo debe tener volumen ≥ este múltiplo del
+    # promedio 20 días. 0 = deshabilitado.
+    volume_crossover_min_ratio: float = 0.0
     # Salida temprana por sector débil: si el ETF del sector bajó más de
     # |sector_exit_roc_threshold| % en los últimos sector_exit_roc_days días,
     # se cierra la posición antes de max_holding_days. 0 = deshabilitado.

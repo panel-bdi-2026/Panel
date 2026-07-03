@@ -104,17 +104,29 @@ class OpportunisticStrategy:
 
         # ── Gates de calidad de entrada ──────────────────────────────────────
         # Gate 1: MACD cruzó de negativo a positivo en los últimos N días.
-        # lookback=0 deshabilita el gate.
+        # lookback=0 deshabilita el gate. Si volume_crossover_min_ratio>0,
+        # además el día del cruce debe tener volumen ≥ ese múltiplo del
+        # promedio 20d (confirma convicción institucional).
         lookback = opp.macd_crossover_lookback_days
         if lookback > 0:
             _, _, macd_hist = compute_macd(close)
+            vol_min = opp.volume_crossover_min_ratio
+            if vol_min > 0:
+                vol_avg = bars["Volume"].rolling(20, min_periods=1).mean()
+                vol_ratio = bars["Volume"] / vol_avg.replace(0, float("nan"))
             if len(macd_hist) >= lookback + 2:
                 recent_hist = macd_hist.iloc[-(lookback + 1):]
-                macd_crossover_ok = any(
-                    not pd.isna(recent_hist.iloc[j]) and not pd.isna(recent_hist.iloc[j + 1])
-                    and recent_hist.iloc[j] < 0 and recent_hist.iloc[j + 1] >= 0
-                    for j in range(len(recent_hist) - 1)
-                )
+                macd_crossover_ok = False
+                for j in range(len(recent_hist) - 1):
+                    h0, h1 = recent_hist.iloc[j], recent_hist.iloc[j + 1]
+                    if not pd.isna(h0) and not pd.isna(h1) and h0 < 0 and h1 >= 0:
+                        if vol_min > 0:
+                            idx = len(macd_hist) - (lookback + 1) + j + 1
+                            vr = vol_ratio.iloc[idx] if idx < len(vol_ratio) else float("nan")
+                            if pd.isna(vr) or float(vr) < vol_min:
+                                continue
+                        macd_crossover_ok = True
+                        break
             else:
                 macd_crossover_ok = False
         else:

@@ -590,6 +590,8 @@ def _simulate_symbol_opportunistic(
     _, _, macd_hist_s = macd(close)
     sma_s = sma(close, opp.require_above_sma_period) if opp.require_above_sma_period > 0 else close
     roc_5d_s = rate_of_change(close, 5)
+    vol_avg_s = bars["Volume"].rolling(20, min_periods=1).mean()
+    vol_ratio_s = bars["Volume"] / vol_avg_s.replace(0, float("nan"))
     # ROC del ETF de sector alineado al índice de la acción (point-in-time).
     # sector_exit_roc_days=0 o sector_etf_close=None → sin chequeo de sector.
     sector_roc_s: "pd.Series | None" = None
@@ -745,6 +747,8 @@ def _simulate_symbol_opportunistic(
 
         # Gate: MACD cruzó de negativo a positivo en los últimos N días.
         # Lookback=0 deshabilita el gate (usado en tests de mecánica pura).
+        # volume_crossover_min_ratio>0: además, el día del cruce debe tener
+        # volumen ≥ ese múltiplo del promedio 20d (confirma convicción).
         lb = opp.macd_crossover_lookback_days
         if lb > 0:
             macd_crossover_ok = False
@@ -752,6 +756,10 @@ def _simulate_symbol_opportunistic(
                 for j in range(i - lb, i):
                     v0, v1 = macd_hist_s.iloc[j], macd_hist_s.iloc[j + 1]
                     if not pd.isna(v0) and not pd.isna(v1) and v0 < 0 and v1 >= 0:
+                        if opp.volume_crossover_min_ratio > 0:
+                            vr = vol_ratio_s.iloc[j + 1]
+                            if pd.isna(vr) or float(vr) < opp.volume_crossover_min_ratio:
+                                continue
                         macd_crossover_ok = True
                         break
             if not macd_crossover_ok:
