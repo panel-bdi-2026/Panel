@@ -141,58 +141,16 @@ class OpportunisticConfig(BaseModel):
     # probablemente señala un problema de fondo, no una oportunidad de giro.
     max_pct_below_52w_high: float = 30.0
 
-    # Multiplicador ATR para el stop-loss. 1.5x sobre la volatilidad minima
-    # de 3% da un stop de ~4.5%, dentro del techo global max_stop_loss_pct
-    # (5%) sin necesitar ajuste forzado. El valor anterior (2.0x) producía
-    # stops de ~6%+ que el tope global recortaba a 5%, dejando el stop a solo
-    # 1.67x ATR — demasiado estrecho para el ruido normal de nombres con
-    # alta volatilidad intradía.
-    stop_loss_atr_multiplier: float = 1.5
+    stop_loss_atr_multiplier: float = 2.0
     max_holding_days: int = 15
 
-    # Parámetros del band_score de momentum (ROC de corto plazo).
-    # La estrategia busca GIROS TEMPRANOS, no rallies ya avanzados: premiar
-    # ROC muy alto selecciona acciones que ya rebotaron, no las que recién
-    # están girando. band_score centra el ideal en ~3% (apenas positivo =
-    # señal de giro incipiente) y decae a 0 en 11%+ (rally ya maduro).
-    momentum_ideal_pct: float = 3.0
-    momentum_half_range_pct: float = 8.0
-
-    # Parámetros del band_score de RSI recovery.
-    # Ideal: RSI ~45 (recuperación temprana, todavía sin sobrecompra).
-    # Con half_range=12.5: RSI=35 (mínimo del gate) → 20 pts, RSI=45 → 100,
-    # RSI≥57.5 → 0 pts. Antes era lineal (RSI=60 puntuaba casi el doble que
-    # RSI=42), lo que favorecía RSIs ya altos — lo contrario de lo que busca
-    # una estrategia de reversión temprana.
-    rsi_recovery_ideal: float = 45.0
-    rsi_recovery_half_range: float = 12.5
-
-    # Días de volumen reciente para el componente volume_surge
-    # (promedio_N_días / promedio_20d). Un ratio >1 indica participación
-    # institucional en el rebote, señal de durabilidad del giro documentada
-    # en la literatura de reversión de media.
-    volume_surge_lookback_days: int = 3
-
-    # Pesos normalizados a suma 1.0 (percentiles 0-100 por componente):
-    #
-    # momentum (era 30.77%): reducido a 15% — en una estrategia de reversal
-    #   el ROC corto ya avanzado no predice magnitud del rebote restante;
-    #   sigue siendo gate duro (roc>0), pero no domina el ranking.
-    # rsi_recovery (era 15.38%): subido a 20% — posición en la zona de
-    #   recuperación temprana es el corazón de la tesis.
-    # macd_turn (era 11.54%): subido a 20% — el cruce alcista del MACD es
-    #   la señal de giro más directa de la estrategia.
-    # room_to_grow (sin cambio relativo): 15% — upside estructural.
-    # volatility (era 15.38%): bajado a 10% — ya cubierto por el gate duro.
-    # sector_relative_strength (era 11.54%): bajado a 10%.
-    # volume_surge (nuevo): 10% — confirmación de participación institucional.
-    score_weight_momentum: float = 0.15
-    score_weight_volatility: float = 0.10
-    score_weight_rsi_recovery: float = 0.20
-    score_weight_room_to_grow: float = 0.15
-    score_weight_macd_turn: float = 0.20
-    score_weight_sector_relative_strength: float = 0.10
-    score_weight_volume_surge: float = 0.10
+    # Pesos normalizados a suma 1.0 (percentiles 0-100 por componente).
+    score_weight_momentum: float = 0.3077
+    score_weight_volatility: float = 0.1538
+    score_weight_rsi_recovery: float = 0.1538
+    score_weight_room_to_grow: float = 0.1538
+    score_weight_macd_turn: float = 0.1154
+    score_weight_sector_relative_strength: float = 0.1154
 
     # Backtest score-driven (ver backtest.py): reemplaza el AND booleano de
     # filtros tecnicos por el mismo score percentil cross-sectional que usa

@@ -102,12 +102,6 @@ class OpportunisticStrategy:
         # Momentum, que no exige ningun minimo.
         volatility_pct = (last_atr / last_price * 100) if last_price else 0.0
 
-        # Volume surge: promedio de volumen de los últimos N días vs. promedio
-        # de 20 días. Ratio >1 indica participación institucional en el rebote.
-        avg_vol_20d = float(bars["Volume"].rolling(20, min_periods=1).mean().iloc[-1])
-        recent_vol = float(bars["Volume"].iloc[-opp.volume_surge_lookback_days:].mean())
-        volume_surge = (recent_vol / avg_vol_20d) if avg_vol_20d > 0 else 1.0
-
         momentum_ok = last_roc > 0
         rsi_ok = opp.rsi_min <= last_rsi <= opp.rsi_max
         volatility_ok = volatility_pct >= opp.min_volatility_pct
@@ -135,8 +129,6 @@ class OpportunisticStrategy:
         if not earnings_ok:
             notes.append(f"Earnings estimados en {days_to_earnings} dia(s): dentro de la ventana de blackout.")
 
-        # Todos los componentes no monotónicos usan band_score: el ideal de
-        # cada uno maximiza el score; alejarse en cualquier dirección lo reduce.
         volatility_mid = (opp.min_volatility_pct + opp.max_volatility_pct) / 2
         volatility_half_range = max(1.0, (opp.max_volatility_pct - opp.min_volatility_pct) / 2)
         room_to_grow_mid = (opp.min_pct_below_52w_high + opp.max_pct_below_52w_high) / 2
@@ -144,23 +136,12 @@ class OpportunisticStrategy:
         room_to_grow_raw = abs(last_from_high) if last_from_high is not None else 0.0
 
         components = {
-            # band_score centrado en momentum_ideal_pct (default 3%): premia
-            # giros tempranos (ROC apenas positivo) sobre rallies ya avanzados.
-            # El gate duro (roc>0) sigue garantizando la señal de giro mínima.
-            "momentum": band_score(last_roc, opp.momentum_ideal_pct, opp.momentum_half_range_pct),
+            "momentum": last_roc,
             "volatility": band_score(volatility_pct, volatility_mid, volatility_half_range),
-            # band_score centrado en rsi_recovery_ideal (default 45): RSI ~45
-            # representa recuperación temprana con recorrido restante. Antes era
-            # lineal (RSI=60 puntuaba doble que RSI=42), lo que favorecía RSIs
-            # ya altos — contrario a la tesis de reversión temprana.
-            "rsi_recovery": band_score(last_rsi, opp.rsi_recovery_ideal, opp.rsi_recovery_half_range),
+            "rsi_recovery": last_rsi - opp.rsi_min,
             "room_to_grow": band_score(room_to_grow_raw, room_to_grow_mid, room_to_grow_half_range),
             "macd_turn": ctx["macd_histogram_pct"] if ctx["macd_histogram_pct"] is not None else 0.0,
             "sector_relative_strength": last_sector_rel_strength if last_sector_rel_strength is not None else 0.0,
-            # Ratio de volumen reciente vs. promedio de 20 días: confirmación de
-            # participación institucional en el rebote. Cross-sectional: más alto
-            # que el resto del universo ese mismo día = señal más confiable.
-            "volume_surge": volume_surge,
         }
         score = (
             opp.score_weight_momentum * components["momentum"]
@@ -169,7 +150,6 @@ class OpportunisticStrategy:
             + opp.score_weight_room_to_grow * components["room_to_grow"]
             + opp.score_weight_macd_turn * components["macd_turn"]
             + opp.score_weight_sector_relative_strength * components["sector_relative_strength"]
-            + opp.score_weight_volume_surge * components["volume_surge"]
         )
 
         stop_loss_price = max(0.0, last_price - opp.stop_loss_atr_multiplier * last_atr)
@@ -229,7 +209,6 @@ class OpportunisticStrategy:
             "room_to_grow": opp.score_weight_room_to_grow,
             "macd_turn": opp.score_weight_macd_turn,
             "sector_relative_strength": opp.score_weight_sector_relative_strength,
-            "volume_surge": opp.score_weight_volume_surge,
         }
         return finalize_scan_results(
             results, weights, self.config.top_n,
