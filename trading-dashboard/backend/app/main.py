@@ -871,6 +871,7 @@ class _ExitParams(NamedTuple):
     sma_period: "int | None"
     sector_exit_roc_days: int
     sector_exit_roc_threshold: float
+    take_profit_pct: float  # 0 = deshabilitado
 
 
 def _strategy_exit_params(strategy_id: str) -> _ExitParams:
@@ -895,12 +896,12 @@ def _strategy_exit_params(strategy_id: str) -> _ExitParams:
     """
     cfg = screener_config
     if strategy_id == "momentum":
-        return _ExitParams(cfg.max_holding_days, True, cfg.sma_fast, 0, 0.0)
+        return _ExitParams(cfg.max_holding_days, True, cfg.sma_fast, 0, 0.0, 0.0)
     if strategy_id == "opportunistic":
         opp = cfg.opportunistic
-        return _ExitParams(opp.max_holding_days, False, None, opp.sector_exit_roc_days, opp.sector_exit_roc_threshold)
+        return _ExitParams(opp.max_holding_days, False, None, opp.sector_exit_roc_days, opp.sector_exit_roc_threshold, opp.take_profit_pct)
     if strategy_id in ("long_term", "dividend"):
-        return _ExitParams(None, False, None, 0, 0.0)
+        return _ExitParams(None, False, None, 0, 0.0, 0.0)
     raise ValueError(f"strategy_id desconocido: {strategy_id!r}")
 
 
@@ -1424,10 +1425,20 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                     except MarketDataError:
                         pass
 
-        if not (timed_out or trend_broke or sector_broke):
+        # Take-profit: necesita el precio en vivo; solo se pide si el param
+        # está activo para no añadir una llamada al broker en cada ciclo.
+        hit_target = False
+        reference_price: "float | None" = None
+        if exit_params.take_profit_pct > 0 and position.avg_cost > 0:
+            reference_price = await broker.get_reference_price(symbol)
+            if reference_price:
+                hit_target = reference_price >= position.avg_cost * (1 + exit_params.take_profit_pct / 100)
+
+        if not (timed_out or trend_broke or sector_broke or hit_target):
             return
 
-        reference_price = await broker.get_reference_price(symbol)
+        if reference_price is None:
+            reference_price = await broker.get_reference_price(symbol)
         if not reference_price:
             return
 
@@ -1452,7 +1463,7 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                 fund_id, symbol, Side.SELL, filled_qty, fill_price,
                 commission=screener_config.commission_per_trade_usd,
             )
-        reason = "max_holding_days" if timed_out else ("trend_break" if trend_broke else "sector_exit")
+        reason = ("take_profit" if hit_target else ("max_holding_days" if timed_out else ("trend_break" if trend_broke else "sector_exit")))
         audit.record(
             "auto_trade_exit" if filled_qty > 0 else "auto_trade_exit_unfilled",
             order.model_dump(),

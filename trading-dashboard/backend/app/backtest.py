@@ -606,6 +606,7 @@ def _simulate_symbol_opportunistic(
     entry_date = None
     stop_price = 0.0
     initial_stop_price = 0.0  # stop al momento de la entrada, ya tensado si aplico -- nunca lo mueve el trailing
+    take_profit_price = 0.0
     entry_atr = 0.0
     pending_entry_atr = None
 
@@ -613,6 +614,7 @@ def _simulate_symbol_opportunistic(
     for i in range(start_idx, len(bars)):
         date = bars.index[i]
         price = float(close.iloc[i])
+        high_price = float(bars["High"].iloc[i])
         low_price = float(bars["Low"].iloc[i])
         open_price = float(bars["Open"].iloc[i])
 
@@ -628,12 +630,21 @@ def _simulate_symbol_opportunistic(
                 if implied_stop_pct > rules_config.max_stop_loss_pct:
                     stop_price = entry_price * (1 - rules_config.max_stop_loss_pct / 100)
             initial_stop_price = stop_price
+            take_profit_price = entry_price * (1 + opp.take_profit_pct / 100) if opp.take_profit_pct > 0 else 0.0
             pending_entry_atr = None
             continue
 
         if in_position:
             held_days = i - entry_idx
             hit_stop = low_price <= stop_price
+            # Take-profit: el stop tiene precedencia si el open ya abrió bajo él.
+            # En cualquier otro caso, si el high llegó al target, tomamos ganancia.
+            hit_target = (
+                opp.take_profit_pct > 0
+                and take_profit_price > 0
+                and high_price >= take_profit_price
+                and not (hit_stop and open_price <= stop_price)
+            )
             timed_out = held_days >= opp.max_holding_days
             sector_broke = False
             if sector_roc_s is not None:
@@ -642,9 +653,20 @@ def _simulate_symbol_opportunistic(
                     sr = sector_roc_s.iloc[i]
                     if not pd.isna(sr):
                         sector_broke = float(sr) < opp.sector_exit_roc_threshold
-            if hit_stop or timed_out or sector_broke:
-                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "sector_exit")
-                raw_exit_price = min(open_price, stop_price) if hit_stop else price
+            if hit_stop or hit_target or timed_out or sector_broke:
+                if hit_stop and not hit_target:
+                    exit_reason = "stop_loss"
+                    raw_exit_price = min(open_price, stop_price)
+                elif hit_target:
+                    exit_reason = "take_profit"
+                    # Si el open ya superó el target (gap up), salimos al open
+                    raw_exit_price = max(open_price, take_profit_price)
+                elif timed_out:
+                    exit_reason = "max_holding_days"
+                    raw_exit_price = price
+                else:
+                    exit_reason = "sector_exit"
+                    raw_exit_price = price
 
                 entry_slippage_pct = _effective_slippage_pct(
                     cfg.slippage_pct,

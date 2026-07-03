@@ -163,6 +163,9 @@ class OpportunisticConfig(BaseModel):
     # se cierra la posición antes de max_holding_days. 0 = deshabilitado.
     sector_exit_roc_days: int = 5
     sector_exit_roc_threshold: float = -3.0
+    # Take-profit: cierra la posición completa cuando el retorno desde la
+    # entrada supera este umbral. 0 = deshabilitado.
+    take_profit_pct: float = 0.0
 
     # Pesos normalizados a suma 1.0 (percentiles 0-100 por componente).
     score_weight_momentum: float = 0.3077
