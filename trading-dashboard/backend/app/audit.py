@@ -46,6 +46,8 @@ class AuditLog:
             )
             """
         )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)")
         self._conn.commit()
 
     def record(self, action: str, payload: dict, result: dict) -> None:

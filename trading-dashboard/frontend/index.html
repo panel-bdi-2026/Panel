@@ -1660,6 +1660,7 @@ async function refreshAudit(){
         'ibkr_connected':                         'IBKR conectado',
         'auto_trade_fill_late':                   'Fill tardío registrado',
         'auto_trade_reconciled':                  'Fill reconciliado',
+        'order_rejected':                         'Orden rechazada',
       }[action] || action;
 
       const side = p.side === 'BUY' ? 'Compra' : p.side === 'SELL' ? 'Venta' : (p.side || '');

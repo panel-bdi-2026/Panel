@@ -2134,9 +2134,9 @@ def update_rules(body: RulesUpdate, _: None = Depends(require_api_key)):
         new_config = RulesConfig(**body.rules)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors())
+    rules_engine.reload(new_config)
     rules_config = new_config
     rules_config.save(settings.rules_path)
-    rules_engine.reload(rules_config)
     audit.record("rules_updated", body.rules, {})
     return rules_config.model_dump()
 
@@ -2802,8 +2802,9 @@ async def approve_order(order_id: str, _: None = Depends(require_api_key)):
 
 
 @app.post("/api/orders/{order_id}/reject")
-def reject_order(order_id: str, _: None = Depends(require_api_key)):
-    pending = state["pending_orders"].pop(order_id, None)
+async def reject_order(order_id: str, _: None = Depends(require_api_key)):
+    async with _funds_order_lock:
+        pending = state["pending_orders"].pop(order_id, None)
     if not pending:
         raise HTTPException(status_code=404, detail="Orden pendiente no encontrada.")
     _persist_state()

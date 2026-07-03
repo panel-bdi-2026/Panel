@@ -17,6 +17,8 @@ _CACHE_TTL_SECONDS = 6 * 3600
 # TTL corto solo para fallos de la API de Claude (ver _classify).
 _FAILURE_CACHE_TTL_SECONDS = 15 * 60
 _cache: dict[str, tuple[float, "NewsSentiment | None", bool]] = {}  # (timestamp, value, ok)
+# Singleton: reutiliza el connection pool HTTP entre llamadas al SDK de Anthropic.
+_anthropic_client: "anthropic.Anthropic | None" = None
 
 # Pool dedicado para paralelizar get_news_sentiment sobre el shortlist (ver
 # apply_news_sentiment_adjustment): cada llamada es IO-bound (un fetch de
@@ -117,7 +119,10 @@ def _fetch_headlines(symbol: str) -> list[str]:
 def _call_claude(symbol: str, headlines: list[str]) -> NewsSentiment:
     """Aislado en su propia funcion (en vez de inline en _classify) para que
     los tests puedan reemplazarla sin tocar el SDK de Anthropic ni la red."""
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key, timeout=_CLAUDE_TIMEOUT_SECONDS)
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key, timeout=_CLAUDE_TIMEOUT_SECONDS)
+    client = _anthropic_client
     headlines_text = "\n".join(f"- {h}" for h in headlines)
     response = client.messages.parse(
         model=_MODEL,
