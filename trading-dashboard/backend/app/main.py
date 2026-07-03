@@ -28,7 +28,7 @@ from .backtest import (
 from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
 from .config import settings
 from .funds import FundsStore, FundValidationError
-from .indicators import atr, rate_of_change, sma
+from .indicators import atr, market_regime_ok, rate_of_change, sma
 from .market_data import (
     MarketDataError,
     get_bars_failure_stats,
@@ -1387,17 +1387,42 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
 
         sector_broke = False
         if exit_params.sector_exit_roc_days > 0:
-            sector = get_sector(symbol)
-            etf = SECTOR_ETF.get(sector) if sector else None
-            if etf:
+            # Solo disparar cuando el régimen global es alcista: en régimen
+            # bajista el filtro de entrada ya bloqueó nuevas posiciones, y
+            # expulsar las existentes por sector les quita tiempo de recuperarse
+            # antes del stop natural (el walk-forward mostró retorno negativo en
+            # mercados bajistas sostenidos con sector exit activo sin esta guarda).
+            # El regime vuelve a habilitarlo automáticamente al recuperar.
+            cfg = screener_config
+            regime_bullish = True
+            if cfg.opportunistic_regime_filter_enabled:
                 try:
-                    n = exit_params.sector_exit_roc_days
-                    etf_bars = await asyncio.to_thread(get_daily_bars, etf, n + 5)
-                    etf_roc = rate_of_change(etf_bars["Close"], n)
-                    if len(etf_roc) and not pd.isna(etf_roc.iloc[-1]):
-                        sector_broke = float(etf_roc.iloc[-1]) < exit_params.sector_exit_roc_threshold
+                    bench_lookback = (
+                        cfg.regime_sma_period + cfg.regime_slope_lookback_days
+                        + cfg.regime_absolute_momentum_lookback_days + 10
+                    )
+                    bench_bars = await asyncio.to_thread(get_daily_bars, cfg.benchmark_symbol, bench_lookback)
+                    regime_s = market_regime_ok(
+                        bench_bars["Close"], cfg.regime_sma_period,
+                        cfg.regime_slope_lookback_days, cfg.regime_absolute_momentum_lookback_days,
+                    )
+                    if len(regime_s) and not pd.isna(regime_s.iloc[-1]):
+                        regime_bullish = bool(regime_s.iloc[-1])
                 except MarketDataError:
-                    pass
+                    pass  # fallback conservador: asumir alcista y dejar que el sector decida
+
+            if regime_bullish:
+                sector = get_sector(symbol)
+                etf = SECTOR_ETF.get(sector) if sector else None
+                if etf:
+                    try:
+                        n = exit_params.sector_exit_roc_days
+                        etf_bars = await asyncio.to_thread(get_daily_bars, etf, n + 5)
+                        etf_roc = rate_of_change(etf_bars["Close"], n)
+                        if len(etf_roc) and not pd.isna(etf_roc.iloc[-1]):
+                            sector_broke = float(etf_roc.iloc[-1]) < exit_params.sector_exit_roc_threshold
+                    except MarketDataError:
+                        pass
 
         if not (timed_out or trend_broke or sector_broke):
             return

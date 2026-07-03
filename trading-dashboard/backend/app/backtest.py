@@ -637,9 +637,11 @@ def _simulate_symbol_opportunistic(
             timed_out = held_days >= opp.max_holding_days
             sector_broke = False
             if sector_roc_s is not None:
-                sr = sector_roc_s.iloc[i]
-                if not pd.isna(sr):
-                    sector_broke = float(sr) < opp.sector_exit_roc_threshold
+                regime_today = bool(benchmark_regime_ok.iloc[i]) if i < len(benchmark_regime_ok) else True
+                if regime_today:
+                    sr = sector_roc_s.iloc[i]
+                    if not pd.isna(sr):
+                        sector_broke = float(sr) < opp.sector_exit_roc_threshold
             if hit_stop or timed_out or sector_broke:
                 exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "sector_exit")
                 raw_exit_price = min(open_price, stop_price) if hit_stop else price
