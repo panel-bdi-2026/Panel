@@ -412,10 +412,20 @@ class FundsStore:
         return list(self.funds.values())
 
     def total_allocated_cash(self, exclude_fund_id: str | None = None) -> float:
-        """Suma de cash_usd de todos los fondos (opcionalmente excluyendo
-        uno) -- se usa para validar que un aporte no haga que la suma de
-        todos los fondos supere el cash real de la cuenta de IBKR."""
-        return sum(f.cash_usd for fid, f in self.funds.items() if fid != exclude_fund_id)
+        """Suma de cash_usd + costo de posiciones abiertas de todos los fondos
+        (opcionalmente excluyendo uno). Se compara contra net_liquidation de
+        IBKR (no solo TotalCashValue) para cubrir el gap de timing entre el
+        momento en que el fondo registra el fill y el momento en que IBKR
+        actualiza su TotalCashValue: si solo sumáramos cash_usd, entre el fill
+        y el update de IBKR el sistema vería más 'asignable' del que hay."""
+        total = 0.0
+        for fid, f in self.funds.items():
+            if fid == exclude_fund_id:
+                continue
+            total += f.cash_usd
+            for pos in f.positions.values():
+                total += pos.quantity * pos.avg_cost
+        return total
 
     def set_auto_trading(self, fund_id: str, enabled: bool) -> Fund | None:
         with self._lock:

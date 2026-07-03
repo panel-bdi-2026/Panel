@@ -5,6 +5,7 @@ import logging
 import math
 import secrets
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -172,7 +173,7 @@ _funds_order_lock = asyncio.Lock()
 # dispara el suyo) podrian leer el mismo screener_config viejo antes de que
 # cualquiera escriba, y el segundo en escribir pisaria el cambio del primero
 # a pesar del merge (ver deep_merge_dict mas abajo).
-_screener_config_lock = threading.Lock()
+_screener_config_lock = asyncio.Lock()
 
 # Recuerda que simbolos pasaban los filtros del screener en el ultimo ciclo del
 # scan proactivo, para poder detectar TRANSICIONES (no pasaba -> pasa) en vez
@@ -229,22 +230,38 @@ SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 # documentado (ver deploy/README.md) sirve el dashboard por HTTP plano sobre
 # una red privada de Tailscale, no HTTPS.
 _sessions: dict[str, datetime] = {}
+_sessions_lock = threading.Lock()
 
 
 def _create_session() -> str:
     token = secrets.token_urlsafe(32)
-    _sessions[token] = datetime.now(timezone.utc)
+    with _sessions_lock:
+        _sessions[token] = datetime.now(timezone.utc)
     return token
 
 
 def _session_valid(token: str) -> bool:
-    created = _sessions.get(token)
-    if created is None:
-        return False
-    if (datetime.now(timezone.utc) - created).total_seconds() > SESSION_TTL_SECONDS:
-        del _sessions[token]
-        return False
-    return True
+    with _sessions_lock:
+        created = _sessions.get(token)
+        if created is None:
+            return False
+        if (datetime.now(timezone.utc) - created).total_seconds() > SESSION_TTL_SECONDS:
+            del _sessions[token]
+            return False
+        return True
+
+
+async def _session_cleanup_loop() -> None:
+    """Elimina tokens expirados del dict de sesiones cada hora para evitar
+    que sesiones viejas sin logout acumulen entradas indefinidamente."""
+    while True:
+        await asyncio.sleep(3600)
+        now = datetime.now(timezone.utc)
+        with _sessions_lock:
+            expired = [t for t, created in list(_sessions.items())
+                       if (now - created).total_seconds() > SESSION_TTL_SECONDS]
+            for t in expired:
+                del _sessions[t]
 
 
 def require_api_key(
@@ -992,7 +1009,7 @@ async def _run_score_recompute_cycle() -> None:
     # ciclo se podia perder -- este ciclo leia el valor previo al reset y lo
     # pisaba de nuevo con passing_now al escribir, devolviendo intacta la base
     # vieja que el reset queria descartar.
-    with _screener_config_lock:
+    async with _screener_config_lock:
         previously_passing = _signal_state["previously_passing"]
         _signal_state["previously_passing"] = passing_now
 
@@ -1092,7 +1109,7 @@ async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
     # place -- sin el lock, este ciclo podia guardarse una referencia al dict
     # VIEJO antes del reemplazo y escribir ahi, perdiendo la escritura sin que
     # _signal_state la vea nunca.
-    with _screener_config_lock:
+    async with _screener_config_lock:
         by_strategy = _signal_state["previously_passing_by_strategy"]
         previously_passing = by_strategy.get(strategy_id)
         by_strategy[strategy_id] = passing_now
@@ -1425,20 +1442,21 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                     except MarketDataError:
                         pass
 
-        # Take-profit: necesita el precio en vivo; solo se pide si el param
-        # está activo para no añadir una llamada al broker en cada ciclo.
+        # Precio de referencia: se pide una sola vez cuando hay al menos un
+        # trigger activo o cuando take-profit está habilitado. Así se evita
+        # llamar al broker en cada ciclo (sin exit triggers y sin TP) y
+        # también se evita una segunda llamada redundante si la primera ya
+        # sirvió para el check de take-profit.
         hit_target = False
         reference_price: "float | None" = None
-        if exit_params.take_profit_pct > 0 and position.avg_cost > 0:
+        if timed_out or trend_broke or sector_broke or exit_params.take_profit_pct > 0:
             reference_price = await broker.get_reference_price(symbol)
-            if reference_price:
+            if reference_price and exit_params.take_profit_pct > 0 and position.avg_cost > 0:
                 hit_target = reference_price >= position.avg_cost * (1 + exit_params.take_profit_pct / 100)
 
         if not (timed_out or trend_broke or sector_broke or hit_target):
             return
 
-        if reference_price is None:
-            reference_price = await broker.get_reference_price(symbol)
         if not reference_price:
             return
 
@@ -1952,10 +1970,12 @@ async def lifespan(app: FastAPI):
     trailing_stop_task = asyncio.create_task(_trailing_stop_loop())
     hot_set_task = asyncio.create_task(_hot_set_loop())
     price_rotation_task = asyncio.create_task(_price_rotation_loop())
+    session_cleanup_task = asyncio.create_task(_session_cleanup_loop())
     yield
     background_tasks = [
         task, risk_task, score_recompute_task, data_refresh_task,
         exit_monitor_task, trailing_stop_task, hot_set_task, price_rotation_task,
+        session_cleanup_task,
     ]
     for background_task in background_tasks:
         background_task.cancel()
@@ -2015,7 +2035,8 @@ def login(body: LoginRequest, response: Response):
 @app.post("/api/logout")
 def logout(response: Response, session: Optional[str] = Cookie(default=None)):
     if session:
-        _sessions.pop(session, None)
+        with _sessions_lock:
+            _sessions.pop(session, None)
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return {"ok": True}
 
@@ -2210,9 +2231,9 @@ def _refresh_missing_sectors_in_background(symbols: list[str]) -> None:
 
 
 @app.put("/api/signals/config")
-def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_key)):
+async def update_screener_config(body: ScreenerUpdate, _: None = Depends(require_api_key)):
     global screener_config
-    with _screener_config_lock:
+    async with _screener_config_lock:
         previous_universe = set(screener_config.universe)
         merged = _deep_merge_dict(screener_config.model_dump(), body.config)
         try:
@@ -2828,26 +2849,28 @@ def _fund_view(fund) -> dict:
 
 
 def _check_capital_allocation(
-    real_cash: float, amount: float, current_fund_cash: float, already_allocated: float
+    net_liquidation: float, amount: float, current_fund_cash: float, already_allocated: float
 ) -> None:
-    """Valida que asignarle `amount` adicional a un fondo no haga que la suma
-    de cash_usd de todos los fondos supere el cash real de la cuenta de
-    IBKR. Sin esto, la separacion entre fondos seria una ilusion: un fondo
-    podria "creer" que tiene plata que en realidad ya esta asignada a otro
-    fondo o no existe en la cuenta real.
+    """Valida que asignarle `amount` adicional a un fondo no haga que el
+    capital total asignado (cash + posiciones a costo) supere el valor neto
+    de liquidación de la cuenta de IBKR.
+
+    Usa net_liquidation (cash + posiciones a valor de mercado) en vez de
+    TotalCashValue: `already_allocated` ya incluye el costo de posiciones
+    abiertas (ver FundsStore.total_allocated_cash), y compararlos contra el
+    valor total de la cuenta — en vez de solo el cash disponible — cubre el
+    gap de timing entre el fill y el update de TotalCashValue en IBKR.
 
     No consulta nada por si sola (ni broker ni FundsStore): se pasa como
     `allocation_check` a FundsStore.create()/apply_capital_flow() para que se
     ejecute DENTRO de su lock, sobre `already_allocated` recalculado en ese
     instante exacto -- lo que cierra la carrera entre dos requests
-    concurrentes que, leyendo la suma ya asignada por fuera del lock, podian
-    pasar la validacion ambas y terminar asignando entre las dos mas cash del
-    que la cuenta real tiene."""
-    if already_allocated + current_fund_cash + amount > real_cash:
+    concurrentes."""
+    if already_allocated + current_fund_cash + amount > net_liquidation:
         raise FundValidationError(
-            f"La cuenta de IBKR tiene ${real_cash:,.2f} de cash real, de los cuales "
-            f"${already_allocated + current_fund_cash:,.2f} ya estan asignados a fondos. "
-            f"No se puede asignar ${amount:,.2f} mas sin superar el cash real disponible."
+            f"La cuenta de IBKR tiene un valor neto de ${net_liquidation:,.2f}, de los cuales "
+            f"${already_allocated + current_fund_cash:,.2f} ya están asignados a fondos. "
+            f"No se puede asignar ${amount:,.2f} más sin superar el valor neto disponible."
         )
 
 
@@ -2869,7 +2892,7 @@ async def create_fund(body: FundCreate, _: None = Depends(require_api_key)):
         raise HTTPException(status_code=422, detail=f"strategy_id desconocido: {body.strategy_id}")
     if not state["connected"]:
         raise HTTPException(status_code=503, detail="No conectado a IBKR.")
-    real_cash = (await broker.get_account_summary()).cash
+    real_cash = (await broker.get_account_summary()).net_liquidation
 
     def allocation_check(already_allocated: float) -> None:
         _check_capital_allocation(real_cash, body.initial_capital_usd, current_fund_cash=0.0, already_allocated=already_allocated)
@@ -2891,6 +2914,12 @@ _EMPTY_ROI_HISTORY = {
     "benchmark_cumulative_return_pct": [],
     "per_fund": [],
 }
+# Cache para el endpoint de ROI history: el cálculo es costoso (descarga
+# barras diarias de yfinance por cada símbolo de todos los fondos) y el
+# resultado cambia solo cuando hay un fill nuevo o un aporte/retiro. Un TTL
+# de 5 minutos reduce la carga sin sacrificar frescura en la práctica.
+_roi_history_cache: "tuple[float, dict] | None" = None
+_ROI_HISTORY_CACHE_TTL = 300  # segundos
 
 
 def _twr_series(
@@ -3076,13 +3105,25 @@ def _compute_roi_history(funds: list) -> dict:
 
 
 @app.get("/api/funds/roi-history")
-def get_funds_roi_history(_: None = Depends(require_api_key)):
+async def get_funds_roi_history(_: None = Depends(require_api_key)):
     """Retorno acumulado time-weighted del capital combinado de todos los
     fondos vs. el S&P 500 (SPY) en la misma ventana -- ver _compute_roi_history
     para el detalle de por que es time-weighted y no dollar-weighted como el
     ROI por fondo de `_fund_view`. Es aparte del bar chart de ROI actual por
-    fondo (ese es un snapshot del momento, este es una serie historica)."""
-    return _compute_roi_history(funds_store.list())
+    fondo (ese es un snapshot del momento, este es una serie historica).
+
+    El resultado se cachea 5 minutos: el cálculo descarga barras diarias de
+    yfinance por cada símbolo y ocupaba el threadpool de FastAPI bloqueando
+    otros endpoints síncronos (reject_order, update_rules, etc.)."""
+    global _roi_history_cache
+    now = time.monotonic()
+    if _roi_history_cache is not None:
+        cached_at, cached_result = _roi_history_cache
+        if now - cached_at < _ROI_HISTORY_CACHE_TTL:
+            return cached_result
+    result = await asyncio.to_thread(_compute_roi_history, funds_store.list())
+    _roi_history_cache = (now, result)
+    return result
 
 
 # IMPORTANTE: esta ruta con parametro dinamico {fund_id} debe registrarse
@@ -3128,7 +3169,7 @@ async def create_capital_flow(fund_id: str, body: CapitalFlowCreate, _: None = D
     if body.amount > 0:
         if not state["connected"]:
             raise HTTPException(status_code=503, detail="No conectado a IBKR.")
-        real_cash = (await broker.get_account_summary()).cash
+        real_cash = (await broker.get_account_summary()).net_liquidation
 
     def allocation_check(fund, already_allocated: float) -> None:
         if body.amount < 0:

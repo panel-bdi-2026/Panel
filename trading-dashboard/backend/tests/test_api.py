@@ -86,9 +86,12 @@ def reset_state(monkeypatch, tmp_path):
     # cuanto un segundo test lo contiende desde otro loop. Una instancia
     # nueva por test evita que el binding se filtre entre tests.
     monkeypatch.setattr(main_module, "_funds_order_lock", asyncio.Lock())
+    monkeypatch.setattr(main_module, "_screener_config_lock", asyncio.Lock())
     main_module._sessions.clear()
+    main_module._roi_history_cache = None
     yield
     main_module._sessions.clear()
+    main_module._roi_history_cache = None
 
 
 def test_healthz_does_not_require_api_key():
@@ -453,14 +456,14 @@ def test_create_fund_rejects_non_positive_initial_capital():
 
 def test_create_fund_rejects_amount_exceeding_real_ibkr_cash(monkeypatch):
     main_module.state["connected"] = True
-    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=1_000)))
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(net_liq=1_000, cash=1_000)))
     resp = client.post(
         "/api/funds",
         json={"name": "Fondo", "initial_capital_usd": 5_000},
         headers={"X-API-Key": "test-key"},
     )
     assert resp.status_code == 422
-    assert "cash real" in resp.json()["detail"]
+    assert "valor neto" in resp.json()["detail"]
 
 
 def test_create_fund_succeeds_within_available_cash(monkeypatch):
@@ -477,7 +480,7 @@ def test_create_fund_succeeds_within_available_cash(monkeypatch):
 
 def test_create_second_fund_rejected_when_combined_allocation_exceeds_real_cash(monkeypatch):
     main_module.state["connected"] = True
-    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=10_000)))
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(net_liq=10_000, cash=10_000)))
     first = client.post(
         "/api/funds",
         json={"name": "Fondo 1", "initial_capital_usd": 7_000},
@@ -491,12 +494,12 @@ def test_create_second_fund_rejected_when_combined_allocation_exceeds_real_cash(
         headers={"X-API-Key": "test-key"},
     )
     assert second.status_code == 422
-    assert "cash real" in second.json()["detail"]
+    assert "valor neto" in second.json()["detail"]
 
 
 def test_capital_flow_deposit_rejected_when_exceeds_remaining_real_cash(monkeypatch):
     main_module.state["connected"] = True
-    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(cash=10_000)))
+    monkeypatch.setattr(main_module.broker, "get_account_summary", _async_account_summary(make_account(net_liq=10_000, cash=10_000)))
     created = client.post(
         "/api/funds",
         json={"name": "Fondo", "initial_capital_usd": 6_000},
@@ -509,7 +512,7 @@ def test_capital_flow_deposit_rejected_when_exceeds_remaining_real_cash(monkeypa
         headers={"X-API-Key": "test-key"},
     )
     assert resp.status_code == 422
-    assert "cash real" in resp.json()["detail"]
+    assert "valor neto" in resp.json()["detail"]
 
 
 def test_capital_flow_withdrawal_rejected_when_exceeds_fund_cash(monkeypatch):
@@ -1381,7 +1384,7 @@ def test_lifespan_shutdown_awaits_background_tasks_cancellation(monkeypatch):
     for loop_name in (
         "_broadcast_loop", "_risk_monitor_loop", "_score_recompute_loop",
         "_data_refresh_loop", "_auto_exit_monitor_loop", "_trailing_stop_loop",
-        "_hot_set_loop", "_price_rotation_loop",
+        "_hot_set_loop", "_price_rotation_loop", "_session_cleanup_loop",
     ):
         monkeypatch.setattr(main_module, loop_name, long_running)
 
@@ -1401,5 +1404,5 @@ def test_lifespan_shutdown_awaits_background_tasks_cancellation(monkeypatch):
 
     asyncio.run(scenario())
 
-    assert len(created_tasks) == 8
+    assert len(created_tasks) == 9
     assert all(t.done() for t in created_tasks)

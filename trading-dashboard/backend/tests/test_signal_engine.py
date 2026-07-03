@@ -71,6 +71,7 @@ def reset_state(monkeypatch, tmp_path):
     # test_auto_trading.py), filtrando estado entre tests. Una instancia
     # nueva por test, swapeada con monkeypatch, se revierte sola al terminar.
     monkeypatch.setattr(main_module, "screener_config", ScreenerConfig())
+    monkeypatch.setattr(main_module, "_screener_config_lock", asyncio.Lock())
     main_module.rules_engine.reload(RulesConfig(
         symbol_whitelist=["AAPL", "MSFT"],
         allow_extended_hours=True,
@@ -311,15 +312,15 @@ def test_signal_scan_cycle_handles_scan_failure_gracefully(monkeypatch):
 
 
 def test_signal_scan_cycle_holds_screener_config_lock_around_signal_state_update(monkeypatch):
-    """update_screener_config corre en un thread del pool (es un endpoint sync,
-    no async) y resetea _signal_state bajo _screener_config_lock (ver M8 del
-    audit); este ciclo, que corre en el event loop, debe tomar el MISMO lock
-    al leer y escribir previously_passing -- si no, un reset de config en
-    pleno vuelo de un ciclo se podia perder (el ciclo leia el valor previo al
-    reset y lo pisaba de nuevo al escribir, devolviendo intacta la base vieja
-    que el reset queria descartar). Se verifica espiando los accesos al dict
-    en vez de con una raza real entre threads (no deterministica): el lock
-    debe estar tomado en cada get/set de 'previously_passing'."""
+    """update_screener_config es async y resetea _signal_state bajo
+    _screener_config_lock (asyncio.Lock); este ciclo, que corre en el event
+    loop, debe tomar el MISMO lock al leer y escribir previously_passing --
+    si no, un reset de config en pleno vuelo de un ciclo se podia perder (el
+    ciclo leia el valor previo al reset y lo pisaba de nuevo al escribir,
+    devolviendo intacta la base vieja que el reset queria descartar). Se
+    verifica espiando los accesos al dict en vez de con una raza real (no
+    deterministica): el lock debe estar tomado en cada get/set de
+    'previously_passing'."""
     main_module.screener_config.auto_scan_enabled = True
     monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [make_signal(passes=True)])
 
@@ -347,7 +348,7 @@ def test_signal_scan_cycle_holds_screener_config_lock_around_signal_state_update
 def test_update_screener_config_resets_signal_baseline():
     main_module._signal_state["previously_passing"] = {"AAPL"}
     body = main_module.ScreenerUpdate(config=main_module.screener_config.model_dump())
-    main_module.update_screener_config(body, None)
+    asyncio.run(main_module.update_screener_config(body, None))
     assert main_module._signal_state["previously_passing"] is None
 
 
@@ -357,7 +358,7 @@ def test_update_screener_config_syncs_whitelist_with_universe():
     config["universe"] = new_universe
     body = main_module.ScreenerUpdate(config=config)
 
-    main_module.update_screener_config(body, None)
+    asyncio.run(main_module.update_screener_config(body, None))
 
     assert main_module.rules_config.symbol_whitelist == new_universe
     assert main_module.rules_engine.config.symbol_whitelist == new_universe
@@ -368,7 +369,7 @@ def test_update_screener_config_partial_nested_update_preserves_other_fields():
     new_max_pe = (before["long_term"]["max_pe_ratio"] or 0) + 1
     body = main_module.ScreenerUpdate(config={"long_term": {"max_pe_ratio": new_max_pe}})
 
-    main_module.update_screener_config(body, None)
+    asyncio.run(main_module.update_screener_config(body, None))
 
     after = main_module.screener_config.model_dump()
     assert after["long_term"]["max_pe_ratio"] == new_max_pe
@@ -389,7 +390,7 @@ def test_update_screener_config_partial_top_level_update_preserves_nested_subcon
     new_sma_fast = before["sma_fast"] + 1
     body = main_module.ScreenerUpdate(config={"sma_fast": new_sma_fast})
 
-    main_module.update_screener_config(body, None)
+    asyncio.run(main_module.update_screener_config(body, None))
 
     after = main_module.screener_config.model_dump()
     assert after["sma_fast"] == new_sma_fast
