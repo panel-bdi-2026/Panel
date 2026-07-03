@@ -110,11 +110,11 @@ class OpportunisticStrategy:
         lookback = opp.macd_crossover_lookback_days
         if lookback > 0:
             _, _, macd_hist = compute_macd(close)
-            vol_min = opp.volume_crossover_min_ratio
-            if vol_min > 0:
-                vol_avg = bars["Volume"].rolling(20, min_periods=1).mean()
-                vol_ratio = bars["Volume"] / vol_avg.replace(0, float("nan"))
             if len(macd_hist) >= lookback + 2:
+                vol_min = opp.volume_crossover_min_ratio
+                if vol_min > 0:
+                    vol_avg = bars["Volume"].rolling(20, min_periods=1).mean()
+                    vol_ratio = bars["Volume"] / vol_avg.replace(0, float("nan"))
                 recent_hist = macd_hist.iloc[-(lookback + 1):]
                 macd_crossover_ok = False
                 for j in range(len(recent_hist) - 1):

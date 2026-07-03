@@ -251,6 +251,14 @@ def _session_valid(token: str) -> bool:
         return True
 
 
+async def _cache_eviction_loop() -> None:
+    """Elimina entradas expiradas del cache de market_data cada hora para
+    evitar acumulación ilimitada de DataFrames en universos grandes."""
+    while True:
+        await asyncio.sleep(3600)
+        await asyncio.to_thread(market_data.evict_stale_cache)
+
+
 async def _session_cleanup_loop() -> None:
     """Elimina tokens expirados del dict de sesiones cada hora para evitar
     que sesiones viejas sin logout acumulen entradas indefinidamente."""
@@ -1971,11 +1979,12 @@ async def lifespan(app: FastAPI):
     hot_set_task = asyncio.create_task(_hot_set_loop())
     price_rotation_task = asyncio.create_task(_price_rotation_loop())
     session_cleanup_task = asyncio.create_task(_session_cleanup_loop())
+    cache_eviction_task = asyncio.create_task(_cache_eviction_loop())
     yield
     background_tasks = [
         task, risk_task, score_recompute_task, data_refresh_task,
         exit_monitor_task, trailing_stop_task, hot_set_task, price_rotation_task,
-        session_cleanup_task,
+        session_cleanup_task, cache_eviction_task,
     ]
     for background_task in background_tasks:
         background_task.cancel()
@@ -1999,6 +2008,24 @@ if settings.allowed_origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if not request.url.path.startswith("/api/"):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self' ws: wss:; "
+            "frame-ancestors 'none'"
+        )
+    return response
 
 
 @app.get("/healthz")

@@ -1385,6 +1385,7 @@ def test_lifespan_shutdown_awaits_background_tasks_cancellation(monkeypatch):
         "_broadcast_loop", "_risk_monitor_loop", "_score_recompute_loop",
         "_data_refresh_loop", "_auto_exit_monitor_loop", "_trailing_stop_loop",
         "_hot_set_loop", "_price_rotation_loop", "_session_cleanup_loop",
+        "_cache_eviction_loop",
     ):
         monkeypatch.setattr(main_module, loop_name, long_running)
 
@@ -1404,5 +1405,5 @@ def test_lifespan_shutdown_awaits_background_tasks_cancellation(monkeypatch):
 
     asyncio.run(scenario())
 
-    assert len(created_tasks) == 9
+    assert len(created_tasks) == 10
     assert all(t.done() for t in created_tasks)

@@ -99,7 +99,7 @@ _RETRY_BACKOFF_BASE_SECONDS = 0.5
 # si yfinance internamente sigue trabado (ese thread de fetch queda huerfano
 # pero el resto de la app sigue funcionando).
 _FETCH_TIMEOUT_SECONDS = 45
-_fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="yfinance-fetch")
+_fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="yfinance-fetch")
 
 
 def _fetch_with_timeout(fn):
@@ -374,3 +374,32 @@ def get_fundamentals(symbol: str, force: bool = False, cache_only: bool = False)
         result = {name: info.get(raw_key) for name, raw_key in _INFO_FIELD_MAP.items()}
         _fundamentals_cache[key] = (now, result, ok)
         return result
+
+
+def evict_stale_cache() -> None:
+    """Elimina entradas expiradas de todos los caches en memoria.
+
+    Llamada periódicamente desde el background task de main.py para evitar
+    que el proceso acumule RAM indefinidamente en universos grandes (>200
+    símbolos × múltiples periodos = miles de DataFrames en _cache).
+    """
+    now = time.time()
+    for key in list(_cache):
+        ts, _ = _cache[key]
+        if now - ts >= _CACHE_TTL_SECONDS:
+            _cache.pop(key, None)
+    for key in list(_bars_failure_cache):
+        ts, _ = _bars_failure_cache[key]
+        if now - ts >= _CACHE_TTL_SECONDS:
+            _bars_failure_cache.pop(key, None)
+    for key in list(_earnings_cache):
+        ts, _, ok = _earnings_cache[key]
+        ttl = _EARNINGS_CACHE_TTL_SECONDS if ok else _EARNINGS_FAILURE_CACHE_TTL_SECONDS
+        if now - ts >= ttl:
+            _earnings_cache.pop(key, None)
+    for key in list(_fundamentals_cache):
+        ts, _, ok = _fundamentals_cache[key]
+        ttl = _FUNDAMENTALS_CACHE_TTL_SECONDS if ok else _FUNDAMENTALS_FAILURE_CACHE_TTL_SECONDS
+        if now - ts >= ttl:
+            _fundamentals_cache.pop(key, None)
+
