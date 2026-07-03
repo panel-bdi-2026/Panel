@@ -126,7 +126,7 @@ def test_evaluate_symbol_exposes_score_components(strategy):
     result = strategy.evaluate_symbol("GROW")
     assert set(result.score_components.keys()) == {
         "momentum", "volatility", "rsi_recovery", "room_to_grow",
-        "macd_turn", "sector_relative_strength",
+        "macd_turn", "sector_relative_strength", "volume_surge",
     }
 
 

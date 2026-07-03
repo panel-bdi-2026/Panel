@@ -490,7 +490,7 @@ def _opportunistic_raw_components(
     la que usa el componente "momentum" (señal de giro de corto plazo), una
     ventana distinta con un proposito distinto en la misma estrategia."""
     opp = cfg.opportunistic
-    keys = ("momentum", "volatility", "rsi_recovery", "room_to_grow", "macd_turn", "sector_relative_strength")
+    keys = ("momentum", "volatility", "rsi_recovery", "room_to_grow", "macd_turn", "sector_relative_strength", "volume_surge")
     per_symbol: dict[str, dict[str, pd.Series]] = {key: {} for key in keys}
 
     # Mismos centro/medio-rango que evaluate_symbol (ver opportunistic.py):
@@ -503,6 +503,7 @@ def _opportunistic_raw_components(
 
     for symbol, bars in bars_by_symbol.items():
         close = bars["Close"]
+        volume = bars["Volume"]
         atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
         roc_short = rate_of_change(close, opp.momentum_lookback_days)
         rsi_s = rsi(close, opp.rsi_period)
@@ -524,12 +525,19 @@ def _opportunistic_raw_components(
         sector_rel = sector_relative_strength_series(symbol, roc_3m_context, history_days)
         sector_component = sector_rel.fillna(0.0) if sector_rel is not None else pd.Series(0.0, index=close.index)
 
-        per_symbol["momentum"][symbol] = roc_short.where(valid)
+        # Volume surge: ratio volumen promedio de los últimos N días vs. media
+        # de 20 días — replicación vectorizada del cálculo de evaluate_symbol.
+        avg_vol_20d = volume.rolling(20, min_periods=1).mean()
+        recent_vol = volume.rolling(opp.volume_surge_lookback_days, min_periods=1).mean()
+        volume_surge_s = (recent_vol / avg_vol_20d).where(avg_vol_20d > 0).fillna(1.0)
+
+        per_symbol["momentum"][symbol] = _band_score_series(roc_short, opp.momentum_ideal_pct, opp.momentum_half_range_pct).where(valid)
         per_symbol["volatility"][symbol] = volatility_component.where(valid)
-        per_symbol["rsi_recovery"][symbol] = (rsi_s - opp.rsi_min).where(valid)
+        per_symbol["rsi_recovery"][symbol] = _band_score_series(rsi_s, opp.rsi_recovery_ideal, opp.rsi_recovery_half_range).where(valid)
         per_symbol["room_to_grow"][symbol] = room_to_grow_component.where(valid)
         per_symbol["macd_turn"][symbol] = macd_pct_s.fillna(0.0).where(valid)
         per_symbol["sector_relative_strength"][symbol] = sector_component.where(valid)
+        per_symbol["volume_surge"][symbol] = volume_surge_s.where(valid)
 
     return {key: pd.concat(series_dict, axis=1) for key, series_dict in per_symbol.items()}
 
@@ -779,6 +787,7 @@ def _collect_opportunistic_trades(
         "room_to_grow": opp.score_weight_room_to_grow,
         "macd_turn": opp.score_weight_macd_turn,
         "sector_relative_strength": opp.score_weight_sector_relative_strength,
+        "volume_surge": opp.score_weight_volume_surge,
     })
 
     all_trades: list[BacktestTrade] = []
