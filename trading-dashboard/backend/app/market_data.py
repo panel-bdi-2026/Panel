@@ -71,6 +71,15 @@ _bars_locks = _KeyedLocks()
 _earnings_locks = _KeyedLocks()
 _fundamentals_locks = _KeyedLocks()
 
+# Rate limiter para Tiingo: los 10 workers del executor pueden rafaguear la API
+# simultáneamente en el primer scan en frío, provocando 429. Un lock + timestamp
+# serializa el momento de inicio de cada request dejando al menos _TIINGO_MIN_GAP_S
+# entre ellos (la llamada HTTP en sí se hace fuera del lock, así que el siguiente
+# thread puede empezar a prepararse mientras el anterior sigue esperando respuesta).
+_tiingo_rate_lock = threading.Lock()
+_tiingo_last_ts: list[float] = [0.0]  # lista mutable para compartir estado entre threads
+_TIINGO_MIN_GAP_S = 1.0  # ≤1 request/segundo — conservador para el plan Power (500 req/hora)
+
 
 class MarketDataError(RuntimeError):
     pass
@@ -116,9 +125,18 @@ def _tiingo_bars(symbol: str, start: date, end: date) -> pd.DataFrame:
     Devuelve DataFrame con columnas Open/High/Low/Close/Volume (ajustadas por
     splits y dividendos) e índice DatetimeIndex UTC, compatible con el formato
     que espera el resto del stack.
+
+    Aplica rate limiting global (_tiingo_rate_lock) para no rafaguear la API
+    con los 10 workers concurrentes del executor durante un scan en frío.
     """
     import httpx
     from app.config import settings
+
+    with _tiingo_rate_lock:
+        wait = _TIINGO_MIN_GAP_S - (time.time() - _tiingo_last_ts[0])
+        if wait > 0:
+            time.sleep(wait)
+        _tiingo_last_ts[0] = time.time()
 
     url = f"https://api.tiingo.com/tiingo/daily/{symbol.upper()}/prices"
     with httpx.Client(timeout=30) as client:
@@ -131,6 +149,8 @@ def _tiingo_bars(symbol: str, start: date, end: date) -> pd.DataFrame:
             },
             headers={"Content-Type": "application/json"},
         )
+    if resp.status_code == 429:
+        time.sleep(10.0)  # backoff duro ante rate limit; el retry loop lo reintenta
     resp.raise_for_status()
     data = resp.json()
     if not data:
