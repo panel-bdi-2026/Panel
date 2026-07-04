@@ -78,7 +78,7 @@ _fundamentals_locks = _KeyedLocks()
 # thread puede empezar a prepararse mientras el anterior sigue esperando respuesta).
 _tiingo_rate_lock = threading.Lock()
 _tiingo_last_ts: list[float] = [0.0]  # lista mutable para compartir estado entre threads
-_TIINGO_MIN_GAP_S = 1.0  # ≤1 request/segundo — conservador para el plan Power (500 req/hora)
+_TIINGO_MIN_GAP_S = 0.5  # ≤2 requests/segundo — plan Power permite 10.000 req/hora (~2.78 req/s max)
 
 
 class MarketDataError(RuntimeError):
