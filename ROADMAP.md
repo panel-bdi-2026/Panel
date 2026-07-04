@@ -11,12 +11,12 @@ Documento vivo. Actualizar a medida que se completan fases o cambian prioridades
 |----------------------------------|:------------:|---------------------------------------------------|
 | Testing y calidad del código     | 8/10         | main.py monolítico (3.305 líneas)                 |
 | Gestión de riesgo                | 7/10         | Sin VaR/Kelly; trailing stop apagado              |
-| Fundamento teórico de estrategias| 7/10         | Solo 3 años de backtest, bull market              |
+| Fundamento teórico de estrategias| 6/10         | Oportunista validado 22 años; Momentum sin alpha real |
 | Arquitectura del backend         | 5/10         | main.py monolítico; estado en RAM                 |
-| Metodología del backtest         | 5/10         | 3 años, look-ahead bias, sin walk-forward         |
+| Metodología del backtest         | 8/10         | 22 años, walk-forward 5 folds, Monte Carlo, 10 regímenes |
 | Seguridad                        | 5/10         | Sin rate limiting, JWT, ni HTTPS                  |
 | UI/UX                            | 4/10         | Vanilla JS single-file, sin framework             |
-| Probabilidad de generar retorno  | 4/10         | Backtest solo 3 años de bull market; sin walk-forward |
+| Probabilidad de generar retorno  | 5/10         | Oportunista: DSR=98.8% (alpha real); Momentum: re-optimizar |
 | Infraestructura/DevOps           | 3/10         | Sin CI/CD, sin backups, sin monitoreo             |
 | Calidad de los datos             | 7/10         | ~~yfinance~~ → **Tiingo Power (hecho)**: 2 req/s, sin 429, EOD ajustado |
 
