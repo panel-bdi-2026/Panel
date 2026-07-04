@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 import statistics
 import time
 from collections import Counter
@@ -929,6 +930,204 @@ def run_opportunistic_backtest_walk_forward(
         rules_config=rules_config,
         assumed_capital_usd=cfg.backtest_assumed_capital_usd,
     )
+
+
+# ---------------------------------------------------------------------------
+# Monte Carlo y análisis por sub-período — ver docstrings individuales abajo.
+# Expuestas también desde el script scripts/backtest_15yr.py que corre el
+# análisis completo de 15 años.
+# ---------------------------------------------------------------------------
+# Períodos históricos nombrados para analyze_subperiods. Cubre los grandes
+# regímenes de mercado desde 2010: crisis de deuda europea (2011),
+# desaceleración China (2015-16), corrección Q4 2018, crash COVID (2020),
+# bear de tasas (2022) y el rally de IA (2023-25). La estrategia tiene que
+# sostenerse en todos ellos para que el resultado del backtest sea evidencia
+# real, no solo suerte de época.
+ANALYSIS_SUBPERIODS: list[tuple[str, str, str]] = [
+    ("2010-2012 Post-crisis recovery",  "2010-01-01", "2012-12-31"),
+    ("2013-2015 Secular bull",          "2013-01-01", "2015-07-31"),
+    ("2015-2016 China/EM correction",   "2015-08-01", "2016-03-31"),
+    ("2016-2018 Trump rally",           "2016-04-01", "2018-09-30"),
+    ("2018 Q4 Crash",                   "2018-10-01", "2018-12-31"),
+    ("2019 Late-cycle bull",            "2019-01-01", "2020-01-31"),
+    ("2020 COVID crash",                "2020-02-01", "2020-04-30"),
+    ("2020-2021 Recovery & stimulus",   "2020-05-01", "2021-12-31"),
+    ("2022 Bear market (rates)",        "2022-01-01", "2022-12-31"),
+    ("2023-2025 AI rally",              "2023-01-01", "2025-12-31"),
+]
+
+
+def run_monte_carlo(
+    all_trades: list[BacktestTrade],
+    top_n: int,
+    bench_bars: pd.DataFrame,
+    marks_by_trade_id: dict,
+    n_simulations: int = 10_000,
+    *,
+    vol_weighting_enabled: bool = False,
+    risk_based_sizing_enabled: bool = False,
+    rules_config: RulesConfig | None = None,
+    assumed_capital_usd: float = 100_000.0,
+) -> dict:
+    """Permuta los retornos diarios de la curva de equity `n_simulations` veces
+    para estimar cuánto del resultado real depende del orden en que ocurrieron
+    los días (suerte de secuencia) en vez del skill de la estrategia.
+
+    Usa retornos DIARIOS (no por operación individual) para preservar la
+    estructura de cartera con posiciones solapadas: cada día ya tiene
+    incorporado el efecto de tener 1 a top_n posiciones abiertas
+    simultáneamente. Permutar días en vez de trades es lo que hace que el
+    max drawdown simulado sea realista (evita el artefacto de asumir que todos
+    los trades son secuenciales sin solapamiento).
+
+    Devuelve percentiles P5/P25/P50/P75/P95 de retorno acumulado, max drawdown
+    y Sharpe para el conjunto de simulaciones, más probabilidad de retorno
+    positivo.
+    """
+    _, daily_equity, _, _ = _daily_equity_curve(
+        all_trades, top_n, bench_bars, marks_by_trade_id,
+        vol_weighting_enabled=vol_weighting_enabled,
+        risk_based_sizing_enabled=risk_based_sizing_enabled,
+        rules_config=rules_config,
+        assumed_capital_usd=assumed_capital_usd,
+    )
+    if len(daily_equity) < 2:
+        return {}
+
+    daily_returns = [f - 1.0 for f in daily_equity]
+    n = len(daily_returns)
+    mean_r = sum(daily_returns) / n
+
+    sim_returns: list[float] = []
+    sim_drawdowns: list[float] = []
+    sim_sharpes: list[float] = []
+
+    for _ in range(n_simulations):
+        shuffled = random.sample(daily_returns, n)
+
+        equity = 1.0
+        peak = 1.0
+        max_dd = 0.0
+        for r in shuffled:
+            equity *= (1.0 + r)
+            if equity > peak:
+                peak = equity
+            dd = (equity - peak) / peak
+            if dd < max_dd:
+                max_dd = dd
+
+        sim_returns.append((equity - 1.0) * 100.0)
+        sim_drawdowns.append(max_dd * 100.0)
+        var_r = sum((r - mean_r) ** 2 for r in shuffled) / (n - 1) if n > 1 else 0.0
+        std_r = var_r ** 0.5
+        sim_sharpes.append((mean_r / std_r) * (252 ** 0.5) if std_r > 0 else 0.0)
+
+    sim_returns.sort()
+    sim_drawdowns.sort()
+    sim_sharpes.sort()
+
+    def _p(lst: list[float], p: float) -> float:
+        return lst[min(int(len(lst) * p), len(lst) - 1)]
+
+    return {
+        "n_simulations": n_simulations,
+        "n_trading_days": n,
+        "cumulative_return_pct": {
+            "p5":  _p(sim_returns, 0.05),
+            "p25": _p(sim_returns, 0.25),
+            "p50": _p(sim_returns, 0.50),
+            "p75": _p(sim_returns, 0.75),
+            "p95": _p(sim_returns, 0.95),
+        },
+        "max_drawdown_pct": {
+            "p5":  _p(sim_drawdowns, 0.05),   # mejor caso (menor DD)
+            "p50": _p(sim_drawdowns, 0.50),
+            "p95": _p(sim_drawdowns, 0.95),   # peor caso (mayor DD)
+        },
+        "sharpe": {
+            "p5":  _p(sim_sharpes, 0.05),
+            "p50": _p(sim_sharpes, 0.50),
+            "p95": _p(sim_sharpes, 0.95),
+        },
+        "prob_positive_pct": sum(1 for r in sim_returns if r > 0) / n_simulations * 100.0,
+    }
+
+
+def analyze_subperiods(
+    all_trades: list[BacktestTrade],
+    top_n: int,
+    bench_bars: pd.DataFrame,
+    marks_by_trade_id: dict,
+    periods: list[tuple[str, str, str]] | None = None,
+    *,
+    vol_weighting_enabled: bool = False,
+    risk_based_sizing_enabled: bool = False,
+    rules_config: RulesConfig | None = None,
+    assumed_capital_usd: float = 100_000.0,
+) -> list[dict]:
+    """Métricas de la estrategia recortadas a cada período histórico nombrado.
+
+    Filtra las operaciones cuya entry_date cae dentro del rango de cada
+    período y recalcula las métricas de resumen sobre ese subconjunto. Permite
+    ver si la estrategia aguanta en regímenes adversos (2022 bear, 2020 crash)
+    o solo funciona en rallies.
+
+    Reusa marks_by_trade_id y bench_bars ya calculados (sin pedidos de red).
+    """
+    if periods is None:
+        periods = ANALYSIS_SUBPERIODS
+
+    results: list[dict] = []
+    for name, start_str, end_str in periods:
+        period_start = pd.Timestamp(start_str, tz="UTC")
+        period_end   = pd.Timestamp(end_str,   tz="UTC")
+
+        fold_trades = [
+            t for t in all_trades
+            if period_start <= t.entry_date <= period_end
+        ]
+
+        base: dict = {
+            "period": name, "start": start_str, "end": end_str,
+            "n_trades": len(fold_trades),
+            "win_rate_pct": None, "cumulative_return_pct": None,
+            "benchmark_return_pct": None, "max_drawdown_pct": None,
+            "sharpe_ratio": None,
+        }
+
+        if not fold_trades:
+            results.append(base)
+            continue
+
+        fold_bench = bench_bars.loc[
+            (bench_bars.index >= period_start) & (bench_bars.index <= period_end)
+        ]
+        if fold_bench.empty:
+            results.append(base)
+            continue
+
+        try:
+            summary = _compute_summary_stats(
+                fold_trades, top_n, fold_bench, marks_by_trade_id,
+                False, vol_weighting_enabled,
+                risk_based_sizing_enabled=risk_based_sizing_enabled,
+                rules_config=rules_config,
+                assumed_capital_usd=assumed_capital_usd,
+            )
+            base.update({
+                "n_trades": summary.total_trades,
+                "win_rate_pct": summary.win_rate_pct,
+                "cumulative_return_pct": summary.strategy_cumulative_return_pct,
+                "benchmark_return_pct": summary.benchmark_cumulative_return_pct,
+                "max_drawdown_pct": summary.max_drawdown_pct,
+                "sharpe_ratio": summary.sharpe_ratio,
+            })
+        except Exception:
+            pass
+
+        results.append(base)
+
+    return results
 
 
 def cap_concurrent_positions(
