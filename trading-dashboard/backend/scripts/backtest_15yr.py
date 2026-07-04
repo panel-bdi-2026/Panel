@@ -153,7 +153,7 @@ def _print_report(result: dict) -> None:
     print(f"{'#'*70}")
 
     # Resumen global
-    print(f"\n## Resultado global ({s['start_date'][:10]} → {s['end_date'][:10]})\n")
+    print(f"\n## Resultado global ({str(s['start_date'])[:10]} → {str(s['end_date'])[:10]})\n")
     bench_ret = s['benchmark_cumulative_return_pct']
     strat_ret = s['strategy_cumulative_return_pct']
     alpha     = strat_ret - bench_ret if (strat_ret is not None and bench_ret is not None) else None
@@ -196,7 +196,7 @@ def _print_report(result: dict) -> None:
     print(header)
     print("  " + "-" * (len(header) - 2))
     for fold in wf_folds:
-        period = f"{fold['start_date'][:7]} → {fold['end_date'][:7]}"
+        period = f"{str(fold['start_date'])[:7]} → {str(fold['end_date'])[:7]}"
         ret  = _fmt(fold.get("strategy_cumulative_return_pct"), ".1f", "%")
         bch  = _fmt(fold.get("benchmark_cumulative_return_pct"), ".1f", "%")
         dd   = _fmt(fold.get("max_drawdown_pct"), ".1f", "%")

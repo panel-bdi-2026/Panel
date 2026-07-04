@@ -994,7 +994,12 @@ def run_monte_carlo(
     if len(daily_equity) < 2:
         return {}
 
-    daily_returns = [f - 1.0 for f in daily_equity]
+    # daily_equity es la curva de equity ACUMULADA (1.0 en t=0, crece con el
+    # tiempo). Para permutar, necesitamos los retornos DIARIOS incrementales:
+    # r_t = equity[t] / equity[t-1] - 1, no equity[t] - 1 (que sería el
+    # retorno acumulado desde el inicio hasta el día t).
+    daily_returns = [daily_equity[i] / daily_equity[i - 1] - 1
+                     for i in range(1, len(daily_equity))]
     n = len(daily_returns)
     mean_r = sum(daily_returns) / n
 
