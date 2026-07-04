@@ -23,11 +23,15 @@ def _bars(n=5):
     )
 
 
-class _FakeTicker:
-    def __init__(self, symbol, responses):
-        self._responses = responses
+class _FakeTiingo:
+    """Simula _tiingo_bars con respuestas predefinidas, en orden."""
 
-    def history(self, **kwargs):
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.call_count = 0
+
+    def __call__(self, symbol, start, end):
+        self.call_count += 1
         resp = self._responses.pop(0)
         if isinstance(resp, Exception):
             raise resp
@@ -49,47 +53,35 @@ def _clear_cache():
 
 def test_get_daily_bars_returns_data_on_first_success(monkeypatch):
     bars = _bars()
-    calls = []
-
-    def fake_ticker(symbol):
-        calls.append(symbol)
-        return _FakeTicker(symbol, [bars])
-
+    fake = _FakeTiingo([bars])
     sleeps = []
-    monkeypatch.setattr(market_data_module.yf, "Ticker", fake_ticker)
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", fake)
     monkeypatch.setattr(market_data_module.time, "sleep", lambda s: sleeps.append(s))
 
     df = get_daily_bars("AAPL", 100)
     assert len(df) == len(bars)
-    assert calls == ["AAPL"]
+    assert fake.call_count == 1
     assert sleeps == []  # exito al primer intento: no hay backoff
 
 
 def test_get_daily_bars_retries_on_exception_then_succeeds(monkeypatch):
     bars = _bars()
-    responses = [RuntimeError("network blip"), bars]
-    call_count = {"n": 0}
-
-    def fake_ticker(symbol):
-        call_count["n"] += 1
-        return _FakeTicker(symbol, responses)
-
+    fake = _FakeTiingo([RuntimeError("network blip"), bars])
     sleeps = []
-    monkeypatch.setattr(market_data_module.yf, "Ticker", fake_ticker)
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", fake)
     monkeypatch.setattr(market_data_module.time, "sleep", lambda s: sleeps.append(s))
 
     df = get_daily_bars("MSFT", 100)
     assert len(df) == len(bars)
-    assert call_count["n"] == 2
+    assert fake.call_count == 2
     assert sleeps == [0.5]  # backoff antes del segundo intento
 
 
 def test_get_daily_bars_retries_on_empty_dataframe_then_succeeds(monkeypatch):
     bars = _bars()
-    responses = [pd.DataFrame(), bars]
-
-    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, responses))
+    fake = _FakeTiingo([pd.DataFrame(), bars])
     sleeps = []
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", fake)
     monkeypatch.setattr(market_data_module.time, "sleep", lambda s: sleeps.append(s))
 
     df = get_daily_bars("TSLA", 100)
@@ -98,9 +90,9 @@ def test_get_daily_bars_retries_on_empty_dataframe_then_succeeds(monkeypatch):
 
 
 def test_get_daily_bars_raises_after_exhausting_retries(monkeypatch):
-    responses = [RuntimeError("fail1"), RuntimeError("fail2"), RuntimeError("fail3")]
-    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, responses))
+    fake = _FakeTiingo([RuntimeError("fail1"), RuntimeError("fail2"), RuntimeError("fail3")])
     sleeps = []
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", fake)
     monkeypatch.setattr(market_data_module.time, "sleep", lambda s: sleeps.append(s))
 
     with pytest.raises(MarketDataError):
@@ -110,8 +102,8 @@ def test_get_daily_bars_raises_after_exhausting_retries(monkeypatch):
 
 
 def test_get_daily_bars_raises_when_always_empty_without_exception(monkeypatch):
-    responses = [pd.DataFrame(), pd.DataFrame(), pd.DataFrame()]
-    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, responses))
+    fake = _FakeTiingo([pd.DataFrame(), pd.DataFrame(), pd.DataFrame()])
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", fake)
     monkeypatch.setattr(market_data_module.time, "sleep", lambda s: None)
 
     with pytest.raises(MarketDataError):
@@ -120,32 +112,22 @@ def test_get_daily_bars_raises_when_always_empty_without_exception(monkeypatch):
 
 def test_get_daily_bars_uses_cache_on_second_call(monkeypatch):
     bars = _bars()
-    call_count = {"n": 0}
-
-    def fake_ticker(symbol):
-        call_count["n"] += 1
-        return _FakeTicker(symbol, [bars])
-
-    monkeypatch.setattr(market_data_module.yf, "Ticker", fake_ticker)
+    fake = _FakeTiingo([bars])
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", fake)
 
     get_daily_bars("NFLX", 100)
     get_daily_bars("NFLX", 100)
-    assert call_count["n"] == 1
+    assert fake.call_count == 1
 
 
 def test_get_daily_bars_force_bypasses_cache(monkeypatch):
     bars = _bars()
-    call_count = {"n": 0}
-
-    def fake_ticker(symbol):
-        call_count["n"] += 1
-        return _FakeTicker(symbol, [bars])
-
-    monkeypatch.setattr(market_data_module.yf, "Ticker", fake_ticker)
+    fake = _FakeTiingo([bars, bars])
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", fake)
 
     get_daily_bars("NFLX", 100)
     get_daily_bars("NFLX", 100, force=True)
-    assert call_count["n"] == 2
+    assert fake.call_count == 2
 
 
 def test_is_bars_cached_false_before_first_fetch():
@@ -154,7 +136,7 @@ def test_is_bars_cached_false_before_first_fetch():
 
 def test_is_bars_cached_true_right_after_fetch(monkeypatch):
     bars = _bars()
-    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, [bars]))
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", lambda s, st, en: bars)
 
     get_daily_bars("AAPL", 100)
     assert is_bars_cached("AAPL", 100) is True
@@ -162,7 +144,7 @@ def test_is_bars_cached_true_right_after_fetch(monkeypatch):
 
 def test_is_bars_cached_keyed_by_symbol_and_lookback(monkeypatch):
     bars = _bars()
-    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, [bars]))
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", lambda s, st, en: bars)
 
     get_daily_bars("AAPL", 100)
     assert is_bars_cached("AAPL", 200) is False  # mismo simbolo, otra ventana
@@ -171,7 +153,7 @@ def test_is_bars_cached_keyed_by_symbol_and_lookback(monkeypatch):
 
 def test_is_bars_cached_false_after_ttl_expires(monkeypatch):
     bars = _bars()
-    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, [bars]))
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", lambda s, st, en: bars)
 
     get_daily_bars("AAPL", 100)
     timestamp, df = market_data_module._cache[("AAPL", 100)]
@@ -189,8 +171,8 @@ def test_get_bars_failure_stats_no_failures():
 
 
 def test_get_bars_failure_stats_counts_live_failures(monkeypatch):
-    responses = [RuntimeError("fail1"), RuntimeError("fail2"), RuntimeError("fail3")]
-    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, responses))
+    fake = _FakeTiingo([RuntimeError("fail1"), RuntimeError("fail2"), RuntimeError("fail3")])
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", fake)
     monkeypatch.setattr(market_data_module.time, "sleep", lambda s: None)
     with pytest.raises(MarketDataError):
         get_daily_bars("BADSTOCK", 100)
@@ -200,8 +182,8 @@ def test_get_bars_failure_stats_counts_live_failures(monkeypatch):
 
 
 def test_get_bars_failure_stats_ignores_expired_failure_entries(monkeypatch):
-    responses = [RuntimeError("fail1"), RuntimeError("fail2"), RuntimeError("fail3")]
-    monkeypatch.setattr(market_data_module.yf, "Ticker", lambda symbol: _FakeTicker(symbol, responses))
+    fake = _FakeTiingo([RuntimeError("fail1"), RuntimeError("fail2"), RuntimeError("fail3")])
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", fake)
     monkeypatch.setattr(market_data_module.time, "sleep", lambda s: None)
     with pytest.raises(MarketDataError):
         get_daily_bars("BADSTOCK", 100)
@@ -242,17 +224,13 @@ def test_get_daily_bars_treats_hang_as_failure_and_retries(monkeypatch):
     bars = _bars()
     call_count = {"n": 0}
 
-    class _HangsOnFirstCallTicker:
-        def __init__(self, symbol):
-            pass
+    def fake_tiingo(symbol, start, end):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            time.sleep(0.3)
+        return bars
 
-        def history(self, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                time.sleep(0.3)
-            return bars
-
-    monkeypatch.setattr(market_data_module.yf, "Ticker", _HangsOnFirstCallTicker)
+    monkeypatch.setattr(market_data_module, "_tiingo_bars", fake_tiingo)
 
     df = get_daily_bars("HUNG", 100)
     assert len(df) == len(bars)

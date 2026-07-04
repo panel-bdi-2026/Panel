@@ -73,6 +73,7 @@ class Settings:
         # hace falta tirar abajo todo el backend por una funcionalidad que el
         # usuario ni siquiera prendio.
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        self.tiingo_api_key = os.getenv("TIINGO_API_KEY", "")
 
         # Origenes permitidos para CORS. Vacio por defecto: el frontend se sirve
         # desde el mismo backend (mismo origen), asi que no necesita CORS, y

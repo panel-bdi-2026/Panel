@@ -99,7 +99,7 @@ _RETRY_BACKOFF_BASE_SECONDS = 0.5
 # si yfinance internamente sigue trabado (ese thread de fetch queda huerfano
 # pero el resto de la app sigue funcionando).
 _FETCH_TIMEOUT_SECONDS = 45
-_fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="yfinance-fetch")
+_fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="market-data-fetch")
 
 
 def _fetch_with_timeout(fn):
@@ -107,7 +107,48 @@ def _fetch_with_timeout(fn):
     try:
         return future.result(timeout=_FETCH_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
-        raise MarketDataError(f"Sin respuesta de Yahoo Finance tras {_FETCH_TIMEOUT_SECONDS}s") from None
+        raise MarketDataError(f"Sin respuesta del proveedor de datos tras {_FETCH_TIMEOUT_SECONDS}s") from None
+
+
+def _tiingo_bars(symbol: str, start: date, end: date) -> pd.DataFrame:
+    """Descarga barras diarias ajustadas de Tiingo (API oficial, con SLA).
+
+    Devuelve DataFrame con columnas Open/High/Low/Close/Volume (ajustadas por
+    splits y dividendos) e índice DatetimeIndex UTC, compatible con el formato
+    que espera el resto del stack.
+    """
+    import httpx
+    from app.config import settings
+
+    url = f"https://api.tiingo.com/tiingo/daily/{symbol.upper()}/prices"
+    with httpx.Client(timeout=30) as client:
+        resp = client.get(
+            url,
+            params={
+                "startDate": start.isoformat(),
+                "endDate": end.isoformat(),
+                "token": settings.tiingo_api_key,
+            },
+            headers={"Content-Type": "application/json"},
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data:
+        return pd.DataFrame()
+    df = pd.DataFrame(data)
+    df["date"] = pd.to_datetime(df["date"], utc=True)
+    df = df.set_index("date").sort_index()
+    df.index.name = "Date"
+    return pd.DataFrame(
+        {
+            "Open": df["adjOpen"],
+            "High": df["adjHigh"],
+            "Low": df["adjLow"],
+            "Close": df["adjClose"],
+            "Volume": df["adjVolume"],
+        },
+        index=df.index,
+    )
 
 
 def get_daily_bars(
@@ -115,9 +156,9 @@ def get_daily_bars(
 ) -> pd.DataFrame:
     """Barras diarias OHLCV ajustadas para `symbol`, cubriendo ~lookback_days dias de trading.
 
-    Usa yfinance (datos de Yahoo Finance, no oficiales, gratis y con limites de
-    uso) en vez de IBKR para no consumir suscripciones de market data solo para
-    investigacion/backtesting. Resultado cacheado por simbolo+ventana.
+    Usa Tiingo (API oficial con SLA) para datos historicos, en vez de IBKR, para
+    no consumir suscripciones de market data solo para investigacion/backtesting.
+    Resultado cacheado por simbolo+ventana.
 
     `force=True` ignora el cache (usado por el boton "forzar rescan" del
     dashboard): sin esto, forzar un rescan dentro de los 15 minutos del cache
@@ -127,12 +168,12 @@ def get_daily_bars(
     en main.py) nunca toca la red: devuelve el cache si esta fresco o relanza/lanza
     MarketDataError de inmediato. El refresco de datos real lo hace por separado
     _run_data_refresh_cycle, en lotes chicos -- el recalculo de scores tiene que
-    poder correr seguido sin nunca bloquearse esperando a yfinance. Mutuamente
+    poder correr seguido sin nunca bloquearse esperando a la red. Mutuamente
     excluyente con `force` por construccion del caller.
 
     Reintenta hasta `_MAX_FETCH_RETRIES` veces con backoff exponencial ante
     excepcion o respuesta vacia, ya que ambas pueden ser un fallo transitorio
-    de la API gratuita (ver comentario de `_MAX_FETCH_RETRIES`).
+    (ver comentario de `_MAX_FETCH_RETRIES`).
     """
     key = (symbol.upper(), lookback_days)
     now = time.time()
@@ -162,13 +203,13 @@ def get_daily_bars(
         # semana/feriados) mas un margen.
         start = end - timedelta(days=int(lookback_days * 1.6) + 10)
 
+        _start = start.date()
+        _end = end.date()
         df = None
         last_error: Exception | None = None
         for attempt in range(_MAX_FETCH_RETRIES):
             try:
-                df = _fetch_with_timeout(
-                    lambda: yf.Ticker(symbol).history(start=start.date(), end=end.date(), interval="1d", auto_adjust=True)
-                )
+                df = _fetch_with_timeout(lambda: _tiingo_bars(symbol, _start, _end))
                 last_error = None
                 if df is not None and not df.empty:
                     break
@@ -182,12 +223,11 @@ def get_daily_bars(
             detail = f" ({last_error})" if last_error else ""
             message = (
                 f"Sin datos para {symbol} tras {_MAX_FETCH_RETRIES} intentos{detail}: "
-                f"simbolo invalido o limite de la API gratuita alcanzado."
+                f"simbolo invalido o sin cobertura en Tiingo."
             )
             _bars_failure_cache[key] = (now, message)
             raise MarketDataError(message)
 
-        df = df.rename(columns=str.title)
         _cache[key] = (now, df)
         _bars_failure_cache.pop(key, None)
         return df
