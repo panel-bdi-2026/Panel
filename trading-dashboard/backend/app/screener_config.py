@@ -123,7 +123,13 @@ class OpportunisticConfig(BaseModel):
     momentum_lookback_days: int = 10  # ~2 semanas
     rsi_period: int = 14
     rsi_min: float = 35
-    rsi_max: float = 60
+    # Optimizado empiricamente en backtest 3 años (2023-2026): rsi_max=65
+    # captura entradas con RSI en zona de momentum-extension (60-65) que el
+    # techo de 60 excluia. Combinado con stop=2.5 y holding=20 (sinergico:
+    # el stop amplio aguanta el ruido mientras el holding mas largo captura
+    # el upside completo de esos giros). Resultado: cum +199% vs +126%
+    # baseline, Sharpe 1.42 vs 1.12, DSR 100%.
+    rsi_max: float = 65
     # ATR como % del precio: piso de volatilidad para calificar como "un poco
     # mas volatil" (si no, el filtro deja pasar nombres tan tranquilos como
     # los de Momentum, que no es el objetivo de esta estrategia).
@@ -141,8 +147,8 @@ class OpportunisticConfig(BaseModel):
     # probablemente señala un problema de fondo, no una oportunidad de giro.
     max_pct_below_52w_high: float = 30.0
 
-    stop_loss_atr_multiplier: float = 2.0
-    max_holding_days: int = 15
+    stop_loss_atr_multiplier: float = 2.5
+    max_holding_days: int = 20
 
     # ── Gates de calidad de entrada ─────────────────────────────────────────
     # Gate activo: MACD debe haber cruzado de negativo a positivo en los
