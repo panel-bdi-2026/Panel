@@ -60,10 +60,10 @@ jobs:
           .venv/bin/pip install -q -r requirements.txt
 
           # Reinicio del servicio
-          sudo systemctl restart trading-dashboard
+          sudo /usr/bin/systemctl restart trading-dashboard
 
           # Confirmar que levantó
           sleep 4
-          sudo systemctl is-active --quiet trading-dashboard && \
+          sudo /usr/bin/systemctl is-active --quiet trading-dashboard && \
             echo "✓ trading-dashboard activo" || \
             (sudo journalctl -u trading-dashboard -n 30 --no-pager; exit 1)
