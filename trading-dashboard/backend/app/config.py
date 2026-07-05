@@ -93,8 +93,17 @@ class Settings:
 
         # Alertas por email (opcionales — si no se configuran, las alertas
         # se deshabilitan en silencio sin tirar error al arrancar).
-        # Usar Gmail: SMTP_HOST=smtp.gmail.com SMTP_PORT=587
-        # SMTP_USER=tu@gmail.com SMTP_PASSWORD=<app-password de Google>
+        #
+        # Backend recomendado (DigitalOcean bloquea SMTP):
+        #   RESEND_API_KEY=re_...   (resend.com, gratis hasta 3000/mes)
+        #   ALERT_EMAIL_FROM=Trading Dashboard <onboarding@resend.dev>
+        #   ALERT_EMAIL_TO=tu@email.com
+        #
+        # Backend alternativo (SMTP, si el proveedor no bloquea el puerto):
+        #   SMTP_HOST=smtp.gmail.com SMTP_PORT=587
+        #   SMTP_USER=tu@gmail.com SMTP_PASSWORD=<app-password>
+        self.resend_api_key = os.getenv("RESEND_API_KEY", "")
+        self.alert_email_from = os.getenv("ALERT_EMAIL_FROM", "")
         self.smtp_host = os.getenv("SMTP_HOST", "")
         self.smtp_port = _int_env("SMTP_PORT", os.getenv("SMTP_PORT", "587"))
         self.smtp_user = os.getenv("SMTP_USER", "")

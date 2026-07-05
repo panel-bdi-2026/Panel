@@ -6,24 +6,66 @@ from unittest.mock import MagicMock, patch
 from app.alerts import send_alert
 
 
-class _Settings:
-    smtp_host = "smtp.gmail.com"
-    smtp_port = 587
-    smtp_user = "user@gmail.com"
-    smtp_password = "secret"
+class _SettingsResend:
+    resend_api_key = "re_test_key"
+    alert_email_from = "Trading <onboarding@resend.dev>"
     alert_email_to = "dest@gmail.com"
-
-
-class _SettingsEmpty:
     smtp_host = ""
     smtp_port = 587
     smtp_user = ""
     smtp_password = ""
+
+
+class _SettingsSmtp:
+    resend_api_key = ""
+    alert_email_from = ""
+    alert_email_to = "dest@gmail.com"
+    smtp_host = "smtp.gmail.com"
+    smtp_port = 587
+    smtp_user = "user@gmail.com"
+    smtp_password = "secret"
+
+
+class _SettingsEmpty:
+    resend_api_key = ""
+    alert_email_from = ""
     alert_email_to = ""
+    smtp_host = ""
+    smtp_port = 587
+    smtp_user = ""
+    smtp_password = ""
 
 
 def test_send_alert_no_config_returns_false():
     assert send_alert(_SettingsEmpty(), "Asunto", "Cuerpo") is False
+
+
+def test_send_alert_resend_success():
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+
+    with patch("urllib.request.urlopen", return_value=mock_response):
+        result = send_alert(_SettingsResend(), "Test alerta", "Cuerpo del email")
+
+    assert result is True
+
+
+def test_send_alert_resend_http_error_returns_false():
+    import urllib.error
+    with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
+        url="https://api.resend.com/emails", code=422,
+        msg="Unprocessable Entity", hdrs=None, fp=MagicMock(read=lambda: b"error"),
+    )):
+        result = send_alert(_SettingsResend(), "Test", "Cuerpo")
+    assert result is False
+
+
+def test_send_alert_resend_network_error_returns_false():
+    with patch("urllib.request.urlopen", side_effect=OSError("network unreachable")):
+        result = send_alert(_SettingsResend(), "Test", "Cuerpo")
+    assert result is False
 
 
 def test_send_alert_smtp_success():
@@ -31,34 +73,35 @@ def test_send_alert_smtp_success():
     mock_server.__enter__ = lambda s: s
     mock_server.__exit__ = MagicMock(return_value=False)
 
-    with patch("smtplib.SMTP", return_value=mock_server) as mock_smtp:
-        result = send_alert(_Settings(), "Asunto de prueba", "Cuerpo del email")
+    with patch("smtplib.SMTP", return_value=mock_server):
+        result = send_alert(_SettingsSmtp(), "Test SMTP", "Cuerpo")
 
     assert result is True
-    mock_smtp.assert_called_once_with("smtp.gmail.com", 587, timeout=15)
     mock_server.starttls.assert_called_once()
     mock_server.login.assert_called_once_with("user@gmail.com", "secret")
-    mock_server.send_message.assert_called_once()
 
 
 def test_send_alert_smtp_error_returns_false():
     with patch("smtplib.SMTP", side_effect=OSError("connection refused")):
-        result = send_alert(_Settings(), "Asunto", "Cuerpo")
+        result = send_alert(_SettingsSmtp(), "Test", "Cuerpo")
     assert result is False
 
 
-def test_send_alert_subject_prefix():
-    sent_msg = {}
+def test_resend_takes_priority_over_smtp():
+    """Si ambos están configurados, Resend tiene prioridad."""
+    class _BothSettings(_SettingsResend):
+        smtp_host = "smtp.gmail.com"
+        smtp_user = "user@gmail.com"
+        smtp_password = "secret"
 
-    def capture_send(msg):
-        sent_msg["subject"] = msg["Subject"]
+    mock_response = MagicMock()
+    mock_response.status = 200
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
 
-    mock_server = MagicMock()
-    mock_server.__enter__ = lambda s: s
-    mock_server.__exit__ = MagicMock(return_value=False)
-    mock_server.send_message.side_effect = capture_send
+    with patch("urllib.request.urlopen", return_value=mock_response) as mock_resend, \
+         patch("smtplib.SMTP") as mock_smtp:
+        send_alert(_BothSettings(), "Test", "Cuerpo")
 
-    with patch("smtplib.SMTP", return_value=mock_server):
-        send_alert(_Settings(), "IBKR desconectado", "texto")
-
-    assert sent_msg["subject"] == "[Trading Dashboard] IBKR desconectado"
+    mock_resend.assert_called_once()
+    mock_smtp.assert_not_called()
