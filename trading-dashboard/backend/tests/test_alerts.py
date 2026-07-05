@@ -42,28 +42,26 @@ def test_send_alert_no_config_returns_false():
 
 def test_send_alert_resend_success():
     mock_response = MagicMock()
-    mock_response.status = 200
-    mock_response.__enter__ = lambda s: s
-    mock_response.__exit__ = MagicMock(return_value=False)
+    mock_response.status_code = 200
 
-    with patch("urllib.request.urlopen", return_value=mock_response):
+    with patch("httpx.post", return_value=mock_response):
         result = send_alert(_SettingsResend(), "Test alerta", "Cuerpo del email")
 
     assert result is True
 
 
 def test_send_alert_resend_http_error_returns_false():
-    import urllib.error
-    with patch("urllib.request.urlopen", side_effect=urllib.error.HTTPError(
-        url="https://api.resend.com/emails", code=422,
-        msg="Unprocessable Entity", hdrs=None, fp=MagicMock(read=lambda: b"error"),
-    )):
+    mock_response = MagicMock()
+    mock_response.status_code = 422
+    mock_response.text = "Unprocessable Entity"
+
+    with patch("httpx.post", return_value=mock_response):
         result = send_alert(_SettingsResend(), "Test", "Cuerpo")
     assert result is False
 
 
 def test_send_alert_resend_network_error_returns_false():
-    with patch("urllib.request.urlopen", side_effect=OSError("network unreachable")):
+    with patch("httpx.post", side_effect=OSError("network unreachable")):
         result = send_alert(_SettingsResend(), "Test", "Cuerpo")
     assert result is False
 
@@ -99,7 +97,10 @@ def test_resend_takes_priority_over_smtp():
     mock_response.__enter__ = lambda s: s
     mock_response.__exit__ = MagicMock(return_value=False)
 
-    with patch("urllib.request.urlopen", return_value=mock_response) as mock_resend, \
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+
+    with patch("httpx.post", return_value=mock_response) as mock_resend, \
          patch("smtplib.SMTP") as mock_smtp:
         send_alert(_BothSettings(), "Test", "Cuerpo")
 

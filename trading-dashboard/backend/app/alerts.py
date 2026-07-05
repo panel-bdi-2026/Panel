@@ -10,14 +10,13 @@ En ambos casos, ALERT_EMAIL_TO debe estar definido.
 """
 from __future__ import annotations
 
-import json
 import logging
 import smtplib
 import socket
-import urllib.error
-import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -39,29 +38,21 @@ def _send_via_resend(settings, subject: str, body: str) -> bool:
     if not all([settings.resend_api_key, settings.alert_email_from, settings.alert_email_to]):
         return False
     try:
-        payload = json.dumps({
-            "from": settings.alert_email_from,
-            "to": [settings.alert_email_to],
-            "subject": f"[Trading Dashboard] {subject}",
-            "text": f"{body}\n\nServidor: {_get_hostname()}",
-        }).encode()
-        req = urllib.request.Request(
+        resp = httpx.post(
             "https://api.resend.com/emails",
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {settings.resend_api_key}",
-                "Content-Type": "application/json",
+            headers={"Authorization": f"Bearer {settings.resend_api_key}"},
+            json={
+                "from": settings.alert_email_from,
+                "to": [settings.alert_email_to],
+                "subject": f"[Trading Dashboard] {subject}",
+                "text": f"{body}\n\nServidor: {_get_hostname()}",
             },
-            method="POST",
+            timeout=15,
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status in (200, 201):
-                logger.info("Alerta enviada via Resend: %s", subject)
-                return True
-            logger.error("Resend retornó status %s", resp.status)
-            return False
-    except urllib.error.HTTPError as exc:
-        logger.error("Error Resend HTTP %s: %s", exc.code, exc.read().decode(errors="replace"))
+        if resp.status_code in (200, 201):
+            logger.info("Alerta enviada via Resend: %s", subject)
+            return True
+        logger.error("Resend retornó %s: %s", resp.status_code, resp.text)
         return False
     except Exception as exc:
         logger.error("Error enviando alerta via Resend: %s", exc)
