@@ -54,7 +54,7 @@ jobs:
           .venv/bin/pip install -q -r requirements.txt
 
           # Permisos y reinicio del servicio
-          sudo chown -R trading:trading /opt/panel
+          sudo /usr/local/bin/trading-fix-perms
           sudo systemctl restart trading-dashboard
 
           # Confirmar que levantó
