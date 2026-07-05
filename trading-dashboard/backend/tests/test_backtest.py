@@ -450,8 +450,10 @@ def test_trailing_stop_price_never_lowers_existing_stop():
 
     # candidate = 95 (100 - 1*5), por debajo del stop ya colocado en 98: se
     # mantiene 98, el trailing nunca retrocede.
-    result = _trailing_stop_price(current_stop=98.0, price_today=100.0, atr_today=5.0, stop_loss_atr_multiplier=1.0)
-
+    result = _trailing_stop_price(
+        current_stop=98.0, price_today=100.0, atr_today=5.0,
+        trail_multiplier=1.0, entry_price=90.0, activation_pct=0.0,
+    )
     assert result == 98.0
 
 
@@ -459,9 +461,33 @@ def test_trailing_stop_price_raises_when_candidate_higher():
     from app.backtest import _trailing_stop_price
 
     # candidate = 108 (110 - 1*2), por encima del stop vigente en 98: sube.
-    result = _trailing_stop_price(current_stop=98.0, price_today=110.0, atr_today=2.0, stop_loss_atr_multiplier=1.0)
-
+    result = _trailing_stop_price(
+        current_stop=98.0, price_today=110.0, atr_today=2.0,
+        trail_multiplier=1.0, entry_price=90.0, activation_pct=0.0,
+    )
     assert result == 108.0
+
+
+def test_trailing_stop_price_activation_pct_not_yet_reached():
+    from app.backtest import _trailing_stop_price
+
+    # entry=100, activation_pct=5% → umbral=105. price_today=103 < 105: no mueve.
+    result = _trailing_stop_price(
+        current_stop=98.0, price_today=103.0, atr_today=1.0,
+        trail_multiplier=1.0, entry_price=100.0, activation_pct=5.0,
+    )
+    assert result == 98.0
+
+
+def test_trailing_stop_price_activation_pct_reached():
+    from app.backtest import _trailing_stop_price
+
+    # entry=100, activation_pct=5% → umbral=105. price_today=110 > 105: mueve.
+    result = _trailing_stop_price(
+        current_stop=98.0, price_today=110.0, atr_today=1.0,
+        trail_multiplier=1.0, entry_price=100.0, activation_pct=5.0,
+    )
+    assert result == 109.0
 
 
 def test_trailing_stop_enabled_exits_earlier_than_static_stop():

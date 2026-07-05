@@ -1581,7 +1581,13 @@ async def _check_fund_trailing_stop(fund_id: str, symbol: str) -> None:
     if live_price is None:
         return
 
-    new_stop = live_price - float(atr_s.iloc[-1]) * screener_config.stop_loss_atr_multiplier
+    trail_mult = screener_config.trailing_stop_atr_multiplier if screener_config.trailing_stop_atr_multiplier is not None else screener_config.stop_loss_atr_multiplier
+    activation_pct = screener_config.trailing_stop_activation_pct
+    if activation_pct > 0:
+        avg_cost = position.avg_cost or 0.0
+        if avg_cost > 0 and live_price < avg_cost * (1 + activation_pct / 100):
+            return
+    new_stop = live_price - float(atr_s.iloc[-1]) * trail_mult
     current_stop = position.stop_loss_price
     if current_stop is not None and new_stop <= current_stop:
         return

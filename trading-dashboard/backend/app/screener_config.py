@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
+from typing import Optional
+
 from pydantic import BaseModel, Field, field_validator
 
 from .atomic_io import atomic_write_text
@@ -399,13 +401,20 @@ class ScreenerConfig(BaseModel):
     # Trailing stop para posiciones abiertas por el motor de auto-trading (ver
     # _check_fund_trailing_stop en main.py): si esta habilitado, el monitor de
     # salida sube (nunca baja) el stop-loss ya colocado en IBKR a medida que
-    # el precio se mueve a favor, usando la misma distancia en ATR que el
-    # stop inicial (stop_loss_atr_multiplier) sobre el ATR de cada chequeo.
+    # el precio se mueve a favor.
     # Apagado por defecto: cambia el perfil de riesgo de "stop fijo" a "stop
     # que persigue el precio", y eso conviene que sea una decision explicita
     # del usuario, no el comportamiento nuevo por defecto de una version
     # anterior que nunca lo tuvo.
     trailing_stop_enabled: bool = False
+    # Multiplicador ATR para el trailing (independiente del stop inicial).
+    # Valor menor = trailing más ajustado = captura más ganancia pero sale
+    # antes. None significa usar el mismo que stop_loss_atr_multiplier.
+    trailing_stop_atr_multiplier: Optional[float] = None
+    # Solo activar el trailing una vez que el trade esté este % en ganancia
+    # (medido sobre el precio de entrada). 0 = activar desde el primer día.
+    # Ej: 3.0 → solo empieza a subir el stop cuando el precio supera entry+3%.
+    trailing_stop_activation_pct: float = 0.0
 
     # Salida parcial (scale-out): si esta habilitado, cuando una posicion
     # abierta por el motor de auto-trading alcanza scale_out_at_r_multiple
