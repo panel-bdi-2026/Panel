@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from .alerts import send_alert
 from .audit import AuditLog
 from .backtest import (
     BacktestError,
@@ -270,6 +271,47 @@ async def _session_cleanup_loop() -> None:
                        if (now - created).total_seconds() > SESSION_TTL_SECONDS]
             for t in expired:
                 del _sessions[t]
+
+
+async def _health_alert_loop() -> None:
+    """Detecta cambios en el estado de salud del sistema y envía alertas por
+    email cuando aparecen o se resuelven problemas.
+
+    Solo envía email en transiciones (aparece/desaparece un problema) para
+    no inundar el correo. El primer chequeo arranca 90 segundos después del
+    startup para darle tiempo al broker de conectar antes de evaluar.
+    """
+    await asyncio.sleep(90)
+
+    alerting: set[str] = set()
+
+    while True:
+        current: set[str] = set()
+        if not state["connected"]:
+            current.add("IBKR desconectado")
+        if state.get("market_data_degraded"):
+            current.add("datos de mercado degradados")
+
+        new_issues = current - alerting
+        resolved = alerting - current
+
+        now_str = datetime.now().strftime("%H:%M:%S")
+
+        if new_issues:
+            subject = "⚠ Alerta: " + ", ".join(sorted(new_issues))
+            body = f"Problemas detectados a las {now_str}:\n\n"
+            body += "\n".join(f"• {i}" for i in sorted(new_issues))
+            send_alert(settings, subject, body)
+
+        for issue in resolved:
+            send_alert(
+                settings,
+                f"✓ Resuelto: {issue}",
+                f"El problema fue resuelto a las {now_str}:\n\n• {issue}",
+            )
+
+        alerting = current
+        await asyncio.sleep(settings.health_alert_interval_seconds)
 
 
 def require_api_key(
@@ -1980,11 +2022,12 @@ async def lifespan(app: FastAPI):
     price_rotation_task = asyncio.create_task(_price_rotation_loop())
     session_cleanup_task = asyncio.create_task(_session_cleanup_loop())
     cache_eviction_task = asyncio.create_task(_cache_eviction_loop())
+    health_alert_task = asyncio.create_task(_health_alert_loop())
     yield
     background_tasks = [
         task, risk_task, score_recompute_task, data_refresh_task,
         exit_monitor_task, trailing_stop_task, hot_set_task, price_rotation_task,
-        session_cleanup_task, cache_eviction_task,
+        session_cleanup_task, cache_eviction_task, health_alert_task,
     ]
     for background_task in background_tasks:
         background_task.cancel()
@@ -2066,6 +2109,30 @@ def logout(response: Response, session: Optional[str] = Cookie(default=None)):
             _sessions.pop(session, None)
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return {"ok": True}
+
+
+@app.get("/api/health")
+def health_check():
+    """Chequeo de salud del sistema. Sin autenticación para permitir
+    monitoreo externo (UptimeRobot, cron, etc.).
+
+    Retorna 200 si todo está bien, 503 si hay algún problema activo.
+    """
+    issues: list[str] = []
+    if not state["connected"]:
+        issues.append("ibkr_disconnected")
+    if state.get("market_data_degraded"):
+        issues.append("market_data_degraded")
+
+    payload = {
+        "status": "ok" if not issues else "degraded",
+        "issues": issues,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "mode": state["mode"],
+    }
+    if issues:
+        raise HTTPException(status_code=503, detail=payload)
+    return payload
 
 
 @app.get("/api/status")

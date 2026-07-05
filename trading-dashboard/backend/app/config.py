@@ -91,6 +91,21 @@ class Settings:
         self.funds_path = Path(os.getenv("FUNDS_PATH", str(BASE_DIR / "funds.json")))
         self.poll_interval_seconds = _float_env("POLL_INTERVAL_SECONDS", os.getenv("POLL_INTERVAL_SECONDS", "5"))
 
+        # Alertas por email (opcionales — si no se configuran, las alertas
+        # se deshabilitan en silencio sin tirar error al arrancar).
+        # Usar Gmail: SMTP_HOST=smtp.gmail.com SMTP_PORT=587
+        # SMTP_USER=tu@gmail.com SMTP_PASSWORD=<app-password de Google>
+        self.smtp_host = os.getenv("SMTP_HOST", "")
+        self.smtp_port = _int_env("SMTP_PORT", os.getenv("SMTP_PORT", "587"))
+        self.smtp_user = os.getenv("SMTP_USER", "")
+        self.smtp_password = os.getenv("SMTP_PASSWORD", "")
+        self.alert_email_to = os.getenv("ALERT_EMAIL_TO", "")
+        # Intervalo entre chequeos de salud del sistema (segundos). 300 = 5 min.
+        self.health_alert_interval_seconds = _int_env(
+            "HEALTH_ALERT_INTERVAL_SECONDS",
+            os.getenv("HEALTH_ALERT_INTERVAL_SECONDS", "300"),
+        )
+
         self._validate()
 
     def _validate(self) -> None:
