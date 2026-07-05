@@ -40,12 +40,6 @@ jobs:
     if: github.event_name == 'push'
 
     steps:
-      - name: Diagnóstico de permisos
-        run: |
-          echo "Usuario: $(whoami)"
-          echo "systemctl: $(which systemctl)"
-          sudo -l 2>&1 || true
-
       - name: Pull + instalar deps + restart
         run: |
           set -euo pipefail
