@@ -53,8 +53,7 @@ jobs:
           cd /opt/panel/trading-dashboard/backend
           .venv/bin/pip install -q -r requirements.txt
 
-          # Permisos y reinicio del servicio
-          sudo /usr/local/bin/trading-fix-perms
+          # Reinicio del servicio
           sudo systemctl restart trading-dashboard
 
           # Confirmar que levantó
