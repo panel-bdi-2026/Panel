@@ -131,7 +131,7 @@ def _compute(trades, top_n, bench_bars, marks, invest_idle: bool):
             deflated_sharpe_num_trials=100,
             risk_based_sizing_enabled=True,
             rules_config=RulesConfig(),
-            assumed_capital_usd=None,
+            assumed_capital_usd=100_000.0,
         )
     except Exception as exc:
         print(f"      [warn] compute_summary_stats falló: {exc}")
