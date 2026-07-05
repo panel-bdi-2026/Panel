@@ -39,7 +39,15 @@ class _FakeTiingo:
 
 
 @pytest.fixture(autouse=True)
-def _clear_cache():
+def _clear_cache(tmp_path, monkeypatch):
+    # Aislar el caché en disco por test: redirigir CACHE_DIR a un directorio
+    # temporal que pytest crea y borra automáticamente. Sin esto, los archivos
+    # .parquet que escribe un test persisten en disco y contaminan el siguiente.
+    import app.tiingo_disk_cache as _dc
+    test_cache_dir = tmp_path / "tiingo_eod"
+    test_cache_dir.mkdir()
+    monkeypatch.setattr(_dc, "CACHE_DIR", test_cache_dir)
+
     market_data_module._cache.clear()
     market_data_module._bars_failure_cache.clear()
     market_data_module._earnings_cache.clear()

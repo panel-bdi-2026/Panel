@@ -13,6 +13,9 @@ trading-dashboard/backend/rules.local.yaml
 trading-dashboard/backend/state.json
 trading-dashboard/backend/funds.json
 
+# Caché en disco de barras EOD de Tiingo (regenerable desde la API)
+trading-dashboard/backend/data/tiingo_eod/
+
 # Config local del script de despliegue (contiene OCID de tu tenancy)
 trading-dashboard/deploy/scripts/oci_launch.env
 

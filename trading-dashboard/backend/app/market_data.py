@@ -5,6 +5,8 @@ import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 
+from app import tiingo_disk_cache as _disk
+
 import pandas as pd
 import yfinance as yf
 
@@ -204,6 +206,17 @@ def get_daily_bars(
     if not force and failed and now - failed[0] < _CACHE_TTL_SECONDS:
         raise MarketDataError(failed[1])
     if cache_only:
+        # Antes de rendirse, verificar si el caché en disco tiene datos frescos.
+        # cache_only nunca toca la red, pero el disco es legítimo: evita que un
+        # reinicio del servicio vacíe el caché en RAM y bloquee el recompute de
+        # scores en el primer ciclo posterior al arranque.
+        _dc_start = (
+            datetime.now(timezone.utc) - timedelta(days=int(lookback_days * 1.6) + 10)
+        ).date()
+        _dc_sliced = _disk.slice_from(symbol.upper(), _dc_start)
+        if _dc_sliced is not None:
+            _cache[key] = (now, _dc_sliced)
+            return _dc_sliced
         raise MarketDataError(f"cache_only: sin dato cacheado para {symbol}")
 
     with _bars_locks.get(key):
@@ -225,6 +238,55 @@ def get_daily_bars(
 
         _start = start.date()
         _end = end.date()
+
+        # ── Caché en disco (Parquet por ticker) ───────────────────────────
+        # Evita re-descargar historia ya guardada. Flujo:
+        #   1. Si el caché tiene datos suficientes Y recientes → devolver directo.
+        #   2. Si el caché existe pero está desactualizado → descargar solo el delta.
+        #   3. Si le falta historia antigua (ej: servicio live lo llenó con 2 años
+        #      y el backtest pide 22) → descargar backfill del tramo faltante.
+        #   4. Después de actualizar el caché, servir desde disco.
+        #   5. Si el disco sigue sin datos suficientes → fall-through al loop original.
+        # force=True omite la lectura del disco pero igual actualiza al final.
+        # Todo el bloque está envuelto en try/except: un error de I/O en disco
+        # no debe romper el flujo principal (el loop de descarga sigue como fallback).
+        if not force:
+            try:
+                cov = _disk.coverage(symbol.upper())
+                if cov is not None:
+                    first_disk, last_disk = cov
+                    yesterday = _end - timedelta(days=1)
+                    if last_disk < yesterday:
+                        # Descargar solo el delta desde la última fecha cacheada
+                        try:
+                            delta_start = last_disk + timedelta(days=1)
+                            _delta = _fetch_with_timeout(
+                                lambda s=delta_start, e=_end: _tiingo_bars(symbol, s, e)
+                            )
+                            if _delta is not None and not _delta.empty:
+                                _disk.upsert(symbol.upper(), _delta)
+                        except Exception:
+                            pass  # caché stale pero mejor que nada; sigue abajo
+                    if first_disk > _start:
+                        # Descargar tramo histórico faltante (backfill)
+                        try:
+                            bf_end = first_disk - timedelta(days=1)
+                            _bf = _fetch_with_timeout(
+                                lambda s=_start, e=bf_end: _tiingo_bars(symbol, s, e)
+                            )
+                            if _bf is not None and not _bf.empty:
+                                _disk.upsert(symbol.upper(), _bf)
+                        except Exception:
+                            pass
+                    sliced = _disk.slice_from(symbol.upper(), _start)
+                    if sliced is not None:
+                        _cache[key] = (now, sliced)
+                        _bars_failure_cache.pop(key, None)
+                        return sliced
+            except Exception:
+                pass  # error inesperado en disco → fall-through al loop HTTP
+        # ── Fin caché en disco ────────────────────────────────────────────
+
         df = None
         last_error: Exception | None = None
         for attempt in range(_MAX_FETCH_RETRIES):
@@ -248,6 +310,7 @@ def get_daily_bars(
             _bars_failure_cache[key] = (now, message)
             raise MarketDataError(message)
 
+        _disk.upsert(symbol.upper(), df)  # guardar descarga completa en disco
         _cache[key] = (now, df)
         _bars_failure_cache.pop(key, None)
         return df
