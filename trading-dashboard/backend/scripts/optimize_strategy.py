@@ -95,24 +95,28 @@ def _build_cfg(stop_atr: float, rsi_max: float, top_n: int, holding: int) -> Scr
     return cfg
 
 
-def _filter_trades_by_date(trades, bench_bars, marks, before: date | None, from_: date | None):
-    """Filtra trades, bench_bars y marks a una ventana de fechas."""
+def _filter_trades_by_date(trades, bench_bars, marks_by_trade_id, before: date | None, from_: date | None):
+    """Filtra trades y bench_bars a una ventana de fechas.
+
+    marks_by_trade_id es {id(trade): {date: factor}} — se filtra por las
+    claves que correspondan a los trades que sobreviven el corte de fecha.
+    """
     from pandas import Timestamp
-    import pandas as pd
 
     if before is not None:
         cutoff = Timestamp(before, tz="UTC")
         trades = [t for t in trades if t.entry_date < cutoff]
         bench_bars = bench_bars[bench_bars.index < cutoff]
-        marks = [m for m in marks if m.ts < cutoff]
 
     if from_ is not None:
         cutoff = Timestamp(from_, tz="UTC")
         trades = [t for t in trades if t.entry_date >= cutoff]
         bench_bars = bench_bars[bench_bars.index >= cutoff]
-        marks = [m for m in marks if m.ts >= cutoff]
 
-    return trades, bench_bars, marks
+    surviving_ids = {id(t) for t in trades}
+    filtered_marks = {k: v for k, v in marks_by_trade_id.items() if k in surviving_ids}
+
+    return trades, bench_bars, filtered_marks
 
 
 def _compute(trades, top_n, bench_bars, marks, invest_idle: bool):

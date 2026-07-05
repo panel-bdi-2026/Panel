@@ -1,0 +1,64 @@
+name: CI / CD
+
+on:
+  push:
+    branches:
+      - claude/investment-dashboard-trades-x2vkn8
+  pull_request:
+
+jobs:
+  # ── Tests (GitHub-hosted, entorno limpio) ──────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trading-dashboard/backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: trading-dashboard/backend/requirements.txt
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Correr tests
+        env:
+          API_KEY: test-key
+          ANTHROPIC_API_KEY: test-key
+          TIINGO_API_KEY: test-key
+        run: python -m pytest -q --tb=short
+
+  # ── Deploy (runner self-hosted en el droplet, solo en push a la rama) ──────
+  deploy:
+    needs: test
+    runs-on: self-hosted
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Pull + instalar deps + restart
+        run: |
+          set -euo pipefail
+
+          # Actualizar código
+          cd /opt/panel
+          git fetch origin
+          git pull origin claude/investment-dashboard-trades-x2vkn8
+
+          # Dependencias (no-op si no cambió requirements.txt)
+          cd /opt/panel/trading-dashboard/backend
+          .venv/bin/pip install -q -r requirements.txt
+
+          # Permisos y reinicio del servicio
+          sudo chown -R trading:trading /opt/panel
+          sudo systemctl restart trading-dashboard
+
+          # Confirmar que levantó
+          sleep 4
+          sudo systemctl is-active --quiet trading-dashboard && \
+            echo "✓ trading-dashboard activo" || \
+            (sudo journalctl -u trading-dashboard -n 30 --no-pager; exit 1)
