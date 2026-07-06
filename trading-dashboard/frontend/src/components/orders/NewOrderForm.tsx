@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchFunds } from '../../api/funds'
 import { createOrder, fetchSizeSuggestion } from '../../api/orders'
@@ -6,7 +6,7 @@ import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { useToastStore } from '../ui/Toast'
 
-interface Props { open: boolean; onClose: () => void }
+interface Props { open: boolean; onClose: () => void; initialSymbol?: string }
 
 const EMPTY = {
   symbol: '',
@@ -18,8 +18,12 @@ const EMPTY = {
   fund_id: '',
 }
 
-export function NewOrderForm({ open, onClose }: Props) {
+export function NewOrderForm({ open, onClose, initialSymbol }: Props) {
   const [form, setForm] = useState(EMPTY)
+
+  useEffect(() => {
+    if (open) setForm((f) => ({ ...f, symbol: initialSymbol ?? f.symbol }))
+  }, [open, initialSymbol])
   const qc = useQueryClient()
   const addToast = useToastStore((s) => s.add)
 

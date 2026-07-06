@@ -24,7 +24,7 @@ export function AccountSummaryPanel() {
   const pnlColor = (data.unrealized_pnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
 
   return (
-    <div className="flex items-center gap-6 px-4 py-2 bg-gray-900/60 border-b border-gray-800 text-sm">
+    <div className="flex items-center gap-4 sm:gap-6 px-4 py-2 bg-gray-900/60 border-b border-gray-800 text-sm overflow-x-auto scrollbar-none shrink-0">
       <Stat label="Net Liq" value={fmtUsd(data.net_liquidation)} />
       <Stat label="Cash" value={fmtUsd(data.total_cash)} />
       <Stat

@@ -64,19 +64,49 @@ export interface PendingOrder {
 
 export interface Signal {
   symbol: string
-  score: number
   strategy_id: string
+  score: number
   price: number | null
   price_ts: string | null
+
+  // Price action
+  momentum_3m_pct: number | null
+  momentum_1m_pct: number | null
   rsi: number | null
   atr_pct: number | null
   from_high_pct: number | null
-  momentum_pct: number | null
-  suggested_stop: number | null
+  pct_from_52w_high: number | null
+  macd_histogram_pct: number | null
+  bollinger_pct_b: number | null
+  trend_ok: boolean | null
+  near_high_ok: boolean | null
+  regime_ok: boolean | null
+  earnings_ok: boolean | null
+  liquidity_ok: boolean | null
+
+  // Sizing
+  suggested_stop_loss_price: number | null
+  suggested_stop_loss_pct: number | null
+
+  // Meta
   sector: string | null
+  sector_relative_strength_pct: number | null
   notes: string[] | null
   passing: boolean
+  passes_filters: boolean | null
   last_scan_at: string | null
+  score_components: Record<string, number>
+
+  // Fundamentals (long-term / dividend strategies)
+  pe_ratio: number | null
+  dividend_yield_pct: number | null
+  payout_ratio_pct: number | null
+  price_to_book: number | null
+  peg_ratio: number | null
+  beta: number | null
+  analyst_recommendation: string | null
+  news_sentiment: string | null
+  news_summary: string | null
 }
 
 // ── Account ───────────────────────────────────────────────────────────────────
