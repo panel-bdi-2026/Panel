@@ -503,7 +503,8 @@ def _opportunistic_raw_components(
     la que usa el componente "momentum" (señal de giro de corto plazo), una
     ventana distinta con un proposito distinto en la misma estrategia."""
     opp = cfg.opportunistic
-    keys = ("momentum", "volatility", "rsi_recovery", "room_to_grow", "macd_turn", "sector_relative_strength")
+    keys = ("momentum", "volatility", "rsi_recovery", "room_to_grow", "macd_turn", "sector_relative_strength",
+            "volatility_pct_raw", "from_high_signed")
     per_symbol: dict[str, dict[str, pd.Series]] = {key: {} for key in keys}
 
     # Mismos centro/medio-rango que evaluate_symbol (ver opportunistic.py):
@@ -543,6 +544,8 @@ def _opportunistic_raw_components(
         per_symbol["room_to_grow"][symbol] = room_to_grow_component.where(valid)
         per_symbol["macd_turn"][symbol] = macd_pct_s.fillna(0.0).where(valid)
         per_symbol["sector_relative_strength"][symbol] = sector_component.where(valid)
+        per_symbol["volatility_pct_raw"][symbol] = volatility_pct_s.where(valid)
+        per_symbol["from_high_signed"][symbol] = from_high_s.where(valid)
 
     return {key: pd.concat(series_dict, axis=1) for key, series_dict in per_symbol.items()}
 
@@ -556,6 +559,8 @@ def _simulate_symbol_opportunistic(
     marks_by_trade_id: dict | None = None,
     rules_config: RulesConfig | None = None,
     sector_etf_close: "pd.Series | None" = None,
+    daily_vol_threshold: "pd.Series | None" = None,
+    daily_from_high_threshold: "pd.Series | None" = None,
 ) -> list[BacktestTrade]:
     """Misma logica score-driven que _simulate_symbol (ver ese docstring para
     el detalle de fills/stop-loss/comision/slippage/salida), aplicada a
@@ -613,6 +618,15 @@ def _simulate_symbol_opportunistic(
         sector_roc_s = raw_sector_roc.reindex(close.index, method="ffill")
 
     notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
+
+    # Gates cross-seccionales (v5): umbrales diarios alineados al índice del símbolo.
+    # None = usar gates absolutos clásicos.
+    aligned_vol_thresh: "pd.Series | None" = (
+        daily_vol_threshold.reindex(close.index, method="ffill") if daily_vol_threshold is not None else None
+    )
+    aligned_fh_thresh: "pd.Series | None" = (
+        daily_from_high_threshold.reindex(close.index, method="ffill") if daily_from_high_threshold is not None else None
+    )
 
     trades: list[BacktestTrade] = []
     in_position = False
@@ -752,9 +766,17 @@ def _simulate_symbol_opportunistic(
 
         momentum_ok = not pd.isna(roc_today) and roc_today > 0
         rsi_ok = not pd.isna(rsi_today) and opp.rsi_min <= rsi_today <= opp.rsi_max
-        volatility_ok = volatility_pct >= opp.min_volatility_pct
+        if aligned_vol_thresh is not None:
+            vol_thresh_today = float(aligned_vol_thresh.iloc[i]) if not pd.isna(aligned_vol_thresh.iloc[i]) else opp.min_volatility_pct
+            volatility_ok = volatility_pct >= vol_thresh_today
+        else:
+            volatility_ok = volatility_pct >= opp.min_volatility_pct
         volatility_max_ok = volatility_pct <= opp.max_volatility_pct_gate
-        room_to_grow_ok = pd.isna(fh_today) or fh_today <= -opp.min_pct_below_52w_high
+        if aligned_fh_thresh is not None:
+            fh_thresh_today = float(aligned_fh_thresh.iloc[i]) if not pd.isna(aligned_fh_thresh.iloc[i]) else -opp.min_pct_below_52w_high
+            room_to_grow_ok = pd.isna(fh_today) or fh_today <= fh_thresh_today
+        else:
+            room_to_grow_ok = pd.isna(fh_today) or fh_today <= -opp.min_pct_below_52w_high
 
         if not (momentum_ok and rsi_ok and volatility_ok and volatility_max_ok and room_to_grow_ok):
             continue
@@ -889,6 +911,15 @@ def _collect_opportunistic_trades(
             else:
                 sector_etf_close_by_symbol[symbol] = None
 
+    # Gates cross-seccionales v5: umbrales diarios del universo (None = gates absolutos clásicos).
+    daily_vol_threshold: "pd.Series | None" = None
+    daily_from_high_threshold: "pd.Series | None" = None
+    if opp.backtest_cross_sectional_gates:
+        vol_raw = raw_components["volatility_pct_raw"]
+        fh_signed = raw_components["from_high_signed"]
+        daily_vol_threshold = vol_raw.quantile(0.60, axis=1).clip(lower=1.5)
+        daily_from_high_threshold = fh_signed.median(axis=1)
+
     all_trades: list[BacktestTrade] = []
     marks_by_trade_id: dict = {}
     for symbol, bars in bars_by_symbol.items():
@@ -897,6 +928,8 @@ def _collect_opportunistic_trades(
             _simulate_symbol_opportunistic(
                 symbol, bars, cfg, score_panel[symbol], aligned_regime_ok, marks_by_trade_id, rules_config,
                 sector_etf_close=sector_etf_close_by_symbol.get(symbol),
+                daily_vol_threshold=daily_vol_threshold,
+                daily_from_high_threshold=daily_from_high_threshold,
             )
         )
 

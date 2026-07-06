@@ -198,6 +198,15 @@ class OpportunisticConfig(BaseModel):
     # "que tan bueno es lo bastante bueno" en esta estrategia, en vez de
     # duplicar el numero.
     backtest_score_entry_threshold: float = 57.7
+    # Gates cross-seccionales (v5): reemplaza los umbrales absolutos de
+    # volatilidad (ATR >= 3%) y caida (>= 10% desde maximo) por percentiles
+    # diarios del universo. Si True:
+    #   volatility: "en el 40% mas volatil del universo hoy" (piso: ATR >= 1.5%)
+    #   room_to_grow: "mas caido que la mediana del universo hoy"
+    # Coherente con la tesis relativa de la estrategia: no hay un umbral
+    # absoluto de "oportunista", siempre es relativo a lo que ofrece el mercado
+    # ese dia.
+    backtest_cross_sectional_gates: bool = False
 
 
 class LongTermConfig(BaseModel):

@@ -64,17 +64,17 @@ CONCURRENT_CAP = 25
 # OUTER: requieren re-recolectar trades. Varían los gates de entrada de
 # Oportunista que controlan la frecuencia de señales.
 #
-#   macd_days:     ventana para el gate MACD crossover (días). El gate exige
-#                  que el histograma MACD haya cruzado de negativo a positivo
-#                  en los últimos N días. 0 = desactivado.
-#   opp_rsi_max:   techo de RSI para entrar. La estrategia busca acciones en
-#                  "zona de recuperación" (rsi_min=35 fijo, rsi_max varía).
-#   min_below_52w: mínimo % por debajo del máximo de 52 semanas para entrar
-#                  ("espacio de crecimiento"). Menos exigente = más señales.
+#   macd_days:   ventana para el gate MACD crossover (días). El gate exige
+#                que el histograma MACD haya cruzado de negativo a positivo
+#                en los últimos N días. 0 = desactivado.
+#   opp_rsi_max: techo de RSI para entrar. La estrategia busca acciones en
+#                "zona de recuperación" (rsi_min=35 fijo, rsi_max varía).
+#
+# v5: min_below_52w desaparece (reemplazado por mediana dinámica cross-seccional).
+# Gates ahora son relativos al universo del día, no umbrales absolutos.
 OUTER_GRID_OPP = {
-    "macd_days":     [3, 5, 7],   # 3=actual; 5,7=ventana más amplia
-    "opp_rsi_max":   [65, 70, 75],
-    "min_below_52w": [5, 10],
+    "macd_days":   [3, 5, 7],   # 3=actual; 5,7=ventana más amplia
+    "opp_rsi_max": [60, 65, 70, 75],
 }
 
 # Momentum: grid original (no modificado por esta sesión)
@@ -94,20 +94,21 @@ INNER_GRID = {
     "risk_per_trade_pct": [2.0],
     "max_position_pct":   [30],
 }
-# Total recolecciones Oportunista: 3 × 3 × 2 = 18
-# Total evaluaciones:              18 × 1 = 18
+# Total recolecciones Oportunista v5: 3 × 4 = 12
+# Total evaluaciones:                 12 × 1 = 12
 
 ASSUMED_CAPITAL = 100_000.0
 
 
-def _build_cfg_opp(macd_days: int, opp_rsi_max: float, min_below_52w: float) -> ScreenerConfig:
+def _build_cfg_opp(macd_days: int, opp_rsi_max: float) -> ScreenerConfig:
     cfg = ScreenerConfig()
     cfg.backtest_years = BACKTEST_YEARS
     cfg.top_n = CONCURRENT_CAP
     # Parámetros específicos de Oportunista — deben coincidir con live
     cfg.opportunistic.macd_crossover_lookback_days = macd_days
     cfg.opportunistic.rsi_max = opp_rsi_max
-    cfg.opportunistic.min_pct_below_52w_high = min_below_52w
+    # v5: gates cross-seccionales (percentil de universo, no umbral absoluto)
+    cfg.opportunistic.backtest_cross_sectional_gates = True
     # stop_loss_atr_multiplier, rsi_min, holding usan defaults del live (2.5, 35, 20)
     return cfg
 
@@ -187,12 +188,12 @@ def _stat(s, key, default=None):
 
 def _run_outer_opp(outer_vals, rules_cfg, n_total, n_done):
     """Recolecta trades de Oportunista una vez con parámetros outer, evalúa inner."""
-    macd_days, opp_rsi_max, min_below_52w = outer_vals
-    tag = f"macd={macd_days}d rsi_max={opp_rsi_max:.0f} below52w≥{min_below_52w:.0f}%"
+    macd_days, opp_rsi_max = outer_vals
+    tag = f"macd={macd_days}d rsi_max={opp_rsi_max:.0f} [cross-seccional]"
     print(f"\n  [{n_done+1}/{n_total}] {tag} — recolectando trades...", end=" ", flush=True)
     t0 = time.time()
 
-    cfg = _build_cfg_opp(macd_days, opp_rsi_max, min_below_52w)
+    cfg = _build_cfg_opp(macd_days, opp_rsi_max)
     try:
         all_trades, marks, bench_bars = _collect_opportunistic_trades(cfg, rules_cfg)
     except Exception as exc:
@@ -234,7 +235,7 @@ def _run_outer_opp(outer_vals, rules_cfg, n_total, n_done):
             "strategy": "opportunistic",
             "macd_days": macd_days,
             "opp_rsi_max": opp_rsi_max,
-            "min_below_52w": min_below_52w,
+            "cross_sectional_gates": True,
             "invest_idle": invest_idle,
             "risk_per_trade_pct": risk_per_trade,
             "max_position_pct": max_pos_pct,
@@ -421,7 +422,7 @@ def main():
             n_total = len(outer_combinations) * n_inner
 
             print(f"\n{'='*70}")
-            print(f"  OPTIMIZACIÓN: OPPORTUNISTIC v4")
+            print(f"  OPTIMIZACIÓN: OPPORTUNISTIC v5 (gates cross-seccionales)")
             print(f"  Grid: {len(outer_combinations)} recolecciones × {n_inner} variantes"
                   f" = {n_total} evaluaciones")
             print(f"  Train: {TRAIN_START} → {TRAIN_END} | Test: {TEST_START} → {TEST_END}")
@@ -430,9 +431,9 @@ def main():
 
             if args.dry_run:
                 for i, combo in enumerate(outer_combinations, 1):
-                    macd_d, rsi_mx, bel52 = combo
+                    macd_d, rsi_mx = combo
                     print(f"  [{i}/{len(outer_combinations)}] "
-                          f"macd={macd_d}d rsi_max={rsi_mx} below52w≥{bel52}%")
+                          f"macd={macd_d}d rsi_max={rsi_mx} [cross-seccional]")
                 continue
 
             all_results = []
