@@ -40,7 +40,7 @@ jobs:
     if: github.event_name == 'push'
 
     steps:
-      - name: Pull + instalar deps + restart
+      - name: Pull + instalar deps + build + restart
         run: |
           set -euo pipefail
 
@@ -49,9 +49,14 @@ jobs:
           git fetch origin
           git pull origin claude/investment-dashboard-trades-x2vkn8
 
-          # Dependencias (no-op si no cambió requirements.txt)
+          # Dependencias Python (no-op si no cambió requirements.txt)
           cd /opt/panel/trading-dashboard/backend
           .venv/bin/pip install -q -r requirements.txt
+
+          # Build del frontend React
+          cd /opt/panel/trading-dashboard/frontend
+          npm ci --prefer-offline
+          npm run build
 
           # Reinicio del servicio
           /usr/bin/systemctl restart trading-dashboard

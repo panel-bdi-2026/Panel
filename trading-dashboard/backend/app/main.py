@@ -52,7 +52,7 @@ from .session_store import SessionStore
 from .state_store import load_state, save_state
 from .strategies import STRATEGY_CLASSES, reload_strategy_registry
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 # uvicorn (lanzado via su CLI, ver deploy/systemd/trading-dashboard.service) solo
 # configura sus propios loggers ("uvicorn", "uvicorn.access", etc.), no el root

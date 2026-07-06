@@ -21,3 +21,22 @@ trading-dashboard/deploy/scripts/oci_launch.env
 
 # Worktrees temporales de agentes (Claude Code), no son parte del repo
 .claude/
+
+# Frontend build artifacts y dependencias (regenerables)
+trading-dashboard/frontend/node_modules/
+trading-dashboard/frontend/dist/
+trading-dashboard/backend/static/
+
+# SQLite WAL files (estado de runtime)
+trading-dashboard/backend/state.db
+trading-dashboard/backend/state.db-shm
+trading-dashboard/backend/state.db-wal
+
+# Backups generados automáticamente
+backups/
+
+# Scripts de resultados locales
+trading-dashboard/backend/scripts/results/
+
+# Archivos de pip mal nombrados
+trading-dashboard/backend/=*
