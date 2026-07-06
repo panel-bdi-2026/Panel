@@ -1602,6 +1602,56 @@ async def _check_fund_trailing_stop(fund_id: str, symbol: str) -> None:
     )
 
 
+async def _ensure_missing_protective_stops() -> None:
+    """Para cada posición en fondos con auto-trading que no tenga un stop-loss
+    activo en IBKR, coloca uno. Cubre dos casos:
+
+    1. stop_loss_price ya conocido pero sin stop_order_id ni orden IBKR viva
+       (ej: aprobación manual de borrador que no pasó por el flujo de auto-trade,
+       o stop que murió y no se recolocó).
+    2. stop_loss_price nulo: calcula uno basado en ATR de la estrategia del fondo
+       y lo coloca desde cero.
+
+    Idempotente: broker.has_live_protective_stop evita duplicados. Solo actúa
+    en modo paper con la cuenta conectada y sin halt."""
+    if state["mode"] != "paper" or state["halted"] or not state["connected"]:
+        return
+    for fund in funds_store.list():
+        if not fund.auto_trading_enabled:
+            continue
+        for symbol, position in list(fund.positions.items()):
+            if position.quantity <= 0:
+                continue
+            if broker.has_live_protective_stop(symbol):
+                continue
+            stop_px = position.stop_loss_price
+            if stop_px is None:
+                # Calcular stop ATR con el multiplicador de la estrategia del fondo
+                try:
+                    bars = await asyncio.to_thread(
+                        get_daily_bars, symbol, screener_config.atr_period + 5
+                    )
+                except MarketDataError:
+                    continue
+                atr_s = atr(bars["High"], bars["Low"], bars["Close"], screener_config.atr_period)
+                if not len(atr_s) or bool(atr_s.isna().iloc[-1]):
+                    continue
+                stop_mult = (
+                    screener_config.opportunistic.stop_loss_atr_multiplier
+                    if fund.strategy_id == "opportunistic"
+                    else screener_config.stop_loss_atr_multiplier
+                )
+                stop_px = round(position.avg_cost - float(atr_s.iloc[-1]) * stop_mult, 2)
+                if stop_px <= 0:
+                    continue
+                funds_store.update_stop_loss(fund.id, symbol, stop_px)
+                logger.info(
+                    "missing_stop: calculado stop ATR para %s → $%.2f (mult=%.1f)",
+                    symbol, stop_px, stop_mult,
+                )
+            await _ensure_protective_stop(fund.id, symbol, stop_px)
+
+
 async def _run_auto_exit_monitor_cycle() -> None:
     """Revisa, para cada fondo con auto-trading activado, sus posiciones
     abiertas, y evalua si corresponde cerrarlas (ver _check_fund_exit). El
@@ -1635,9 +1685,17 @@ async def _run_trailing_stop_monitor_cycle() -> None:
     pero solo para el trailing stop (ver _check_fund_trailing_stop), separado
     para poder correr a una cadencia mas rapida (poll_interval_seconds) sin
     repetir tambien el chequeo de salida por trend-break/max-holding-days, que
-    no se beneficia de revisarse mas seguido."""
+    no se beneficia de revisarse mas seguido.
+
+    También llama a _ensure_missing_protective_stops para cubrir posiciones
+    que no tienen stop activo en IBKR (ej: aprobadas en batch sin pasar
+    por el flujo de auto-trade)."""
     if state["mode"] != "paper" or state["halted"] or not state["connected"]:
         return
+    try:
+        await _ensure_missing_protective_stops()
+    except Exception as exc:
+        logger.warning("ensure_missing_protective_stops failed: %s", exc)
     for fund in funds_store.list():
         if not fund.auto_trading_enabled:
             continue
