@@ -109,6 +109,7 @@ funds_store = FundsStore(settings.funds_path)
 # perdia el halt o las ordenes pendientes de aprobacion y volvia silenciosamente
 # a los valores por defecto (trading activo).
 _persisted = load_state(settings.state_path)
+_startup_time = datetime.now(timezone.utc)
 
 state: dict = {
     "mode": _persisted.get("mode", settings.trading_mode),
@@ -286,11 +287,21 @@ async def _health_alert_loop() -> None:
     alerting: set[str] = set()
 
     while True:
+        now = datetime.now(timezone.utc)
         current: set[str] = set()
         if not state["connected"]:
             current.add("IBKR desconectado")
         if state.get("market_data_degraded"):
             current.add("datos de mercado degradados")
+        if state.get("halted"):
+            current.add("trading detenido (halted)")
+        scan_ages = [
+            (now - e["as_of"]).total_seconds()
+            for e in signal_cache.values()
+            if e.get("as_of")
+        ]
+        if scan_ages and all(a > 2700 for a in scan_ages):
+            current.add("scan paralizado (>45 min sin actualizar)")
 
         new_issues = current - alerting
         resolved = alerting - current
@@ -2182,17 +2193,44 @@ def health_check():
 
     Retorna 200 si todo está bien, 503 si hay algún problema activo.
     """
+    now = datetime.now(timezone.utc)
     issues: list[str] = []
     if not state["connected"]:
         issues.append("ibkr_disconnected")
     if state.get("market_data_degraded"):
         issues.append("market_data_degraded")
+    if state.get("halted"):
+        issues.append("trading_halted")
+
+    # Detectar scan paralizado: si todos los cachés tienen más de 45 min
+    scan_ages = []
+    for entry in signal_cache.values():
+        as_of = entry.get("as_of")
+        if as_of:
+            age = (now - as_of).total_seconds()
+            scan_ages.append(age)
+    scan_stale = bool(scan_ages) and all(a > 2700 for a in scan_ages)  # 45 min
+    if scan_stale:
+        issues.append("scan_stale")
+
+    last_scan_at = None
+    if scan_ages:
+        # La entrada más reciente entre todas las estrategias
+        most_recent = max(
+            (e["as_of"] for e in signal_cache.values() if e.get("as_of")),
+            default=None,
+        )
+        if most_recent:
+            last_scan_at = most_recent.isoformat()
 
     payload = {
         "status": "ok" if not issues else "degraded",
         "issues": issues,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now.isoformat(),
         "mode": state["mode"],
+        "halted": state.get("halted", False),
+        "uptime_seconds": int((now - _startup_time).total_seconds()),
+        "last_scan_at": last_scan_at,
     }
     if issues:
         raise HTTPException(status_code=503, detail=payload)

@@ -130,7 +130,7 @@ exposición sin degradar la selectividad.
 
 ---
 
-### 1.3 CI/CD + backups + infraestructura básica
+### 1.3 ✅ CI/CD *(completado)* + backups + infraestructura básica *(pendiente)*
 
 **Por qué:** el deploy hoy es manual, el sudoers de claude-rc no existe, y no hay backups
 automáticos. Un crash sin backup borra el estado de todos los fondos.
@@ -141,12 +141,14 @@ automáticos. Un crash sin backup borra el estado de todos los fondos.
    claude-rc ALL=(root) NOPASSWD: /bin/systemctl restart trading-dashboard
    claude-rc ALL=(root) NOPASSWD: /bin/journalctl
    ```
-2. **Backups automáticos**: cron job diario que copia `funds.json`, `screener.yaml`,
-   `rules.yaml`, `audit.db` a un directorio con retención de 30 días (local o S3/B2).
-3. **GitHub Actions CI/CD**:
-   - En cada push: correr los 677 tests automáticamente
-   - En merge a la rama de trabajo: deploy automático al droplet vía SSH
-   - Esto hace que "haz el deploy" sea un `git merge`
+2. ✅ **Backups automáticos** *(completado)*: cron job en `/etc/cron.daily/trading-backup`,
+   corre como root a las ~6:25 AM UTC, copia `funds.json`, `rules.yaml`, `screener_config.json`
+   y `audit.db` (backup SQLite consistente) a `/opt/panel/backups/YYYY-MM-DD/`, retención 30 días.
+   Verificado: snapshot de 2026-07-05 existe con los 4 archivos.
+3. ✅ **GitHub Actions CI/CD** *(completado)*:
+   - `.github/workflows/ci-cd.yml`: tests en cada push + deploy automático en push a rama
+   - Runner self-hosted activo en el droplet (`actions.runner.panel-bdi-2026-Panel.panel-droplet.service`)
+   - Deploy = `git push` → tests → restart automático del servicio
 4. **Health check + alertas**: endpoint `GET /api/health` que verifique conexión IBKR,
    estado del scan, último heartbeat. Script externo (cron o Uptime Robot) que alerte
    vía Telegram si el health check falla.
@@ -273,8 +275,8 @@ y comparar el comportamiento de ambos en paralelo con capital real pequeño.
 
 **Fase 1.3 — siguiente:**
 - [ ] Arreglar sudoers de claude-rc como root (5 minutos)
-- [ ] Implementar backups automáticos de `funds.json`, `screener.yaml`, `audit.db`
-- [ ] GitHub Actions CI/CD: tests en cada push, deploy en merge
+- [x] Implementar backups automáticos de `funds.json`, `screener.yaml`, `audit.db`
+- [x] GitHub Actions CI/CD: tests en cada push, deploy automático en push (runner activo)
 - [ ] Health check endpoint + alertas Telegram/email
 
 ---
