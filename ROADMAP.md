@@ -157,7 +157,10 @@ automáticos. Un crash sin backup borra el estado de todos los fondos.
 
 ## Fase 2 — Solidez (una vez completada Fase 1)
 
-### 2.1 Arquitectura: partir main.py
+### 2.1 Arquitectura: partir main.py *(pendiente — separado del Proyecto React)*
+
+> ⚠️ La migración React (Fase 3.1) resuelve el monolito del **frontend**.
+> Este ítem es el monolito del **backend** (Python). Son proyectos distintos.
 
 **Por qué:** 3.305 líneas en un solo archivo hace que cada cambio tenga efectos
 secundarios difíciles de predecir. Conforme el sistema crece, se vuelve frágil.
@@ -225,12 +228,76 @@ v5 terminó [1/18] con DSR=37.4% train / 98.0% test. ETA fin: ~10 AM UTC 2026-07
 
 ## Fase 3 — Producto (una vez que Fase 2 está estable)
 
-### 3.1 UI/UX
+### 3.1 UI/UX — Proyecto "Panel React" *(aprobado 2026-07-06, en curso)*
 
-- Migrar a React + Vite (o restructurar el JS actual en módulos ES6 si se quiere evitar el framework)
-- Gráficos interactivos: equity curve del portfolio, distribución de retornos, heatmap sectorial (Lightweight Charts de TradingView, gratuito)
-- Responsive design para móvil
-- Notificaciones push de browser para fills y señales
+**Objetivo:** reemplazar el monolito frontend (`index.html`, 2.672 líneas de vanilla JS)
+con una SPA React moderna, manteniendo paridad funcional completa y agregando
+funcionalidades nuevas.
+
+> ⚠️ Este proyecto NO cubre la Fase 2.1 (partir `main.py` del **backend**).
+> Son dos monolitos distintos: este es el frontend; 2.1 es el servidor Python.
+
+#### Stack
+
+| Decisión | Elección |
+|----------|----------|
+| Framework | React 18 + TypeScript |
+| Build | Vite |
+| API calls | TanStack Query v5 (cache, polling, loading states) |
+| Estado global | Zustand (auth + datos WebSocket) |
+| Gráficos | Recharts (React-nativo, responsive) |
+| Estilos | Tailwind CSS (responsive, dark mode) |
+| Notificaciones | Browser Notifications API nativa |
+
+#### Funcionalidades nuevas vs. el frontend actual
+
+- **Equity curve interactiva** por fondo y agregada (zoom, hover)
+- **P&L por símbolo** (waterfall chart en detalle de fondo)
+- **Responsive / mobile** (sidebar colapsable, tablas scrolleables)
+- **Notificaciones push** del browser para fills y señales nuevas
+- **Real-time mejorado** (animación en cambios de precio, "hace Xs")
+- **Dark/light theme** persistido en localStorage
+
+#### Arquitectura de carpetas
+
+```
+trading-dashboard/frontend/src/
+  api/           # Funciones tipadas por recurso (funds, signals, orders…)
+  components/
+    layout/      # Shell, Header, Sidebar
+    account/     # AccountSummary
+    funds/       # FundList, FundCard, FundDetailModal, EquityChart
+    signals/     # SignalsTable, SignalRow, SignalDetailPanel, ScoreBar
+    orders/      # PendingOrders, OrderCard, NewOrderForm
+    positions/   # PositionsTable
+    audit/       # AuditTimeline
+    backtest/    # BacktestPanel
+    config/      # ConfigModal, RulesForm, ScreenerForm
+    ui/          # Button, Modal, Toast, Badge, StatusDot (design system)
+  hooks/         # useWebSocket, useNotifications
+  store/         # Zustand: auth.ts, realtime.ts
+  lib/           # format.ts (fmtUsd, fmtPct, fmtAge)
+```
+
+#### Cambios en backend/deploy
+
+- Vite build → `frontend/dist/`; FastAPI sirve `dist/` en vez de `index.html`
+- CI/CD agrega `npm run build` antes del restart del servicio
+
+#### Plan de ejecución
+
+1. [ ] Setup: Vite + React + TS + Tailwind + dependencias
+2. [ ] Auth + Shell: login overlay, layout principal, header, sidebar
+3. [ ] Account + Status: resumen de cuenta, indicadores IBKR
+4. [ ] Fondos + EquityChart (sección más compleja)
+5. [ ] Señales: tabla, live prices, filtros, detail panel
+6. [ ] Órdenes pendientes + Posiciones
+7. [ ] Audit + Config modal
+8. [ ] Backtest panel
+9. [ ] Notificaciones push + polish responsive
+10. [ ] Conectar backend, tests manuales, deploy
+
+**Estimado:** 2-3 días de trabajo en sesiones.
 
 ### 3.2 Factores adicionales
 
