@@ -47,7 +47,7 @@ from app.rules import RulesConfig
 from app.screener_config import ScreenerConfig
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
-BACKTEST_YEARS = 15  # cubre desde 2011 — suficiente para el split 2018-2024
+BACKTEST_YEARS = 9  # cubre desde ~2017 — suficiente para el split 2018-2024 con 1 año de warmup
 
 # ── Split temporal ────────────────────────────────────────────────────────────
 TRAIN_START = date(2018, 1, 1)   # inicio del período de entrenamiento
@@ -195,7 +195,7 @@ def _run_outer_opp(outer_vals, rules_cfg, n_total, n_done):
 
     cfg = _build_cfg_opp(macd_days, opp_rsi_max)
     try:
-        all_trades, marks, bench_bars = _collect_opportunistic_trades(cfg, rules_cfg)
+        all_trades, marks, bench_bars = _collect_opportunistic_trades(cfg, rules_cfg, cache_only=True)
     except Exception as exc:
         print(f"ERROR: {exc}")
         return []

@@ -503,8 +503,7 @@ def _opportunistic_raw_components(
     la que usa el componente "momentum" (señal de giro de corto plazo), una
     ventana distinta con un proposito distinto en la misma estrategia."""
     opp = cfg.opportunistic
-    keys = ("momentum", "volatility", "rsi_recovery", "room_to_grow", "macd_turn", "sector_relative_strength",
-            "volatility_pct_raw", "from_high_signed")
+    keys = ("momentum", "volatility", "rsi_recovery", "room_to_grow", "macd_turn", "sector_relative_strength")
     per_symbol: dict[str, dict[str, pd.Series]] = {key: {} for key in keys}
 
     # Mismos centro/medio-rango que evaluate_symbol (ver opportunistic.py):
@@ -544,8 +543,6 @@ def _opportunistic_raw_components(
         per_symbol["room_to_grow"][symbol] = room_to_grow_component.where(valid)
         per_symbol["macd_turn"][symbol] = macd_pct_s.fillna(0.0).where(valid)
         per_symbol["sector_relative_strength"][symbol] = sector_component.where(valid)
-        per_symbol["volatility_pct_raw"][symbol] = volatility_pct_s.where(valid)
-        per_symbol["from_high_signed"][symbol] = from_high_s.where(valid)
 
     return {key: pd.concat(series_dict, axis=1) for key, series_dict in per_symbol.items()}
 
@@ -830,7 +827,7 @@ def _simulate_symbol_opportunistic(
 
 
 def _collect_opportunistic_trades(
-    cfg: ScreenerConfig, rules_config: RulesConfig | None = None
+    cfg: ScreenerConfig, rules_config: RulesConfig | None = None, *, cache_only: bool = False
 ) -> tuple[list[BacktestTrade], dict, pd.DataFrame]:
     """Simula la estrategia Oportunista sobre todo el universo configurado y
     devuelve las operaciones resultantes (ya capadas a top_n posiciones
@@ -850,7 +847,7 @@ def _collect_opportunistic_trades(
     opp = cfg.opportunistic
 
     try:
-        bench_bars = get_daily_bars(cfg.benchmark_symbol, history_days)
+        bench_bars = get_daily_bars(cfg.benchmark_symbol, history_days, cache_only=cache_only)
     except MarketDataError as exc:
         raise BacktestError(str(exc)) from exc
 
@@ -872,7 +869,7 @@ def _collect_opportunistic_trades(
         if i > 0 and delay > 0 and not is_bars_cached(symbol, history_days):
             time.sleep(delay)
         try:
-            bars = get_daily_bars(symbol, history_days)
+            bars = get_daily_bars(symbol, history_days, cache_only=cache_only)
         except MarketDataError:
             continue
         if len(bars) < opp.momentum_lookback_days + 252:
@@ -912,13 +909,22 @@ def _collect_opportunistic_trades(
                 sector_etf_close_by_symbol[symbol] = None
 
     # Gates cross-seccionales v5: umbrales diarios del universo (None = gates absolutos clásicos).
+    # Se calculan directamente desde bars_by_symbol para evitar materializar DataFrames extra.
     daily_vol_threshold: "pd.Series | None" = None
     daily_from_high_threshold: "pd.Series | None" = None
     if opp.backtest_cross_sectional_gates:
-        vol_raw = raw_components["volatility_pct_raw"]
-        fh_signed = raw_components["from_high_signed"]
-        daily_vol_threshold = vol_raw.quantile(0.60, axis=1).clip(lower=1.5)
-        daily_from_high_threshold = fh_signed.median(axis=1)
+        vol_pct_by_sym: dict[str, pd.Series] = {}
+        fh_by_sym: dict[str, pd.Series] = {}
+        for sym, bars in bars_by_symbol.items():
+            close = bars["Close"]
+            atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
+            vol_pct_by_sym[sym] = (atr_s / close.replace(0, float("nan")) * 100)
+            fh_by_sym[sym] = pct_from_high(close, 252)
+        vol_panel = pd.concat(vol_pct_by_sym, axis=1)
+        fh_panel = pd.concat(fh_by_sym, axis=1)
+        daily_vol_threshold = vol_panel.quantile(0.60, axis=1).clip(lower=1.5)
+        daily_from_high_threshold = fh_panel.median(axis=1)
+        del vol_panel, fh_panel, vol_pct_by_sym, fh_by_sym
 
     all_trades: list[BacktestTrade] = []
     marks_by_trade_id: dict = {}
