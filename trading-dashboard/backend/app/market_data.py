@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -9,6 +10,8 @@ from app import tiingo_disk_cache as _disk
 
 import pandas as pd
 import yfinance as yf
+
+logger = logging.getLogger(__name__)
 
 # Cache simple en memoria para no golpear el limite de la API gratuita de Yahoo
 # Finance en cada refresh del dashboard o cada simbolo de un scan.
@@ -265,10 +268,17 @@ def get_daily_bars(
                             )
                             if _delta is not None and not _delta.empty:
                                 _disk.upsert(symbol.upper(), _delta)
-                        except Exception:
-                            pass  # caché stale pero mejor que nada; sigue abajo
+                        except Exception as exc:
+                            # caché stale pero mejor que nada; sigue abajo
+                            logger.warning("delta-update de %s falló: %s", symbol, exc)
                     if first_disk > _start:
-                        # Descargar tramo histórico faltante (backfill)
+                        # Descargar tramo histórico faltante (backfill).
+                        # OJO: si esto falla, el caller recibe historia
+                        # truncada sin enterarse — un PermissionError
+                        # silencioso acá hizo que todos los backtests
+                        # "de 22 años" simularan 2003-2024 con solo 4
+                        # símbolos (los únicos con parquet completo).
+                        # Por eso el warning es obligatorio, no opcional.
                         try:
                             bf_end = first_disk - timedelta(days=1)
                             _bf = _fetch_with_timeout(
@@ -276,8 +286,12 @@ def get_daily_bars(
                             )
                             if _bf is not None and not _bf.empty:
                                 _disk.upsert(symbol.upper(), _bf)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.warning(
+                                "backfill de %s (%s → %s) falló, se sigue con "
+                                "historia truncada desde %s: %s",
+                                symbol, _start, first_disk, first_disk, exc,
+                            )
                     sliced = _disk.slice_from(symbol.upper(), _start)
                     if sliced is not None:
                         _cache[key] = (now, sliced)
