@@ -47,6 +47,7 @@ _copy() {
 _copy "$BACKEND/funds.json"                   "funds.json"
 _copy "$BACKEND/rules.yaml"                   "rules.yaml"
 _copy "$BACKEND/data/screener_config.json"    "screener_config.json"
+_copy "$BACKEND/state.json"                   "state.json"
 
 # ── SQLite — backup consistente vía API de Python ───────────────────────────
 # cp de audit.db mientras el servicio escribe puede producir un archivo
@@ -63,6 +64,19 @@ PYEOF
     log "OK: audit.db ($(du -sh "$DEST/audit.db" | cut -f1), backup consistente)"
 else
     warn "audit.db no encontrado en $AUDIT_SRC"
+fi
+
+STATE_SRC="$BACKEND/state.db"
+if [ -f "$STATE_SRC" ]; then
+    "$PYTHON" - "$STATE_SRC" "$DEST/state.db" << 'PYEOF'
+import sqlite3, sys
+src, dst = sys.argv[1], sys.argv[2]
+with sqlite3.connect(src) as s, sqlite3.connect(dst) as d:
+    s.backup(d)
+PYEOF
+    log "OK: state.db ($(du -sh "$DEST/state.db" | cut -f1), backup consistente)"
+else
+    warn "state.db no encontrado en $STATE_SRC (normal en primer deploy)"
 fi
 
 # ── Purgar snapshots más viejos de 30 días ──────────────────────────────────

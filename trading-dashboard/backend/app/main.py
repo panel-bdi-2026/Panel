@@ -48,6 +48,7 @@ from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
 from .screener_config import ScreenerConfig
 from .sectors import SECTOR_ETF, get_sector, refresh_sector
+from .session_store import SessionStore
 from .state_store import load_state, save_state
 from .strategies import STRATEGY_CLASSES, reload_strategy_registry
 
@@ -114,6 +115,10 @@ funds_store = FundsStore(settings.funds_path)
 # a los valores por defecto (trading activo).
 _persisted = load_state(settings.state_path)
 _startup_time = datetime.now(timezone.utc)
+
+# Almacén SQLite de sesiones y signal_state (sobreviven reinicios).
+_store = SessionStore(settings.state_path.parent / "state.db")
+_restored = _store.load_signal_state()
 
 state: dict = {
     "mode": _persisted.get("mode", settings.trading_mode),
@@ -187,7 +192,10 @@ _screener_config_lock = asyncio.Lock()
 # significa "todavia no hay base": el primer ciclo solo la establece, sin
 # generar borradores, para no inundar la cola de pendientes apenas arranca el
 # backend o se cambia la config del screener.
-_signal_state: dict = {"previously_passing": None, "previously_passing_by_strategy": {}}
+_signal_state: dict = {
+    "previously_passing": _restored["previously_passing"],
+    "previously_passing_by_strategy": _restored["previously_passing_by_strategy"],
+}
 
 # Radar en vivo (ver _hot_set_loop / _price_rotation_loop mas abajo):
 # _hot_symbols son los simbolos con streaming persistente activo en IBKR en
@@ -235,26 +243,14 @@ SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 # sesion es httponly (JS no puede leerla) pero NO Secure, porque el deploy
 # documentado (ver deploy/README.md) sirve el dashboard por HTTP plano sobre
 # una red privada de Tailscale, no HTTPS.
-_sessions: dict[str, datetime] = {}
-_sessions_lock = threading.Lock()
-
-
 def _create_session() -> str:
     token = secrets.token_urlsafe(32)
-    with _sessions_lock:
-        _sessions[token] = datetime.now(timezone.utc)
+    _store.create(token)
     return token
 
 
 def _session_valid(token: str) -> bool:
-    with _sessions_lock:
-        created = _sessions.get(token)
-        if created is None:
-            return False
-        if (datetime.now(timezone.utc) - created).total_seconds() > SESSION_TTL_SECONDS:
-            del _sessions[token]
-            return False
-        return True
+    return _store.valid(token)
 
 
 async def _cache_eviction_loop() -> None:
@@ -266,16 +262,10 @@ async def _cache_eviction_loop() -> None:
 
 
 async def _session_cleanup_loop() -> None:
-    """Elimina tokens expirados del dict de sesiones cada hora para evitar
-    que sesiones viejas sin logout acumulen entradas indefinidamente."""
+    """Elimina tokens expirados de SQLite cada hora."""
     while True:
         await asyncio.sleep(3600)
-        now = datetime.now(timezone.utc)
-        with _sessions_lock:
-            expired = [t for t, created in list(_sessions.items())
-                       if (now - created).total_seconds() > SESSION_TTL_SECONDS]
-            for t in expired:
-                del _sessions[t]
+        await asyncio.to_thread(_store.cleanup_expired)
 
 
 async def _health_alert_loop() -> None:
@@ -1077,6 +1067,9 @@ async def _run_score_recompute_cycle() -> None:
     async with _screener_config_lock:
         previously_passing = _signal_state["previously_passing"]
         _signal_state["previously_passing"] = passing_now
+        _by_snap = dict(_signal_state["previously_passing_by_strategy"])
+
+    await asyncio.to_thread(_store.save_signal_state, passing_now, _by_snap)
 
     if previously_passing is None:
         # Primer ciclo (o el primero tras un reset de config): solo establece
@@ -1178,6 +1171,11 @@ async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
         by_strategy = _signal_state["previously_passing_by_strategy"]
         previously_passing = by_strategy.get(strategy_id)
         by_strategy[strategy_id] = passing_now
+        _pp_snap = _signal_state["previously_passing"]
+        _by_snap2 = dict(by_strategy)
+
+    await asyncio.to_thread(_store.save_signal_state, _pp_snap, _by_snap2)
+
     if previously_passing is None:
         return
 
@@ -2193,8 +2191,7 @@ def login(request: Request, body: LoginRequest, response: Response):
 @app.post("/api/logout")
 def logout(response: Response, session: Optional[str] = Cookie(default=None)):
     if session:
-        with _sessions_lock:
-            _sessions.pop(session, None)
+        _store.delete(session)
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return {"ok": True}
 
@@ -2461,6 +2458,7 @@ async def update_screener_config(body: ScreenerUpdate, _: None = Depends(require
         # strategy_id propio (ver _run_fund_strategy_auto_trade_scan).
         _signal_state["previously_passing"] = None
         _signal_state["previously_passing_by_strategy"] = {}
+        _store.save_signal_state(None, {})
 
         # Simbolos nuevos en el universo (agregados en este PUT) que todavia
         # no tienen sector conocido: se resuelven en background, en un hilo

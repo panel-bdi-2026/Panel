@@ -87,10 +87,10 @@ def reset_state(monkeypatch, tmp_path):
     # nueva por test evita que el binding se filtre entre tests.
     monkeypatch.setattr(main_module, "_funds_order_lock", asyncio.Lock())
     monkeypatch.setattr(main_module, "_screener_config_lock", asyncio.Lock())
-    main_module._sessions.clear()
+    main_module._store.clear_sessions()
     main_module._roi_history_cache = None
     yield
-    main_module._sessions.clear()
+    main_module._store.clear_sessions()
     main_module._roi_history_cache = None
 
 
@@ -216,13 +216,14 @@ def test_expired_session_is_rejected_and_purged(monkeypatch):
     token = login_resp.cookies["session"]
 
     from datetime import datetime, timedelta, timezone
-    main_module._sessions[token] = datetime.now(timezone.utc) - timedelta(
+    expired_at = datetime.now(timezone.utc) - timedelta(
         seconds=main_module.SESSION_TTL_SECONDS + 1
     )
+    main_module._store._insert_session_at(token, expired_at)
 
     resp = client.get("/api/status", cookies={"session": token})
     assert resp.status_code == 401
-    assert token not in main_module._sessions  # se purgo, no solo se rechazo
+    assert not main_module._store.valid(token)  # se purgo, no solo se rechazo
 
 
 # ---------------------------------------------------------------------------
