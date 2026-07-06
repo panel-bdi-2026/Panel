@@ -27,6 +27,19 @@ export const setAutoTrading = (id: string, enabled: boolean) =>
     body: JSON.stringify({ enabled }),
   })
 
-export interface RoiPoint { date: string; roi_pct: number }
-export const fetchRoiHistory = () =>
-  apiFetch<Record<string, RoiPoint[]>>('/api/funds/roi-history')
+export interface PerFundHistory {
+  id: string
+  name: string
+  dates: string[]
+  cumulative_return_pct: number[]
+  benchmark_cumulative_return_pct: number[]
+}
+
+export interface RoiHistory {
+  dates: string[]
+  fund_cumulative_return_pct: number[]
+  benchmark_cumulative_return_pct: number[]
+  per_fund: PerFundHistory[]
+}
+
+export const fetchRoiHistory = () => apiFetch<RoiHistory>('/api/funds/roi-history')

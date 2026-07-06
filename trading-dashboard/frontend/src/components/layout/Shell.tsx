@@ -7,15 +7,22 @@ import { useWebSocket } from '../../hooks/useWebSocket'
 import { ToastContainer } from '../ui/Toast'
 import { AccountSummaryPanel } from '../account/AccountSummary'
 import { FundList } from '../funds/FundList'
+import { EquityChart } from '../funds/EquityChart'
 import { SignalsTable } from '../signals/SignalsTable'
 import { PendingOrders } from '../orders/PendingOrders'
+import { NewOrderForm } from '../orders/NewOrderForm'
 import { PositionsTable } from '../positions/PositionsTable'
 import { AuditTimeline } from '../audit/AuditTimeline'
+import { BacktestPanel } from '../backtest/BacktestPanel'
+import { ConfigModal } from '../config/ConfigModal'
+import { Button } from '../ui/Button'
 
 export function Shell() {
   useWebSocket()
   const [section, setSection] = useState<Section>('funds')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [showNewOrder, setShowNewOrder] = useState(false)
+  const [showConfig, setShowConfig] = useState(false)
 
   const { data: orders } = useQuery({
     queryKey: ['orders', 'pending'],
@@ -36,19 +43,36 @@ export function Shell() {
       />
 
       <div className="flex flex-col flex-1 min-w-0">
-        <Header />
+        <Header
+          onNewOrder={() => setShowNewOrder(true)}
+          onConfig={() => setShowConfig(true)}
+        />
         <AccountSummaryPanel />
-        <main className="flex-1 overflow-auto p-4">
-          {section === 'funds'     && <FundList />}
+        <main className="flex-1 overflow-auto p-4 space-y-4">
+          {section === 'funds' && (
+            <>
+              <EquityChart />
+              <FundList />
+            </>
+          )}
           {section === 'signals'   && <SignalsTable />}
           {section === 'orders'    && <PendingOrders />}
           {section === 'positions' && <PositionsTable />}
           {section === 'audit'     && <AuditTimeline />}
-          {section === 'backtest'  && <div className="text-gray-500 text-sm">Backtest — próximamente</div>}
-          {section === 'config'    && <div className="text-gray-500 text-sm">Config — próximamente</div>}
+          {section === 'backtest'  && <BacktestPanel />}
+          {section === 'config'    && (
+            <div className="flex flex-col items-center justify-center py-12 gap-4">
+              <p className="text-gray-500 text-sm">Editá la configuración directamente desde el modal</p>
+              <Button variant="primary" onClick={() => setShowConfig(true)}>
+                Abrir configuración
+              </Button>
+            </div>
+          )}
         </main>
       </div>
 
+      <NewOrderForm open={showNewOrder} onClose={() => setShowNewOrder(false)} />
+      <ConfigModal open={showConfig} onClose={() => setShowConfig(false)} />
       <ToastContainer />
     </div>
   )

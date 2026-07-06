@@ -13,12 +13,13 @@ export const rejectOrder = (id: string, reason?: string) =>
   })
 
 export const createOrder = (body: {
-  fund_id: string
+  fund_id?: string
   symbol: string
   side: 'BUY' | 'SELL'
   quantity: number
   order_type?: string
   limit_price?: number | null
+  stop_loss_price?: number | null
 }) => apiFetch<PendingOrder>('/api/orders', { method: 'POST', body: JSON.stringify(body) })
 
 export const fetchSizeSuggestion = (symbol: string, fund_id: string) =>
