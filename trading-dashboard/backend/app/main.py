@@ -13,9 +13,13 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 import pandas as pd
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .alerts import send_alert
@@ -2115,6 +2119,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="IBKR Trading Dashboard", lifespan=lifespan)
+
+# Rate limiting: 200 req/min general, 10/min en login.
+# La red ya está filtrada por Tailscale; estos límites protegen contra
+# loops accidentales o scripts mal configurados, no contra ataques externos.
+_limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+app.state.limiter = _limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 # Solo se habilita CORS si se configuraron origenes explicitos (ALLOWED_ORIGINS
 # en el .env). Por defecto la lista esta vacia y no se agrega el middleware: el
 # dashboard se sirve desde el mismo origen que la API, asi que no necesita CORS,
@@ -2162,7 +2174,8 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/api/login")
-def login(body: LoginRequest, response: Response):
+@_limiter.limit("10/minute")
+def login(request: Request, body: LoginRequest, response: Response):
     if not secrets.compare_digest(body.password, settings.api_key):
         raise HTTPException(status_code=401, detail="Contrasena invalida.")
     token = _create_session()

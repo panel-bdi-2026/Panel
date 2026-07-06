@@ -136,11 +136,9 @@ exposición sin degradar la selectividad.
 automáticos. Un crash sin backup borra el estado de todos los fondos.
 
 **Plan:**
-1. **Arreglar sudoers** (5 minutos): como root, crear `/etc/sudoers.d/claude-rc` con:
-   ```
-   claude-rc ALL=(root) NOPASSWD: /bin/systemctl restart trading-dashboard
-   claude-rc ALL=(root) NOPASSWD: /bin/journalctl
-   ```
+1. ✅ **Arreglar sudoers** *(completado)*: `/etc/sudoers.d/claude-rc` configurado con
+   `Defaults:claude-rc !use_pty` (necesario porque Claude Code no tiene TTY) y
+   NOPASSWD para `systemctl restart/status trading-dashboard *` y `journalctl *`.
 2. ✅ **Backups automáticos** *(completado)*: cron job en `/etc/cron.daily/trading-backup`,
    corre como root a las ~6:25 AM UTC, copia `funds.json`, `rules.yaml`, `screener_config.json`
    y `audit.db` (backup SQLite consistente) a `/opt/panel/backups/YYYY-MM-DD/`, retención 30 días.
@@ -200,10 +198,14 @@ El estado sobrevive reinicios sin necesitar reconciliación manual.
 
 ### 2.3 Seguridad
 
-- Rate limiting: `slowapi` (60 req/min general, 5/min en login)
-- JWT con expiración: reemplaza la API key fija
-- HTTPS: Caddy como reverse proxy con Let's Encrypt automático
-- Mover todos los secrets a variables de entorno en el unit de systemd
+- Rate limiting: `slowapi` (60 req/min general, 5/min en login) ← **hacer ahora**
+- ~~JWT con expiración~~: **descartado** — Tailscale es la capa de autenticación de red;
+  la API key estática es suficiente para un sistema que nunca estará expuesto a internet.
+- ~~HTTPS~~: **descartado** — mismo motivo; Tailscale cifra todo el tráfico con WireGuard.
+- ~~Mover secrets a env vars del unit~~: ya están en `.env` que systemd carga vía `EnvironmentFile`.
+
+> Decisión 2026-07-06: el dashboard permanece detrás de Tailscale indefinidamente.
+> JWT y HTTPS no tienen ROI para este deployment.
 
 ---
 
@@ -213,6 +215,11 @@ El estado sobrevive reinicios sin necesitar reconciliación manual.
 - **Correlación de portfolio**: medir la beta del portfolio agregado, limitar la exposición beta total.
 - **VaR diario**: si el Value at Risk al 95% supera X% del capital, no abrir nuevas posiciones.
 - **Activar y calibrar trailing stop**: está implementado pero apagado. Necesita un backtest dedicado para calibrar `scale_out_at_r_multiple` antes de activarlo.
+
+⏳ **Trailing stop y Kelly Criterion: pendientes hasta tener resultados de v5.**
+La metodología correcta exige optimizar en secuencia: entry gates (v5) → exits (trailing stop) → sizing (Kelly).
+Correrlos antes de tener los entry params finales produciría resultados que habría que descartar.
+v5 terminó [1/18] con DSR=37.4% train / 98.0% test. ETA fin: ~10 AM UTC 2026-07-06.
 
 ---
 
@@ -274,7 +281,7 @@ y comparar el comportamiento de ambos en paralelo con capital real pequeño.
 - [ ] Evaluar incrementar `top_n` de 10 a 15 en Oportunista (más exposición)
 
 **Fase 1.3 — siguiente:**
-- [ ] Arreglar sudoers de claude-rc como root (5 minutos)
+- [x] Arreglar sudoers de claude-rc como root
 - [x] Implementar backups automáticos de `funds.json`, `screener.yaml`, `audit.db`
 - [x] GitHub Actions CI/CD: tests en cada push, deploy automático en push (runner activo)
 - [ ] Health check endpoint + alertas Telegram/email
