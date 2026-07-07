@@ -10,17 +10,18 @@ const STRATEGIES = [
   { key: 'dividend'      as const, label: 'Div.' },
 ]
 
-function MiniBar({ value }: { value: number }) {
+function MiniBar({ value }: { value: number | null }) {
+  const v = value ?? 0
   const color =
-    value >= 75 ? 'bg-green-500' :
-    value >= 50 ? 'bg-blue-500' :
-    value >= 30 ? 'bg-yellow-500' : 'bg-gray-700'
+    v >= 75 ? 'bg-green-500' :
+    v >= 50 ? 'bg-blue-500' :
+    v >= 30 ? 'bg-yellow-500' : 'bg-gray-700'
   return (
     <div className="flex items-center gap-1.5 min-w-0">
       <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
-        <div className={`h-full ${color} rounded-full`} style={{ width: `${value}%` }} />
+        <div className={`h-full ${color} rounded-full`} style={{ width: `${v}%` }} />
       </div>
-      <span className="text-[10px] tabular-nums text-gray-500 w-7 text-right">{value.toFixed(0)}</span>
+      <span className="text-[10px] tabular-nums text-gray-500 w-7 text-right">{v.toFixed(0)}</span>
     </div>
   )
 }
@@ -164,28 +165,31 @@ export function SignalsTable({ onOrder }: Props) {
             {/* Scores */}
             <div className="px-4 py-4 space-y-4 overflow-y-auto flex-1">
               <p className="text-xs font-semibold text-gray-500 uppercase">Scores por estrategia</p>
-              {STRATEGIES.map((st) => (
-                <div key={st.key}>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-gray-400 capitalize">{st.key.replace('_', ' ')}</span>
-                    <span className={`font-semibold ${
-                      selected.scores[st.key] >= 75 ? 'text-green-400' :
-                      selected.scores[st.key] >= 50 ? 'text-blue-400' :
-                      selected.scores[st.key] >= 30 ? 'text-yellow-400' : 'text-gray-500'
-                    }`}>{selected.scores[st.key].toFixed(1)}</span>
+              {STRATEGIES.map((st) => {
+                const sc = selected.scores[st.key] ?? 0
+                return (
+                  <div key={st.key}>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-gray-400 capitalize">{st.key.replace('_', ' ')}</span>
+                      <span className={`font-semibold ${
+                        sc >= 75 ? 'text-green-400' :
+                        sc >= 50 ? 'text-blue-400' :
+                        sc >= 30 ? 'text-yellow-400' : 'text-gray-500'
+                      }`}>{sc.toFixed(1)}</span>
+                    </div>
+                    <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${
+                          sc >= 75 ? 'bg-green-500' :
+                          sc >= 50 ? 'bg-blue-500' :
+                          sc >= 30 ? 'bg-yellow-500' : 'bg-gray-700'
+                        }`}
+                        style={{ width: `${sc}%` }}
+                      />
+                    </div>
                   </div>
-                  <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full ${
-                        selected.scores[st.key] >= 75 ? 'bg-green-500' :
-                        selected.scores[st.key] >= 50 ? 'bg-blue-500' :
-                        selected.scores[st.key] >= 30 ? 'bg-yellow-500' : 'bg-gray-700'
-                      }`}
-                      style={{ width: `${selected.scores[st.key]}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
+                )
+              })}
               {livePrices?.[selected.symbol] && (
                 <div className="pt-2 border-t border-gray-800">
                   <p className="text-xs font-semibold text-gray-500 uppercase mb-2">Precio live</p>

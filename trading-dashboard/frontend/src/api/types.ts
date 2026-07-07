@@ -87,10 +87,11 @@ export interface Signal {
 
 export interface AccountSummary {
   net_liquidation: number
-  total_cash: number
-  unrealized_pnl: number
-  realized_pnl: number
+  cash: number
   buying_power: number
+  daily_pnl: number
+  daily_pnl_pct: number
+  pnl_data_available: boolean
 }
 
 export interface Position {
