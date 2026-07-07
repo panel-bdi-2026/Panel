@@ -2,12 +2,13 @@ import { useQuery } from '@tanstack/react-query'
 import { fetchAccount } from '../../api/account'
 import { fmtUsd } from '../../lib/format'
 
-function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+interface StatProps { label: string; value: string; colorClass?: string }
+
+function Stat({ label, value, colorClass }: StatProps) {
   return (
-    <div className="flex flex-col">
-      <span className="text-xs text-gray-500">{label}</span>
-      <span className="text-sm font-semibold text-gray-100">{value}</span>
-      {sub && <span className="text-xs text-gray-500">{sub}</span>}
+    <div className="flex flex-col shrink-0">
+      <span className="text-xs text-gray-500 whitespace-nowrap">{label}</span>
+      <span className={`text-sm font-semibold whitespace-nowrap ${colorClass ?? 'text-gray-100'}`}>{value}</span>
     </div>
   )
 }
@@ -21,17 +22,25 @@ export function AccountSummaryPanel() {
 
   if (!data) return null
 
-  const pnlColor = (data.unrealized_pnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+  const upnl = data.unrealized_pnl ?? 0
+  const rpnl = data.realized_pnl ?? 0
 
   return (
-    <div className="flex items-center gap-4 sm:gap-6 px-4 py-2 bg-gray-900/60 border-b border-gray-800 text-sm overflow-x-auto scrollbar-none shrink-0">
+    <div className="flex items-center gap-5 sm:gap-7 px-4 py-2.5 bg-gray-900 border-b border-gray-800 overflow-x-auto scrollbar-none shrink-0">
       <Stat label="Net Liq" value={fmtUsd(data.net_liquidation)} />
+      <div className="w-px h-6 bg-gray-800 shrink-0" />
       <Stat label="Cash" value={fmtUsd(data.total_cash)} />
       <Stat
         label="Unrealized P&L"
-        value={<span className={pnlColor}>{fmtUsd(data.unrealized_pnl)}</span> as unknown as string}
+        value={fmtUsd(upnl)}
+        colorClass={upnl >= 0 ? 'text-green-400' : 'text-red-400'}
       />
-      <Stat label="Realized P&L" value={fmtUsd(data.realized_pnl)} />
+      <Stat
+        label="Realized P&L"
+        value={fmtUsd(rpnl)}
+        colorClass={rpnl >= 0 ? 'text-green-400' : 'text-red-400'}
+      />
+      <div className="w-px h-6 bg-gray-800 shrink-0" />
       <Stat label="Buying Power" value={fmtUsd(data.buying_power)} />
     </div>
   )

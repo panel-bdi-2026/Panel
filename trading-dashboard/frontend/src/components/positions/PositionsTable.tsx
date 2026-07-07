@@ -43,11 +43,11 @@ export function PositionsTable() {
                   {live !== null ? fmtUsd(live) : '—'}
                 </td>
                 <td className="py-2 pr-4 text-right text-gray-300">{fmtUsd(liveValue)}</td>
-                <td className={`py-2 pr-4 text-right ${livePnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {fmtUsd(livePnl)}
+                <td className={`py-2 pr-4 text-right ${livePnl == null ? 'text-gray-500' : livePnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {livePnl != null ? fmtUsd(livePnl) : '—'}
                 </td>
-                <td className={`py-2 text-right ${livePnlPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {fmtPct(livePnlPct)}
+                <td className={`py-2 text-right ${livePnlPct == null ? 'text-gray-500' : livePnlPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {livePnlPct != null ? fmtPct(livePnlPct) : '—'}
                 </td>
               </tr>
             )

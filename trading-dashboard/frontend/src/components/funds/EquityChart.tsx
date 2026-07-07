@@ -60,8 +60,9 @@ export function EquityChart({ fundId }: Props) {
 
   if (error || !data?.dates?.length) {
     return (
-      <div className="h-64 flex items-center justify-center text-gray-600 text-sm">
-        Sin historial de trades para mostrar
+      <div className="h-32 flex flex-col items-center justify-center text-gray-600 text-sm gap-1">
+        <span className="text-2xl">📈</span>
+        <span>Sin historial de trades aún</span>
       </div>
     )
   }
@@ -70,8 +71,9 @@ export function EquityChart({ fundId }: Props) {
     const fund = data.per_fund?.find((f) => f.id === fundId)
     if (!fund?.dates.length) {
       return (
-        <div className="h-48 flex items-center justify-center text-gray-600 text-sm">
-          Sin historial para este fondo
+        <div className="h-32 flex flex-col items-center justify-center text-gray-600 text-sm gap-1">
+          <span className="text-2xl">📈</span>
+          <span>Sin trades para este fondo aún</span>
         </div>
       )
     }

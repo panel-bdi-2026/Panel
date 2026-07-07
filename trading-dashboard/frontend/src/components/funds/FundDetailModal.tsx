@@ -37,7 +37,7 @@ export function FundDetailModal({ fund, onClose }: Props) {
 
   if (!fund) return null
 
-  const trades = [...fund.trades].sort(
+  const trades = [...(fund.trades ?? [])].sort(
     (a, b) => new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime(),
   )
 

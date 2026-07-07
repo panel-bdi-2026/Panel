@@ -83,7 +83,7 @@ export function ConfigModal({ open, onClose }: Props) {
     onError: (e: Error) => addToast(e.message || 'Error al guardar config', 'error'),
   })
 
-  const isDirty = tab === 'rules' ? !!rulesEdited : !!screenerEdited
+  const isDirty = (!!rulesEdited) || (!!screenerEdited)
   const isSaving = saveRules.isPending || saveScreener.isPending
 
   const handleSave = () => {
@@ -91,8 +91,15 @@ export function ConfigModal({ open, onClose }: Props) {
     else saveScreener.mutate()
   }
 
+  const handleClose = () => {
+    if (isDirty && !window.confirm('¿Cerrar sin guardar? Los cambios se perderán.')) return
+    setRulesEdited(null)
+    setScreenerEdited(null)
+    onClose()
+  }
+
   return (
-    <Modal open={open} onClose={onClose} title="Configuración" width="max-w-3xl">
+    <Modal open={open} onClose={handleClose} title="Configuración" width="max-w-3xl">
       {/* Tabs */}
       <div className="flex gap-1 mb-4 bg-gray-800 rounded-lg p-1">
         {(['rules', 'screener'] as Tab[]).map((t) => (
@@ -124,11 +131,11 @@ export function ConfigModal({ open, onClose }: Props) {
       )}
 
       <div className="flex items-center justify-between mt-4">
-        <p className="text-xs text-gray-500">
+        <p className={`text-xs ${isDirty ? 'text-yellow-400' : 'text-gray-500'}`}>
           {isDirty ? '● Cambios sin guardar' : 'Sin cambios'}
         </p>
         <div className="flex gap-2">
-          <Button variant="secondary" onClick={onClose}>Cerrar</Button>
+          <Button variant="secondary" onClick={handleClose}>Cerrar</Button>
           <Button
             variant="primary"
             onClick={handleSave}

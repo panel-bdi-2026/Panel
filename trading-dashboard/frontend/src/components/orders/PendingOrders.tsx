@@ -50,7 +50,11 @@ export function PendingOrders() {
                 <Button
                   variant="primary"
                   size="sm"
-                  onClick={() => approve.mutate(o.id)}
+                  onClick={() => {
+                    if (window.confirm(`¿Aprobar ${o.side} ${o.quantity} ${o.symbol}?`)) {
+                      approve.mutate(o.id)
+                    }
+                  }}
                   disabled={approve.isPending}
                 >
                   Aprobar

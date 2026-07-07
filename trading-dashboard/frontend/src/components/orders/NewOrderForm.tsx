@@ -22,7 +22,7 @@ export function NewOrderForm({ open, onClose, initialSymbol }: Props) {
   const [form, setForm] = useState(EMPTY)
 
   useEffect(() => {
-    if (open) setForm((f) => ({ ...f, symbol: initialSymbol ?? f.symbol }))
+    if (open) setForm({ ...EMPTY, symbol: initialSymbol ?? '' })
   }, [open, initialSymbol])
   const qc = useQueryClient()
   const addToast = useToastStore((s) => s.add)
@@ -32,7 +32,7 @@ export function NewOrderForm({ open, onClose, initialSymbol }: Props) {
   const { data: suggestion, isLoading: loadingSuggestion } = useQuery({
     queryKey: ['size-suggestion', form.symbol, form.fund_id],
     queryFn: () => fetchSizeSuggestion(form.symbol, form.fund_id),
-    enabled: form.symbol.length >= 2 && form.side === 'BUY',
+    enabled: form.symbol.length >= 2 && form.side === 'BUY' && form.fund_id !== '',
     staleTime: 30000,
   })
 
@@ -71,6 +71,7 @@ export function NewOrderForm({ open, onClose, initialSymbol }: Props) {
           <div className="flex-1">
             <label className="block text-xs text-gray-500 mb-1">Símbolo</label>
             <input
+              autoFocus
               value={form.symbol}
               onChange={(e) => set('symbol', e.target.value.toUpperCase())}
               placeholder="AAPL"
@@ -116,14 +117,18 @@ export function NewOrderForm({ open, onClose, initialSymbol }: Props) {
         <div>
           <label className="block text-xs text-gray-500 mb-1">
             Cantidad
-            {suggestion && (
+            {form.side === 'BUY' && form.symbol.length >= 2 && form.fund_id === '' && (
+              <span className="ml-2 text-gray-600">selecciona un fondo para sugerencia</span>
+            )}
+            {suggestion && !loadingSuggestion && (
               <button
                 className="ml-2 text-blue-400 hover:text-blue-300"
                 onClick={() => set('quantity', String(suggestion.quantity))}
               >
-                {loadingSuggestion ? '…' : `sugerido: ${suggestion.quantity}`}
+                sugerido: {suggestion.quantity}
               </button>
             )}
+            {loadingSuggestion && <span className="ml-2 text-gray-600">calculando…</span>}
           </label>
           <input
             type="number"

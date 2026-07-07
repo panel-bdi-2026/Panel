@@ -6,4 +6,36 @@
   body {
     @apply bg-gray-950 text-gray-100 antialiased;
   }
+
+  /* Remove default focus outline, replace with consistent ring */
+  *:focus-visible {
+    @apply outline-none ring-2 ring-brand-500 ring-offset-1 ring-offset-gray-950;
+  }
+}
+
+@layer utilities {
+  /* Scrollbar hidden cross-browser */
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Thin scrollbar for tall panels */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #374151 transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 4px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: #374151;
+    border-radius: 9999px;
+  }
 }

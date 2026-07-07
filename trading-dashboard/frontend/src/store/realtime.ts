@@ -21,6 +21,7 @@ interface RealtimeState {
   setConnected: (v: boolean) => void
   updatePrice: (p: WsPrice) => void
   addAlert: (a: WsAlert) => void
+  removeAlert: (id: string) => void
   clearAlerts: () => void
 }
 
@@ -33,5 +34,7 @@ export const useRealtimeStore = create<RealtimeState>()((set) => ({
     set((s) => ({ prices: { ...s.prices, [p.symbol]: p } })),
   addAlert: (a) =>
     set((s) => ({ alerts: [a, ...s.alerts].slice(0, 50) })),
+  removeAlert: (id) =>
+    set((s) => ({ alerts: s.alerts.filter((a) => a.id !== id) })),
   clearAlerts: () => set({ alerts: [] }),
 }))

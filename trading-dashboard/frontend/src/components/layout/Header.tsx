@@ -38,12 +38,19 @@ export function Header({ onNewOrder, onConfig }: Props) {
     onError: () => addToast('Error al cambiar modo', 'error'),
   })
 
+  const handleModeToggle = () => {
+    if (status?.mode !== 'live') {
+      if (!window.confirm('¿Activar modo LIVE? Las órdenes se ejecutarán con dinero real.')) return
+    }
+    modeMutation.mutate()
+  }
+
   return (
     <header className="flex items-center justify-between px-4 py-2 bg-gray-900 border-b border-gray-800 shrink-0 gap-3">
       <div className="flex items-center gap-3 flex-wrap">
         {/* IBKR connection */}
         <div className="flex items-center gap-2">
-          <StatusDot active={status?.connected ?? false} />
+          <StatusDot active={status?.connected ?? false} pulse={status?.connected ?? false} />
           <span className="text-xs text-gray-400">
             {status?.connected ? 'IBKR' : 'Desconectado'}
           </span>
@@ -52,9 +59,10 @@ export function Header({ onNewOrder, onConfig }: Props) {
         {/* Mode toggle */}
         {status && (
           <button
-            onClick={() => modeMutation.mutate()}
+            onClick={handleModeToggle}
             disabled={modeMutation.isPending}
             title="Click para cambiar modo"
+            className="cursor-pointer hover:opacity-80 transition-opacity"
           >
             <Badge variant={status.mode === 'live' ? 'red' : 'yellow'}>
               {status.mode.toUpperCase()}
@@ -68,6 +76,7 @@ export function Header({ onNewOrder, onConfig }: Props) {
             onClick={() => haltMutation.mutate()}
             disabled={haltMutation.isPending}
             title={status.halted ? 'Reanudar trading' : 'Pausar trading'}
+            className="cursor-pointer hover:opacity-80 transition-opacity"
           >
             <Badge variant={status.halted ? 'red' : 'gray'}>
               {status.halted ? 'HALTED' : 'ACTIVO'}
@@ -104,7 +113,7 @@ export function Header({ onNewOrder, onConfig }: Props) {
         )}
 
         <button
-          onClick={logout}
+          onClick={() => { if (window.confirm('¿Cerrar sesión?')) logout() }}
           className="text-xs text-gray-500 hover:text-gray-300 transition-colors px-1"
         >
           Salir
