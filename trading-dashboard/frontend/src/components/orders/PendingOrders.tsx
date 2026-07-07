@@ -25,48 +25,78 @@ export function PendingOrders() {
     onError: () => addToast('Error al rechazar orden', 'error'),
   })
 
-  if (isLoading) return <div className="text-gray-500 text-sm">Cargando órdenes…</div>
-  if (!orders?.length) return <div className="text-gray-500 text-sm">Sin órdenes pendientes.</div>
+  if (isLoading) return (
+    <div className="space-y-2 animate-pulse">
+      {[...Array(3)].map((_, i) => <div key={i} className="h-16 bg-gray-800 rounded-xl" />)}
+    </div>
+  )
+  if (!orders?.length) return (
+    <div className="flex flex-col items-center justify-center py-16 text-center">
+      <p className="text-2xl mb-2">📋</p>
+      <p className="text-gray-400 font-medium">Sin órdenes pendientes</p>
+    </div>
+  )
 
   const pending = orders.filter((o) => o.status === 'pending')
   const rest = orders.filter((o) => o.status !== 'pending')
+
+  const statusLabel: Record<string, string> = {
+    filled: 'Ejecutada',
+    rejected: 'Rechazada',
+    cancelled: 'Cancelada',
+    expired: 'Expirada',
+  }
 
   return (
     <div className="space-y-6">
       {pending.length > 0 && (
         <section>
-          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">Pendientes de aprobación</h3>
+          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">
+            Pendientes de aprobación ({pending.length})
+          </h3>
           <div className="space-y-2">
             {pending.map((o) => (
-              <div key={o.id} className="flex items-center gap-4 bg-gray-900 border border-yellow-700/40 rounded-xl px-4 py-3">
-                <Badge variant={o.side === 'BUY' ? 'green' : 'red'}>{o.side}</Badge>
-                <span className="font-semibold text-gray-100 w-16">{o.symbol}</span>
-                <span className="text-gray-400 text-sm">{o.quantity} acc.</span>
-                <span className="text-gray-400 text-sm">{o.order_type}</span>
-                {o.limit_price && <span className="text-gray-400 text-sm">Lim {fmtUsd(o.limit_price)}</span>}
-                {o.score && <span className="text-gray-500 text-xs">Score {o.score.toFixed(2)}</span>}
-                {o.notes && <span className="text-gray-500 text-xs truncate max-w-xs">{o.notes}</span>}
-                <span className="text-gray-600 text-xs ml-auto">{fmtAge(o.created_at)}</span>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => {
-                    if (window.confirm(`¿Aprobar ${o.side} ${o.quantity} ${o.symbol}?`)) {
-                      approve.mutate(o.id)
-                    }
-                  }}
-                  disabled={approve.isPending}
-                >
-                  Aprobar
-                </Button>
-                <Button
-                  variant="danger"
-                  size="sm"
-                  onClick={() => reject.mutate(o.id)}
-                  disabled={reject.isPending}
-                >
-                  Rechazar
-                </Button>
+              <div key={o.id} className="bg-gray-900 border border-yellow-700/40 rounded-xl px-4 py-3">
+                {/* Main row */}
+                <div className="flex items-center gap-3">
+                  <Badge variant={o.side === 'BUY' ? 'green' : 'red'}>{o.side}</Badge>
+                  <span className="font-bold text-gray-100 text-base">{o.symbol}</span>
+                  <span className="text-gray-300 text-sm">{o.quantity} acc.</span>
+                  <span className="text-gray-500 text-xs">{o.order_type}</span>
+                  {o.limit_price && (
+                    <span className="text-gray-400 text-xs">@ {fmtUsd(o.limit_price)}</span>
+                  )}
+                  <span className="text-gray-600 text-xs ml-auto shrink-0">{fmtAge(o.created_at)}</span>
+                </div>
+                {/* Notes */}
+                {o.notes && (
+                  <p className="text-gray-500 text-xs mt-1 truncate">{o.notes}</p>
+                )}
+                {/* Actions */}
+                <div className="flex gap-2 mt-3">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => {
+                      if (window.confirm(`¿Aprobar ${o.side} ${o.quantity} ${o.symbol}?`)) {
+                        approve.mutate(o.id)
+                      }
+                    }}
+                    disabled={approve.isPending}
+                  >
+                    Aprobar
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => reject.mutate(o.id)}
+                    disabled={reject.isPending}
+                  >
+                    Rechazar
+                  </Button>
+                </div>
               </div>
             ))}
           </div>
@@ -78,12 +108,12 @@ export function PendingOrders() {
           <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">Historial reciente</h3>
           <div className="space-y-1">
             {rest.slice(0, 20).map((o) => (
-              <div key={o.id} className="flex items-center gap-4 bg-gray-900 rounded-lg px-4 py-2 text-sm opacity-60">
+              <div key={o.id} className="flex items-center gap-3 bg-gray-900 rounded-lg px-4 py-2.5 text-sm">
                 <Badge variant={o.side === 'BUY' ? 'green' : 'red'}>{o.side}</Badge>
-                <span className="font-medium text-gray-200 w-16">{o.symbol}</span>
-                <span className="text-gray-400">{o.quantity} acc.</span>
+                <span className="font-medium text-gray-200">{o.symbol}</span>
+                <span className="text-gray-500">{o.quantity} acc.</span>
                 <Badge variant={o.status === 'filled' ? 'green' : o.status === 'rejected' ? 'red' : 'gray'}>
-                  {o.status}
+                  {statusLabel[o.status] ?? o.status}
                 </Badge>
                 <span className="text-gray-600 text-xs ml-auto">{fmtAge(o.created_at)}</span>
               </div>

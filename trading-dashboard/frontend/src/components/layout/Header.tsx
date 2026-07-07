@@ -2,11 +2,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchStatus, setMode, toggleHalt } from '../../api/account'
 import { useRealtimeStore } from '../../store/realtime'
 import { useAuthStore } from '../../store/auth'
-import { StatusDot } from '../ui/StatusDot'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { fmtAge } from '../../lib/format'
 import { useToastStore } from '../ui/Toast'
+import { Wifi, WifiOff, LogOut, Settings } from 'lucide-react'
 
 interface Props {
   onNewOrder?: () => void
@@ -45,15 +45,25 @@ export function Header({ onNewOrder, onConfig }: Props) {
     modeMutation.mutate()
   }
 
+  const ibkrConnected = status?.connected ?? false
+
   return (
-    <header className="flex items-center justify-between px-4 py-2 bg-gray-900 border-b border-gray-800 shrink-0 gap-3">
-      <div className="flex items-center gap-3 flex-wrap">
-        {/* IBKR connection */}
-        <div className="flex items-center gap-2">
-          <StatusDot active={status?.connected ?? false} pulse={status?.connected ?? false} />
-          <span className="text-xs text-gray-400">
-            {status?.connected ? 'IBKR' : 'Desconectado'}
-          </span>
+    <header className="flex items-center justify-between px-3 sm:px-4 bg-gray-900 border-b border-gray-800 shrink-0 h-14 gap-2">
+      {/* Left: status indicators */}
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+        {/* IBKR status */}
+        <div
+          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium ${
+            ibkrConnected
+              ? 'text-green-400 bg-green-400/10'
+              : 'text-gray-500 bg-gray-800'
+          }`}
+          title={ibkrConnected ? 'IBKR conectado' : 'IBKR desconectado'}
+        >
+          {ibkrConnected
+            ? <Wifi size={13} />
+            : <WifiOff size={13} />}
+          <span className="hidden sm:inline">{ibkrConnected ? 'IBKR' : 'Sin IBKR'}</span>
         </div>
 
         {/* Mode toggle */}
@@ -70,13 +80,13 @@ export function Header({ onNewOrder, onConfig }: Props) {
           </button>
         )}
 
-        {/* Halt toggle */}
-        {status && (
+        {/* Halt toggle — only show if halted, or on desktop always */}
+        {status && (status.halted || true) && (
           <button
             onClick={() => haltMutation.mutate()}
             disabled={haltMutation.isPending}
             title={status.halted ? 'Reanudar trading' : 'Pausar trading'}
-            className="cursor-pointer hover:opacity-80 transition-opacity"
+            className={`cursor-pointer hover:opacity-80 transition-opacity ${status.halted ? '' : 'hidden sm:block'}`}
           >
             <Badge variant={status.halted ? 'red' : 'gray'}>
               {status.halted ? 'HALTED' : 'ACTIVO'}
@@ -84,39 +94,46 @@ export function Header({ onNewOrder, onConfig }: Props) {
           </button>
         )}
 
-        {/* Scan age */}
+        {/* Scan age — desktop only */}
         {status?.last_scan_at && (
-          <span className="text-xs text-gray-500">
+          <span className="hidden md:flex items-center gap-1 text-xs text-gray-500">
             Scan: {fmtAge(status.last_scan_at)}
-            {status.scan_stale && <span className="text-yellow-500 ml-1">⚠</span>}
+            {status.scan_stale && <span className="text-yellow-500">⚠</span>}
           </span>
         )}
       </div>
 
-      <div className="flex items-center gap-2">
-        {/* WebSocket */}
-        <div className="flex items-center gap-1.5">
-          <StatusDot active={wsConnected} pulse={wsConnected} />
-          <span className="text-xs text-gray-500">WS</span>
-        </div>
+      {/* Right: actions */}
+      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+        {/* WebSocket indicator */}
+        <div
+          className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-400' : 'bg-gray-600'}`}
+          title={wsConnected ? 'WebSocket conectado' : 'WebSocket desconectado'}
+        />
 
         {onNewOrder && (
           <Button variant="primary" size="sm" onClick={onNewOrder}>
-            + Orden
+            <span className="hidden sm:inline">+ Orden</span>
+            <span className="sm:hidden">+</span>
           </Button>
         )}
 
         {onConfig && (
-          <Button variant="ghost" size="sm" onClick={onConfig}>
-            ⚙
-          </Button>
+          <button
+            onClick={onConfig}
+            className="p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 rounded-lg transition-colors"
+            title="Configuración"
+          >
+            <Settings size={16} />
+          </button>
         )}
 
         <button
           onClick={() => { if (window.confirm('¿Cerrar sesión?')) logout() }}
-          className="text-xs text-gray-500 hover:text-gray-300 transition-colors px-1"
+          className="p-1.5 text-gray-600 hover:text-gray-300 hover:bg-gray-800 rounded-lg transition-colors"
+          title="Salir"
         >
-          Salir
+          <LogOut size={15} />
         </button>
       </div>
     </header>
