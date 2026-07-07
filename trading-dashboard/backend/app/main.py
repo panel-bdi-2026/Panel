@@ -555,7 +555,7 @@ async def _draft_fund_order_from_signal(result: SignalResult, strategy_id: str) 
             continue
         affordable_qty = math.floor(candidate.cash_usd / live_price)
         qty = min(sizing.quantity, affordable_qty)
-        if qty > 0:
+        if qty > 0 and qty * live_price >= rules_config.min_transaction_usd:
             fund = candidate
             quantity = qty
             break
@@ -804,7 +804,7 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
                 continue
             affordable_qty = math.floor(candidate.cash_usd / live_price)
             qty = min(sizing.quantity, affordable_qty)
-            if qty > 0:
+            if qty > 0 and qty * live_price >= rules_config.min_transaction_usd:
                 fund = candidate
                 quantity = qty
                 break
@@ -1047,17 +1047,13 @@ async def _run_score_recompute_cycle() -> None:
         "results": [r.model_dump() for r in results],
     }
 
-    top_results = results[: screener_config.top_n]
-    # Gatillo de auto-trading: score >= umbral en vivo Y gates operativos
-    # (liquidez, blackout de earnings, regimen, cercania al maximo de 52
-    # semanas), NO passes_filters completo. passes_filters exige ademas los
-    # filtros de CALIDAD propios de cada estrategia (ej. RSI en rango, yield
-    # minimo): un score alto ya resume esa calidad de forma continua, asi que
-    # exigir el AND booleano completo descartaria señales fuertes por un solo
-    # filtro de calidad mas estricto que el listón de auto-trading (ver
-    # operational_gates_ok en models.py).
+    # Gatillo de auto-trading: score >= umbral en vivo Y gates operativos.
+    # Se evalúan TODOS los resultados del scan (no solo top_n): el tope de
+    # posiciones ya no es un conteo fijo sino el cash disponible del fondo
+    # (ver min_transaction_usd). top_n sigue usándose en el backtest como
+    # cap de posiciones concurrentes, pero en live el capital es el límite real.
     threshold = _live_score_entry_threshold(screener_config.strategy_id)
-    passing_now = {r.symbol for r in top_results if r.score >= threshold and r.operational_gates_ok}
+    passing_now = {r.symbol for r in results if r.score >= threshold and r.operational_gates_ok}
     # El lock es el mismo que toma update_screener_config (corre en un thread
     # del pool, no en el event loop, por ser un endpoint sync): sin compartirlo,
     # un reset de _signal_state tras un cambio de config en pleno vuelo de este
@@ -1087,28 +1083,29 @@ async def _run_score_recompute_cycle() -> None:
             # y los cupos libres respecto a top_n (contando lo que ya esta
             # pendiente), para no sobre-asignar la cartera de un golpe. Errar
             # hacia MENOS ordenes automaticas es el lado seguro.
-            new_signals = [r for r in top_results if r.symbol in new_symbols]
+            # Ordenar por score desc: al recortar por max_auto_drafts_per_cycle
+            # se preservan las señales más fuertes del ciclo.
+            new_signals = sorted(
+                [r for r in results if r.symbol in new_symbols],
+                key=lambda r: r.score, reverse=True,
+            )
 
-            # Intenta primero la entrada automatica por fondo (ver
-            # _try_auto_trade_entry): se ejecuta antes del draft manual y usa
-            # el mismo tope por ciclo, asi que si un fondo auto-trading ya
-            # tomo la señal, el draft manual de abajo la salta solo (chequea
-            # la posicion real en el broker, que ya quedo en no-cero).
             for r in new_signals[: screener_config.max_auto_drafts_per_cycle]:
                 await _try_auto_trade_entry(r, screener_config.strategy_id)
 
-            free_slots = max(0, screener_config.top_n - len(state["pending_orders"]))
-            cap = min(screener_config.max_auto_drafts_per_cycle, free_slots)
-            new_signals = new_signals[:cap]
+            # Sin tope por top_n: el límite real es el cash disponible del fondo.
+            # _draft_fund_order_from_signal descarta automáticamente la señal si
+            # el fondo no tiene cash suficiente para min_transaction_usd.
+            cap = screener_config.max_auto_drafts_per_cycle
             drafted = []
-            for r in new_signals:
+            for r in new_signals[:cap]:
                 p = await _draft_fund_order_from_signal(r, screener_config.strategy_id)
                 if p is not None:
                     drafted.append(p)
 
             await _broadcast({
                 "type": "signal_alert",
-                "new_signals": [r.model_dump() for r in new_signals],
+                "new_signals": [r.model_dump() for r in new_signals[:cap]],
                 "drafted_orders": [p.model_dump() for p in drafted],
             })
 
@@ -1157,9 +1154,8 @@ async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
         audit.record("signal_scan_failed", {"strategy_id": strategy_id}, {"error": str(exc)})
         return
 
-    top_results = results[: screener_config.top_n]
     threshold = _live_score_entry_threshold(strategy_id)
-    passing_now = {r.symbol for r in top_results if r.score >= threshold and r.operational_gates_ok}
+    passing_now = {r.symbol for r in results if r.score >= threshold and r.operational_gates_ok}
 
     # Mismo lock que _run_signal_scan_cycle y update_screener_config: ademas de
     # la razon de ahi, update_screener_config REEMPLAZA el dict completo
@@ -1182,12 +1178,14 @@ async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
     new_symbols = passing_now - previously_passing
     if not new_symbols:
         return
-    new_signals = [r for r in top_results if r.symbol in new_symbols]
-    for r in new_signals[: screener_config.max_auto_drafts_per_cycle]:
+    new_signals = sorted(
+        [r for r in results if r.symbol in new_symbols],
+        key=lambda r: r.score, reverse=True,
+    )
+    cap = screener_config.max_auto_drafts_per_cycle
+    for r in new_signals[:cap]:
         await _try_auto_trade_entry(r, strategy_id)
 
-    free_slots = max(0, screener_config.top_n - len(state["pending_orders"]))
-    cap = min(screener_config.max_auto_drafts_per_cycle, free_slots)
     drafted = []
     for r in new_signals[:cap]:
         p = await _draft_fund_order_from_signal(r, strategy_id)

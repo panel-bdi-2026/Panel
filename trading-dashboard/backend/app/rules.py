@@ -65,6 +65,11 @@ class RulesConfig(BaseModel):
     # ordenes por si solo): el tamano final igual queda limitado tambien por
     # max_position_pct_of_equity y max_order_value_usd.
     risk_per_trade_pct: float = Field(default=1, gt=0, le=100)
+    # Monto mínimo en USD por orden de compra. Órdenes más pequeñas se descartan
+    # antes de enviarse: con comisiones de ~$1/orden, una posición de $200 carga
+    # un 0.5% solo al entrar. Por debajo de este umbral el drag supera el beneficio
+    # de la diversificación extra. Aplica tanto a auto-trades como a borradores.
+    min_transaction_usd: float = Field(default=500, gt=0, le=10_000_000)
     daily_loss_limit_pct: float = Field(default=2, gt=0, le=100)
     # Circuit breaker de drawdown ACUMULADO (no diario): a diferencia de
     # daily_loss_limit_pct (que se resetea cada dia junto con daily_pnl_pct de
@@ -535,15 +540,23 @@ class RulesEngine:
         if entry_price <= 0 or equity <= 0 or risk_per_share <= 0:
             return PositionSizeSuggestion(quantity=0.0, risk_usd=0.0, limited_by=None)
 
+        # conviction_multiplier escala tanto el risk budget como el tope de
+        # posición (max_position_pct y max_order_value_usd): sin esto, cuando
+        # max_pos es el binding constraint —lo normal— el score no tiene efecto
+        # real sobre el tamaño de la posición. Rango: 0.5× (score=0) → 1.5×
+        # (score=100), neutro en score=50. Señal excelente (score=85):
+        # 0.5+85/100=1.35× → 35% más capital que una señal media.
         conviction_multiplier = 1.0 if score is None else min(1.5, max(0.5, 0.5 + score / 100))
         risk_budget_usd = equity * self.config.risk_per_trade_pct / 100 * conviction_multiplier
         qty_by_risk = risk_budget_usd / risk_per_share
 
-        max_position_value = equity * self.config.max_position_pct_of_equity / 100
+        effective_max_pos_pct = self.config.max_position_pct_of_equity * conviction_multiplier
+        max_position_value = equity * effective_max_pos_pct / 100
         remaining_value = max(0.0, max_position_value - current_position_qty * entry_price)
         qty_by_position_pct = remaining_value / entry_price
 
-        qty_by_order_value = self.config.max_order_value_usd / entry_price
+        effective_max_order_usd = self.config.max_order_value_usd * conviction_multiplier
+        qty_by_order_value = effective_max_order_usd / entry_price
 
         qty_raw, limited_by = min(
             (qty_by_risk, None),
