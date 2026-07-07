@@ -1426,7 +1426,12 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
         # que no reconciliar nada. El precio aca siempre es el stop teorico
         # (no hay forma de recuperar el fill real sin rastro de la orden en
         # esta sesion), por eso approximate=True siempre en esta rama.
-        if not reconciled_via_order:
+        #
+        # Solo se ejecuta dentro de horario de mercado: en extended hours IBKR
+        # paper trading reporta stops ejecutados y luego sigue mostrando la
+        # posicion en get_positions(), generando falsos positivos que crean un
+        # ciclo venta→recompra de stop-loss fuera de mercado (ver fix 2026-07-07).
+        if not reconciled_via_order and rules_engine._within_trading_hours():
             broker_qty = broker.get_position_qty(symbol)
             if broker_qty < position.quantity:
                 closed_qty = position.quantity - max(broker_qty, 0.0)
@@ -1993,6 +1998,14 @@ async def _reconcile_unfilled_on_startup() -> None:
                 stop_order_id=r.get("stop_order_id"),
                 audit_action="auto_trade_reconciled_late",
             )
+            continue
+
+        # Si esta posicion fue cerrada por stop-loss despues de la orden
+        # submitted_unfilled original, no re-reconciliar: la posicion en IBKR
+        # puede quedar "fantasma" en paper trading (el stop se reporta ejecutado
+        # pero get_positions() sigue mostrando las acciones), lo que generaria
+        # un ciclo infinito de venta→recompra fuera de horario de mercado.
+        if audit.was_stopped_out_after(fund_id, sym, entry["ts"]):
             continue
 
         # Diferencia entre lo que IBKR tiene y lo que el fondo ya registra;

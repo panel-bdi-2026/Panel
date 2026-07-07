@@ -203,3 +203,20 @@ class AuditLog:
                 params,
             )
             return cur.fetchone()[0]
+
+    def was_stopped_out_after(self, fund_id: str, symbol: str, since_ts: str) -> bool:
+        """True si hay una entrada auto_trade_stop_loss_reconciled para
+        (fund_id, symbol) con ts posterior a `since_ts` (ISO-8601 UTC).
+        Usado por _reconcile_unfilled_on_startup para no re-reconciliar una
+        posicion que ya fue cerrada por stop-loss -- evita el ciclo infinito
+        de venta→recompra en extended hours de paper trading."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT 1 FROM audit_log "
+                "WHERE action = 'auto_trade_stop_loss_reconciled' "
+                "AND ts > ? "
+                "AND json_extract(payload, '$.fund_id') = ? "
+                "AND json_extract(payload, '$.symbol') = ? LIMIT 1",
+                (since_ts, fund_id, symbol),
+            )
+            return cur.fetchone() is not None

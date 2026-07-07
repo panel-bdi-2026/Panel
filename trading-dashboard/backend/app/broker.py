@@ -348,7 +348,8 @@ class IBKRBroker:
             if (
                 trade.contract.symbol == ib_symbol
                 and trade.order.action == "SELL"
-                and trade.order.orderType == "STOP"
+                # IBKR reporta StopOrder como "STP" en ib_insync, no "STOP"
+                and trade.order.orderType in ("STOP", "STP")
                 and trade.orderStatus.status not in OrderStatus.DoneStates
             ):
                 return True
