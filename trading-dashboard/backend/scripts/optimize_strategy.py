@@ -366,7 +366,7 @@ def _print_ranking_opp(results: list[dict], n=15) -> None:
     print(f"  RANKING OPP — Top {n} por DSR en TRAIN ({TRAIN_START.year}-{TRAIN_END.year-1})")
     print(f"  (Test out-of-sample: {TEST_START.year}-{TEST_END.year-1}, excluye 2025-2026)")
     print(f"{'='*115}")
-    hdr = (f"  {'macd':>5} {'rsiMx':>6} {'52wMn':>6}"
+    hdr = (f"  {'macd':>5} {'rsiMx':>6}"
            f" | {'tN':>4} {'tDSR':>7} {'tRet%':>8} {'tExp%':>7} {'tShp':>6} {'tDD%':>7}"
            f" | {'vN':>4} {'vDSR':>7} {'vRet%':>8} {'vExp%':>7} {'vShp':>6}")
     print(hdr)
@@ -374,7 +374,7 @@ def _print_ranking_opp(results: list[dict], n=15) -> None:
     for r in ranked:
         tr, te = r["train"], r["test"]
         print(
-            f"  {r['macd_days']:>5}d {r['opp_rsi_max']:>5.0f} {r['min_below_52w']:>5.0f}%"
+            f"  {r['macd_days']:>5}d {r['opp_rsi_max']:>5.0f}"
             f" | {tr['n_trades'] or 0:>4} {tr['dsr'] or 0:>7.1f} {tr['cumret'] or 0:>8.1f}"
             f" {tr['exposure'] or 0:>7.1f} {tr['sharpe'] or 0:>6.2f} {tr['max_dd'] or 0:>7.1f}"
             f" | {te['n_trades'] or 0:>4} {te['dsr'] or 0:>7.1f} {te['cumret'] or 0:>8.1f}"

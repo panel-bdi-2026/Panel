@@ -35,8 +35,8 @@ trading-dashboard/backend/state.db-wal
 # Backups generados automáticamente
 backups/
 
-# Scripts de resultados locales
-trading-dashboard/backend/scripts/results/
+# Scripts de resultados locales — excluir datos crudos grandes pero mantener resultados de optimización
+trading-dashboard/backend/scripts/results/raw/
 
 # Archivos de pip mal nombrados
 trading-dashboard/backend/=*
