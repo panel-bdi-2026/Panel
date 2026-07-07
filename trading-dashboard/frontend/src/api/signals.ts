@@ -1,7 +1,9 @@
 import { apiFetch } from './client'
 import type { Signal } from './types'
 
-export const fetchSignals = () => apiFetch<Signal[]>('/api/signals/scan/all')
+export const fetchSignals = () =>
+  apiFetch<{ as_of: string; results: Signal[] }>('/api/signals/scan/all')
+    .then((r) => r.results)
 export interface LivePriceEntry { last_price: number; price_as_of: string }
 
 export const fetchLivePrices = (symbols: string[]) =>

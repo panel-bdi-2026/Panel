@@ -59,15 +59,26 @@ export function PendingOrders() {
               <div key={o.id} className="bg-gray-900 border border-yellow-700/40 rounded-xl px-4 py-3">
                 {/* Main row */}
                 <div className="flex items-center gap-3">
-                  <Badge variant={o.side === 'BUY' ? 'green' : 'red'}>{o.side}</Badge>
-                  <span className="font-bold text-gray-100 text-base">{o.symbol}</span>
-                  <span className="text-gray-300 text-sm">{o.quantity} acc.</span>
-                  <span className="text-gray-500 text-xs">{o.order_type}</span>
-                  {o.limit_price && (
-                    <span className="text-gray-400 text-xs">@ {fmtUsd(o.limit_price)}</span>
+                  <Badge variant={o.order.side === 'BUY' ? 'green' : 'red'}>{o.order.side}</Badge>
+                  <span className="font-bold text-gray-100 text-base">{o.order.symbol}</span>
+                  <span className="text-gray-300 text-sm">{o.order.quantity} acc.</span>
+                  <span className="text-gray-500 text-xs">{o.order.order_type}</span>
+                  {o.order.limit_price && (
+                    <span className="text-gray-400 text-xs">@ {fmtUsd(o.order.limit_price)}</span>
                   )}
                   <span className="text-gray-600 text-xs ml-auto shrink-0">{fmtAge(o.created_at)}</span>
                 </div>
+                {/* Estimated value + violations */}
+                {o.decision && (
+                  <div className="flex items-center gap-3 mt-1">
+                    {o.decision.estimated_value_usd && (
+                      <span className="text-xs text-gray-500">{fmtUsd(o.decision.estimated_value_usd)}</span>
+                    )}
+                    {o.decision.violations.map((v, i) => (
+                      <span key={i} className="text-xs text-red-400">{v}</span>
+                    ))}
+                  </div>
+                )}
                 {/* Notes */}
                 {o.notes && (
                   <p className="text-gray-500 text-xs mt-1 truncate">{o.notes}</p>
@@ -79,7 +90,7 @@ export function PendingOrders() {
                     size="sm"
                     className="flex-1"
                     onClick={() => {
-                      if (window.confirm(`¿Aprobar ${o.side} ${o.quantity} ${o.symbol}?`)) {
+                      if (window.confirm(`¿Aprobar ${o.order.side} ${o.order.quantity} ${o.order.symbol}?`)) {
                         approve.mutate(o.id)
                       }
                     }}
@@ -109,9 +120,9 @@ export function PendingOrders() {
           <div className="space-y-1">
             {rest.slice(0, 20).map((o) => (
               <div key={o.id} className="flex items-center gap-3 bg-gray-900 rounded-lg px-4 py-2.5 text-sm">
-                <Badge variant={o.side === 'BUY' ? 'green' : 'red'}>{o.side}</Badge>
-                <span className="font-medium text-gray-200">{o.symbol}</span>
-                <span className="text-gray-500">{o.quantity} acc.</span>
+                <Badge variant={o.order.side === 'BUY' ? 'green' : 'red'}>{o.order.side}</Badge>
+                <span className="font-medium text-gray-200">{o.order.symbol}</span>
+                <span className="text-gray-500">{o.order.quantity} acc.</span>
                 <Badge variant={o.status === 'filled' ? 'green' : o.status === 'rejected' ? 'red' : 'gray'}>
                   {statusLabel[o.status] ?? o.status}
                 </Badge>
