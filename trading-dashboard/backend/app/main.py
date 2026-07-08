@@ -1698,6 +1698,8 @@ async def _run_auto_exit_monitor_cycle() -> None:
     conectada y sin halt, igual que la entrada automatica."""
     if state["mode"] != "paper" or state["halted"] or not state["connected"]:
         return
+    if not rules_engine._within_trading_hours():
+        return
     for fund in funds_store.list():
         if not fund.auto_trading_enabled:
             continue
