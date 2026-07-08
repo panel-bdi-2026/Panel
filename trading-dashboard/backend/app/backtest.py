@@ -635,6 +635,7 @@ def _simulate_symbol_opportunistic(
     take_profit_price = 0.0
     entry_atr = 0.0
     pending_entry_atr = None
+    last_stop_exit_date = None  # para cooldown post-stop-loss
 
     start_idx = max(opp.momentum_lookback_days, cfg.atr_period, 252) + 1
     for i in range(start_idx, len(bars)):
@@ -736,6 +737,8 @@ def _simulate_symbol_opportunistic(
                 if marks_by_trade_id is not None:
                     marks_by_trade_id[id(trade)] = _trade_daily_marks(bars, entry_idx, i, entry_fill, ret_pct)
                 in_position = False
+                if exit_reason == "stop_loss":
+                    last_stop_exit_date = date
             elif cfg.trailing_stop_enabled and not pd.isna(atr_s.iloc[i]):
                 trail_mult = cfg.trailing_stop_atr_multiplier if cfg.trailing_stop_atr_multiplier is not None else cfg.stop_loss_atr_multiplier
                 stop_price = _trailing_stop_price(stop_price, price, float(atr_s.iloc[i]), trail_mult, entry_price, cfg.trailing_stop_activation_pct)
@@ -750,6 +753,12 @@ def _simulate_symbol_opportunistic(
 
         if dollar_volume_s.iloc[i] < cfg.min_avg_dollar_volume:
             continue
+
+        # Cooldown post-stop: no re-entrar al mismo símbolo hasta N días después del último stop.
+        if cfg.stop_loss_cooldown_days > 0 and last_stop_exit_date is not None:
+            from datetime import timedelta
+            if date < last_stop_exit_date + timedelta(days=cfg.stop_loss_cooldown_days):
+                continue
 
         regime_ok = bool(benchmark_regime_ok.iloc[i]) if i < len(benchmark_regime_ok) else True
         if not regime_ok:
@@ -820,6 +829,15 @@ def _simulate_symbol_opportunistic(
             sma_val = sma_s.iloc[i]
             if not pd.isna(sma_val) and price <= sma_val:
                 continue
+
+        # Filtro de volumen de confirmación: entry_volume_multiplier > 0 exige
+        # que el volumen de HOY supere N× el promedio de entry_volume_lookback días.
+        if cfg.entry_volume_multiplier > 0 and i >= cfg.entry_volume_lookback:
+            avg_vol = vol_avg_s.iloc[i]
+            if not pd.isna(avg_vol) and avg_vol > 0:
+                today_vol = float(bars["Volume"].iloc[i])
+                if today_vol < avg_vol * cfg.entry_volume_multiplier:
+                    continue
 
         pending_entry_atr = atr_today
 

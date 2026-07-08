@@ -615,6 +615,7 @@ atr_period: 14
 stop_loss_atr_multiplier: 1.5
 max_holding_days: 20
 trailing_stop_enabled: false
+stop_loss_cooldown_days: 5
 scale_out_enabled: false
 scale_out_at_r_multiple: 1.5
 scale_out_pct: 50.0
