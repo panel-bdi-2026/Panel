@@ -80,7 +80,7 @@ export function ToastContainer() {
   if (!toasts.length && !alerts.length) return null
 
   return (
-    <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 w-80">
+    <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 w-80 max-w-[calc(100vw-2rem)]">
       {toasts.map((t) => (
         <ManualToastItem key={t.id} toast={t} onDismiss={() => remove(t.id)} />
       ))}

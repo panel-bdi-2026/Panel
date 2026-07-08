@@ -28,7 +28,7 @@ export function AccountSummaryPanel() {
   return (
     <div className="flex items-center gap-5 sm:gap-7 px-4 py-2.5 bg-gray-900 border-b border-gray-800 overflow-x-auto scrollbar-none shrink-0">
       <Stat label="Net Liq" value={fmtUsd(data.net_liquidation)} />
-      <div className="w-px h-6 bg-gray-800 shrink-0" />
+      <div className="w-0.5 h-6 bg-gray-700 shrink-0 rounded-full" />
       <Stat label="Cash" value={fmtUsd(data.cash)} />
       {data.pnl_data_available && (
         <Stat
@@ -37,7 +37,7 @@ export function AccountSummaryPanel() {
           colorClass={dpnl >= 0 ? 'text-green-400' : 'text-red-400'}
         />
       )}
-      <div className="w-px h-6 bg-gray-800 shrink-0" />
+      <div className="w-0.5 h-6 bg-gray-700 shrink-0 rounded-full" />
       <Stat label="Buying Power" value={fmtUsd(data.buying_power)} />
     </div>
   )

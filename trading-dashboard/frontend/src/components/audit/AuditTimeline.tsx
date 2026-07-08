@@ -65,7 +65,7 @@ export function AuditTimeline() {
                 <span className="ml-2 text-xs text-gray-200 font-semibold">{symbol}</span>
               )}
               {e.result && Object.keys(e.result).length > 0 && (
-                <p className="text-xs text-gray-600 mt-0.5 truncate">
+                <p className="text-xs text-gray-600 mt-0.5 line-clamp-2">
                   {Object.entries(e.result)
                     .slice(0, 2)
                     .map(([k, v]) => `${k}: ${typeof v === 'number' ? (v as number).toFixed(2) : v}`)

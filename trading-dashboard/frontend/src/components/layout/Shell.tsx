@@ -58,6 +58,16 @@ export function Shell() {
         />
         <AccountSummaryPanel />
         <main className="flex-1 overflow-auto p-3 sm:p-4 space-y-4">
+          {section !== 'funds' && (
+            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+              {section === 'signals'   && 'Señales'}
+              {section === 'orders'    && 'Órdenes'}
+              {section === 'positions' && 'Posiciones'}
+              {section === 'audit'     && 'Auditoría'}
+              {section === 'backtest'  && 'Backtest'}
+              {section === 'config'    && 'Configuración'}
+            </h2>
+          )}
           {section === 'funds' && (
             <>
               <EquityChart />
@@ -73,7 +83,7 @@ export function Shell() {
           {section === 'backtest'  && <BacktestPanel />}
           {section === 'config'    && (
             <div className="flex flex-col items-center justify-center py-12 gap-4">
-              <p className="text-gray-500 text-sm">Editá la configuración desde el modal</p>
+              <p className="text-gray-500 text-sm">Editá la configuración del sistema desde el modal</p>
               <Button variant="primary" onClick={() => setShowConfig(true)}>
                 Abrir configuración
               </Button>

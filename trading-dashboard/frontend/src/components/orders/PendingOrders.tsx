@@ -70,18 +70,17 @@ export function PendingOrders() {
                 </div>
                 {/* Estimated value + violations */}
                 {o.decision && (
-                  <div className="flex items-center gap-3 mt-1">
+                  <div className="flex flex-wrap items-start gap-x-3 gap-y-1 mt-1">
                     {o.decision.estimated_value_usd && (
-                      <span className="text-xs text-gray-500">{fmtUsd(o.decision.estimated_value_usd)}</span>
+                      <span className="text-xs text-gray-500 shrink-0">{fmtUsd(o.decision.estimated_value_usd)}</span>
                     )}
                     {o.decision.violations.map((v, i) => (
-                      <span key={i} className="text-xs text-red-400">{v}</span>
+                      <span key={i} className="text-xs text-red-400 break-words">{v}</span>
                     ))}
                   </div>
                 )}
-                {/* Notes */}
                 {o.notes && (
-                  <p className="text-gray-500 text-xs mt-1 truncate">{o.notes}</p>
+                  <p className="text-gray-500 text-xs mt-1 line-clamp-2">{o.notes}</p>
                 )}
                 {/* Actions */}
                 <div className="flex gap-2 mt-3">

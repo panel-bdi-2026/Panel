@@ -109,7 +109,7 @@ export function SignalsTable({ onOrder }: Props) {
                     {lp
                       ? <span className="flex items-center justify-end gap-1">
                           ${lp.last_price.toFixed(2)}
-                          <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" title="live" />
+                          <span className="w-2 h-2 rounded-full bg-green-500 shrink-0 animate-pulse" title="live" />
                         </span>
                       : <span className="text-gray-600">—</span>
                     }
@@ -138,7 +138,7 @@ export function SignalsTable({ onOrder }: Props) {
       {selected && (
         <>
           <div className="fixed inset-0 z-30 bg-black/20" onClick={() => setSelected(null)} />
-          <div className="fixed inset-y-0 right-0 z-40 w-80 bg-gray-900 border-l border-gray-800 shadow-2xl flex flex-col">
+          <div className="fixed inset-y-0 right-0 z-40 w-full max-w-xs sm:max-w-none sm:w-80 bg-gray-900 border-l border-gray-800 shadow-2xl flex flex-col">
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
               <div>

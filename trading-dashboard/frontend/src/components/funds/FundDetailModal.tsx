@@ -114,15 +114,19 @@ export function FundDetailModal({ fund, onClose }: Props) {
           <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">Posiciones abiertas</h4>
           <div className="space-y-1">
             {Object.entries(fund.positions).map(([sym, pos]) => (
-              <div key={sym} className="flex items-center justify-between text-sm bg-gray-800 rounded px-3 py-2">
-                <span className="font-medium text-gray-200">{sym}</span>
-                <span className="text-gray-400">{pos.quantity} @ {fmtUsd(pos.avg_cost)}</span>
-                {pos.stop_loss_price && (
-                  <span className="text-red-400 text-xs">SL {fmtUsd(pos.stop_loss_price)}</span>
-                )}
-                {pos.opened_at && (
-                  <span className="text-gray-500 text-xs">{fmtAge(pos.opened_at)}</span>
-                )}
+              <div key={sym} className="bg-gray-800 rounded-lg px-3 py-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-gray-100">{sym}</span>
+                  {pos.opened_at && (
+                    <span className="text-gray-500 text-xs">{fmtAge(pos.opened_at)}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-400">
+                  <span>{pos.quantity} acc. @ {fmtUsd(pos.avg_cost)}</span>
+                  {pos.stop_loss_price && (
+                    <span className="text-red-400 font-medium">SL {fmtUsd(pos.stop_loss_price)}</span>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -135,18 +139,19 @@ export function FundDetailModal({ fund, onClose }: Props) {
           <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">
             Trades recientes ({trades.length})
           </h4>
-          <div className="max-h-52 overflow-y-auto space-y-1">
+          <div className="max-h-52 overflow-y-auto scrollbar-thin space-y-1">
             {trades.slice(0, 20).map((t) => (
-              <div key={t.id} className="flex items-center justify-between text-xs bg-gray-800 rounded px-3 py-1.5">
-                <span className={t.side === 'BUY' ? 'text-green-400' : 'text-red-400'}>{t.side}</span>
-                <span className="text-gray-200 font-medium">{t.symbol}</span>
-                <span className="text-gray-400">{t.quantity} @ {fmtUsd(t.price)}</span>
+              <div key={t.id} className="flex items-center gap-2 text-xs bg-gray-800 rounded px-3 py-1.5">
+                <span className={`font-semibold shrink-0 w-7 ${t.side === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>{t.side}</span>
+                <span className="text-gray-200 font-semibold shrink-0">{t.symbol}</span>
+                <span className="text-gray-500 hidden sm:inline">{t.quantity} @ {fmtUsd(t.price)}</span>
                 {t.realized_pnl != null && (
-                  <span className={t.realized_pnl >= 0 ? 'text-green-400' : 'text-red-400'}>
-                    {fmtUsd(t.realized_pnl)}
+                  <span className={`ml-auto font-semibold tabular-nums shrink-0 ${t.realized_pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {t.realized_pnl >= 0 ? '+' : ''}{fmtUsd(t.realized_pnl)}
                   </span>
                 )}
-                <span className="text-gray-500">{fmtAge(t.executed_at)}</span>
+                {t.realized_pnl == null && <span className="ml-auto" />}
+                <span className="text-gray-600 shrink-0">{fmtAge(t.executed_at)}</span>
               </div>
             ))}
           </div>

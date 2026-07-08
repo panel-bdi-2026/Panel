@@ -53,7 +53,7 @@ function JsonEditor({ initialValue, onChange, onError }: JsonEditorProps) {
       <textarea
         value={text}
         onChange={(e) => handleChange(e.target.value)}
-        className="w-full h-80 bg-gray-950 border border-gray-700 rounded-lg p-3 text-xs font-mono text-gray-300 focus:outline-none focus:border-brand-500 resize-none"
+        className="w-full h-52 sm:h-80 bg-gray-950 border border-gray-700 rounded-lg p-3 text-xs font-mono text-gray-300 focus:outline-none focus:border-brand-500 resize-none"
         spellCheck={false}
       />
       {localError && <p className="text-red-400 text-xs mt-1">{localError}</p>}

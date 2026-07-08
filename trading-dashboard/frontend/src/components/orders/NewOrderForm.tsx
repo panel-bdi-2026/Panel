@@ -85,7 +85,7 @@ export function NewOrderForm({ open, onClose, initialSymbol }: Props) {
                 <button
                   key={s}
                   onClick={() => set('side', s)}
-                  className={`px-4 py-2 text-sm font-semibold transition-colors ${
+                  className={`px-3 py-2 sm:px-4 text-sm font-semibold transition-colors ${
                     form.side === s
                       ? s === 'BUY' ? 'bg-green-700 text-white' : 'bg-red-700 text-white'
                       : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
@@ -149,7 +149,7 @@ export function NewOrderForm({ open, onClose, initialSymbol }: Props) {
                 <button
                   key={t}
                   onClick={() => set('order_type', t)}
-                  className={`px-4 py-2 text-sm transition-colors ${
+                  className={`px-3 py-2 sm:px-4 text-sm transition-colors ${
                     form.order_type === t
                       ? 'bg-brand-600 text-white'
                       : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
