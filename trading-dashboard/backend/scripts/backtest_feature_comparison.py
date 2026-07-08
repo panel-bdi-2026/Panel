@@ -145,7 +145,9 @@ def main():
     from pandas import Timestamp
     period_bench = bench_base[bench_base.index >= Timestamp(PERIOD_START, tz="UTC")]
     period_bench = period_bench[period_bench.index < Timestamp(PERIOD_END, tz="UTC")]
-    spy_ret = (period_bench.iloc[-1] / period_bench.iloc[0] - 1) * 100 if len(period_bench) > 1 else None
+    spy_ret: float | None = (
+        float(period_bench.iloc[-1]) / float(period_bench.iloc[0]) - 1
+    ) * 100 if len(period_bench) > 1 else None
 
     rows = []
     for label, kwargs in SCENARIOS:

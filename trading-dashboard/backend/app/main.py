@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -476,6 +476,22 @@ def _compute_sector_position_count(positions: list[Position], exclude_symbol: st
     return counts
 
 
+def _fund_in_stop_cooldown(fund, symbol: str, cooldown_days: int) -> bool:
+    """True si el fondo registró una venta con pérdida en este símbolo en los
+    últimos cooldown_days días. Proxy de "salida por stop-loss reciente": en
+    Oportunista un stop siempre realiza pérdida, así que realized_pnl < 0 en
+    una venta es condición suficiente para activar el cooldown."""
+    if cooldown_days <= 0:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(days=cooldown_days)
+    return any(
+        t.symbol == symbol and t.side == Side.SELL
+        and t.realized_pnl is not None and t.realized_pnl < 0
+        and t.executed_at >= cutoff
+        for t in fund.trades
+    )
+
+
 async def _draft_fund_order_from_signal(result: SignalResult, strategy_id: str) -> PendingOrder | None:
     """Convierte una señal que recien cruzo el umbral de auto-trading (ver
     _live_score_entry_threshold/operational_gates_ok) en una orden de compra
@@ -544,9 +560,14 @@ async def _draft_fund_order_from_signal(result: SignalResult, strategy_id: str) 
     live_price = await broker.get_reference_price(symbol) or result.last_price
 
     account_summary = await broker.get_account_summary()
+    conviction_multiplier = 1.0 if result.score is None else min(1.5, max(0.5, 0.5 + result.score / 100))
+    effective_max_order_usd = rules_config.max_order_value_usd * conviction_multiplier
+
     fund = None
     quantity = 0.0
     for candidate in candidates:
+        if _fund_in_stop_cooldown(candidate, symbol, screener_config.stop_loss_cooldown_days):
+            continue
         sizing = rules_engine.suggested_quantity(
             candidate.equity_estimate(), position_qty, live_price, result.suggested_stop_loss_price,
             score=result.score,
@@ -588,6 +609,7 @@ async def _draft_fund_order_from_signal(result: SignalResult, strategy_id: str) 
         total_position_value_usd=_compute_total_position_value(positions, symbol),
         open_portfolio_risk_usd=_compute_open_portfolio_risk_usd(symbol),
         trades_today_for_fund=trades_today_for_fund,
+        effective_max_order_value_usd=effective_max_order_usd,
     )
     if not decision.approved:
         audit.record("signal_order_rejected", order.model_dump(), decision.model_dump())
@@ -793,9 +815,14 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
                     live_price * (1 - rules_config.max_stop_loss_pct / 100), 2
                 )
 
+        conviction_multiplier = 1.0 if result.score is None else min(1.5, max(0.5, 0.5 + result.score / 100))
+        effective_max_order_usd = rules_config.max_order_value_usd * conviction_multiplier
+
         fund = None
         quantity = 0.0
         for candidate in candidates:
+            if _fund_in_stop_cooldown(candidate, symbol, screener_config.stop_loss_cooldown_days):
+                continue
             sizing = rules_engine.suggested_quantity(
                 candidate.equity_estimate(), position_qty, live_price, effective_stop_loss_price,
                 score=result.score,
@@ -836,6 +863,7 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
             total_position_value_usd=_compute_total_position_value(current_positions, symbol),
             open_portfolio_risk_usd=_compute_open_portfolio_risk_usd(symbol),
             trades_today_for_fund=trades_today_for_fund,
+            effective_max_order_value_usd=effective_max_order_usd,
         )
         if not decision.approved:
             audit.record("auto_trade_rejected", order.model_dump(), decision.model_dump())
@@ -1077,12 +1105,6 @@ async def _run_score_recompute_cycle() -> None:
     else:
         new_symbols = passing_now - previously_passing
         if new_symbols:
-            # new_signals queda ordenado por score (top_results ya viene
-            # ordenado), asi que al recortar por el cap se conservan las
-            # señales mas fuertes. El cap es el menor entre el tope por ciclo
-            # y los cupos libres respecto a top_n (contando lo que ya esta
-            # pendiente), para no sobre-asignar la cartera de un golpe. Errar
-            # hacia MENOS ordenes automaticas es el lado seguro.
             # Ordenar por score desc: al recortar por max_auto_drafts_per_cycle
             # se preservan las señales más fuertes del ciclo.
             new_signals = sorted(

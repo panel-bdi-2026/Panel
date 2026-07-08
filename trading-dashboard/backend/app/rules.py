@@ -248,6 +248,7 @@ class RulesEngine:
         total_position_value_usd: float | None = None,
         open_portfolio_risk_usd: float | None = None,
         trades_today_for_fund: int | None = None,
+        effective_max_order_value_usd: float | None = None,
     ) -> OrderDecision:
         """`order_sector` y `sector_exposure_usd` son opcionales y se ignoran
         si `order_sector` es None: sin sector conocido para el simbolo no hay
@@ -320,12 +321,13 @@ class RulesEngine:
         price = order.limit_price or reference_price
         estimated_value = price * order.quantity
 
-        if estimated_value > self.config.max_order_value_usd:
+        order_ceiling = effective_max_order_value_usd or self.config.max_order_value_usd
+        if estimated_value > order_ceiling:
             violations.append(RuleViolation(
                 rule="max_order_value_usd",
                 message=(
                     f"Valor estimado ${estimated_value:,.2f} excede el maximo por "
-                    f"orden (${self.config.max_order_value_usd:,.2f})."
+                    f"orden (${order_ceiling:,.2f})."
                 ),
             ))
 

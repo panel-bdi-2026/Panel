@@ -5,6 +5,7 @@ import random
 import statistics
 import time
 from collections import Counter
+from datetime import timedelta
 
 import pandas as pd
 
@@ -756,7 +757,6 @@ def _simulate_symbol_opportunistic(
 
         # Cooldown post-stop: no re-entrar al mismo símbolo hasta N días después del último stop.
         if cfg.stop_loss_cooldown_days > 0 and last_stop_exit_date is not None:
-            from datetime import timedelta
             if date < last_stop_exit_date + timedelta(days=cfg.stop_loss_cooldown_days):
                 continue
 

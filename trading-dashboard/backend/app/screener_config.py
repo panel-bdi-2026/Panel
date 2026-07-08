@@ -429,12 +429,12 @@ class ScreenerConfig(BaseModel):
     # volumen del día de la señal supera entry_volume_multiplier × promedio
     # de los últimos entry_volume_lookback días. 0.0 = deshabilitado.
     # Ej: 1.5 → solo entrar si hoy se operó 1.5× el volumen promedio.
-    entry_volume_multiplier: float = 0.0
-    entry_volume_lookback: int = 20
+    entry_volume_multiplier: float = Field(default=0.0, ge=0.0)
+    entry_volume_lookback: int = Field(default=20, ge=1)
 
     # Cooldown post-stop-loss: días de espera antes de volver a entrar al
     # mismo símbolo tras una salida por stop-loss. 0 = sin cooldown.
-    stop_loss_cooldown_days: int = 0
+    stop_loss_cooldown_days: int = Field(default=0, ge=0)
 
     # Salida parcial (scale-out): si esta habilitado, cuando una posicion
     # abierta por el motor de auto-trading alcanza scale_out_at_r_multiple
