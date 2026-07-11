@@ -3,7 +3,32 @@ import { fetchPendingOrders, approveOrder, rejectOrder } from '../../api/orders'
 import { fmtUsd, fmtAge } from '../../lib/format'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
+import { Card } from '../ui/Card'
+import { Skeleton } from '../ui/Skeleton'
+import { EmptyState } from '../ui/EmptyState'
 import { useToastStore } from '../ui/Toast'
+import { CheckCircle2, XCircle, Clock, CircleSlash } from 'lucide-react'
+import type { PendingOrder } from '../../api/types'
+
+const ORDER_TYPE_ES: Record<string, string> = {
+  MKT: 'a Mercado', MARKET: 'a Mercado', LMT: 'Límite', LIMIT: 'Límite', STP: 'Stop',
+}
+
+// Descripción en lenguaje natural (estilo IBKR: "Compra 85 WYFI a Mercado")
+function describe(o: PendingOrder): string {
+  const verb = o.order.side === 'BUY' ? 'Compra' : 'Venta'
+  const type = ORDER_TYPE_ES[o.order.order_type?.toUpperCase()] ?? o.order.order_type
+  const at = o.order.limit_price ? ` @ ${fmtUsd(o.order.limit_price)}` : ''
+  return `${verb} ${o.order.quantity} ${o.order.symbol} ${type}${at}`
+}
+
+const STATUS: Record<string, { label: string; Icon: typeof CheckCircle2; cls: string }> = {
+  filled:    { label: 'Ejecutada', Icon: CheckCircle2, cls: 'text-profit' },
+  rejected:  { label: 'Rechazada', Icon: XCircle,      cls: 'text-loss' },
+  cancelled: { label: 'Cancelada', Icon: CircleSlash,  cls: 'text-gray-500' },
+  expired:   { label: 'Expirada',  Icon: CircleSlash,  cls: 'text-gray-500' },
+  pending:   { label: 'Pendiente', Icon: Clock,        cls: 'text-warn' },
+}
 
 export function PendingOrders() {
   const { data: orders, isLoading } = useQuery({
@@ -25,27 +50,11 @@ export function PendingOrders() {
     onError: () => addToast('Error al rechazar orden', 'error'),
   })
 
-  if (isLoading) return (
-    <div className="space-y-2 animate-pulse">
-      {[...Array(3)].map((_, i) => <div key={i} className="h-16 bg-gray-800 rounded-xl" />)}
-    </div>
-  )
-  if (!orders?.length) return (
-    <div className="flex flex-col items-center justify-center py-16 text-center">
-      <p className="text-2xl mb-2">📋</p>
-      <p className="text-gray-400 font-medium">Sin órdenes pendientes</p>
-    </div>
-  )
+  if (isLoading) return <Skeleton className="h-16 rounded-xl2" count={3} />
+  if (!orders?.length) return <EmptyState icon="📋" title="Sin órdenes pendientes" subtitle="Las órdenes generadas por el sistema o creadas manualmente aparecerán acá." />
 
   const pending = orders.filter((o) => o.status === 'pending')
   const rest = orders.filter((o) => o.status !== 'pending')
-
-  const statusLabel: Record<string, string> = {
-    filled: 'Ejecutada',
-    rejected: 'Rechazada',
-    cancelled: 'Cancelada',
-    expired: 'Expirada',
-  }
 
   return (
     <div className="space-y-6">
@@ -56,58 +65,35 @@ export function PendingOrders() {
           </h3>
           <div className="space-y-2">
             {pending.map((o) => (
-              <div key={o.id} className="bg-gray-900 border border-yellow-700/40 rounded-xl px-4 py-3">
-                {/* Main row */}
-                <div className="flex items-center gap-3">
-                  <Badge variant={o.order.side === 'BUY' ? 'green' : 'red'}>{o.order.side}</Badge>
-                  <span className="font-bold text-gray-100 text-base">{o.order.symbol}</span>
-                  <span className="text-gray-300 text-sm">{o.order.quantity} acc.</span>
-                  <span className="text-gray-500 text-xs">{o.order.order_type}</span>
-                  {o.order.limit_price && (
-                    <span className="text-gray-400 text-xs">@ {fmtUsd(o.order.limit_price)}</span>
-                  )}
-                  <span className="text-gray-600 text-xs ml-auto shrink-0">{fmtAge(o.created_at)}</span>
-                </div>
-                {/* Estimated value + violations */}
-                {o.decision && (
-                  <div className="flex flex-wrap items-start gap-x-3 gap-y-1 mt-1">
-                    {o.decision.estimated_value_usd && (
-                      <span className="text-xs text-gray-500 shrink-0">{fmtUsd(o.decision.estimated_value_usd)}</span>
+              <Card key={o.id} padding="sm" className="border-warn/30">
+                <div className="flex items-start gap-3">
+                  <Clock size={18} className="text-warn shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-gray-100">{describe(o)}</span>
+                      <span className="text-gray-600 text-xs ml-auto shrink-0">{fmtAge(o.created_at)}</span>
+                    </div>
+                    {o.decision?.estimated_value_usd != null && (
+                      <p className="text-xs text-gray-500 nums mt-0.5">≈ {fmtUsd(o.decision.estimated_value_usd)}</p>
                     )}
-                    {o.decision.violations.map((v, i) => (
-                      <span key={i} className="text-xs text-red-400 break-words">{v}</span>
+                    {o.decision?.violations?.map((v, i) => (
+                      <p key={i} className="text-xs text-loss mt-0.5 break-words">⚠ {v}</p>
                     ))}
+                    {o.notes && <p className="text-gray-500 text-xs mt-1 line-clamp-2">{o.notes}</p>}
                   </div>
-                )}
-                {o.notes && (
-                  <p className="text-gray-500 text-xs mt-1 line-clamp-2">{o.notes}</p>
-                )}
-                {/* Actions */}
+                </div>
                 <div className="flex gap-2 mt-3">
                   <Button
-                    variant="primary"
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => {
-                      if (window.confirm(`¿Aprobar ${o.order.side} ${o.order.quantity} ${o.order.symbol}?`)) {
-                        approve.mutate(o.id)
-                      }
-                    }}
+                    variant="primary" size="sm" className="flex-1"
+                    onClick={() => { if (window.confirm(`¿Aprobar ${describe(o)}?`)) approve.mutate(o.id) }}
                     disabled={approve.isPending}
-                  >
-                    Aprobar
-                  </Button>
+                  >Aprobar</Button>
                   <Button
-                    variant="danger"
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => reject.mutate(o.id)}
-                    disabled={reject.isPending}
-                  >
-                    Rechazar
-                  </Button>
+                    variant="danger" size="sm" className="flex-1"
+                    onClick={() => reject.mutate(o.id)} disabled={reject.isPending}
+                  >Rechazar</Button>
                 </div>
-              </div>
+              </Card>
             ))}
           </div>
         </section>
@@ -117,17 +103,19 @@ export function PendingOrders() {
         <section>
           <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">Historial reciente</h3>
           <div className="space-y-1">
-            {rest.slice(0, 20).map((o) => (
-              <div key={o.id} className="flex items-center gap-3 bg-gray-900 rounded-lg px-4 py-2.5 text-sm">
-                <Badge variant={o.order.side === 'BUY' ? 'green' : 'red'}>{o.order.side}</Badge>
-                <span className="font-medium text-gray-200">{o.order.symbol}</span>
-                <span className="text-gray-500">{o.order.quantity} acc.</span>
-                <Badge variant={o.status === 'filled' ? 'green' : o.status === 'rejected' ? 'red' : 'gray'}>
-                  {statusLabel[o.status] ?? o.status}
-                </Badge>
-                <span className="text-gray-600 text-xs ml-auto">{fmtAge(o.created_at)}</span>
-              </div>
-            ))}
+            {rest.slice(0, 20).map((o) => {
+              const st = STATUS[o.status] ?? STATUS.pending
+              return (
+                <div key={o.id} className="flex items-center gap-3 bg-surface-1 border border-surface-3 rounded-lg px-4 py-2.5 text-sm">
+                  <st.Icon size={16} className={`${st.cls} shrink-0`} />
+                  <span className="text-gray-300 truncate">{describe(o)}</span>
+                  <Badge variant={o.status === 'filled' ? 'green' : o.status === 'rejected' ? 'red' : 'gray'}>
+                    {st.label}
+                  </Badge>
+                  <span className="text-gray-600 text-xs ml-auto nums shrink-0">{fmtAge(o.created_at)}</span>
+                </div>
+              )
+            })}
           </div>
         </section>
       )}

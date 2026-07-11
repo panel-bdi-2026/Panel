@@ -2305,11 +2305,38 @@ def status(_: None = Depends(require_api_key)):
 
 
 @app.post("/api/halt")
-def set_halt(value: bool, _: None = Depends(require_api_key)):
-    state["halted"] = value
+def set_halt(value: bool | None = None, _: None = Depends(require_api_key)):
+    # value opcional: si no viene, invierte el estado actual (toggle). Antes
+    # `value` era obligatorio y el frontend llamaba sin pasarlo -> 422, el
+    # boton de pausar/reanudar nunca funcionaba.
+    state["halted"] = (not state["halted"]) if value is None else value
     _persist_state()
-    audit.record("halt_toggle", {"value": value}, {})
+    audit.record("halt_toggle", {"value": state["halted"]}, {})
     return {"halted": state["halted"]}
+
+
+@app.post("/api/reconnect")
+async def reconnect_ibkr(_: None = Depends(require_api_key)):
+    """Reconecta a IBKR sin tocar el modo ni el halt. Reusa broker.reconnect
+    (mismo mecanismo que usa el arranque y /api/mode). Pensado para recuperar
+    la conexion desde el dashboard/movil cuando el Gateway se reinicio y el
+    backend quedo desconectado, sin tener que reiniciar por SSH."""
+    target_port = (
+        settings.ib_port_live if state["mode"] == "live" else settings.ib_port_paper
+    )
+    try:
+        await broker.reconnect(settings.ib_host, target_port, settings.ib_client_id)
+        state["connected"] = True
+        _persist_state()
+        audit.record("ibkr_reconnect", {"mode": state["mode"]}, {"ok": True})
+        return {"connected": True}
+    except IBKRConnectionError as exc:
+        state["connected"] = False
+        _persist_state()
+        audit.record(
+            "ibkr_reconnect", {"mode": state["mode"]}, {"ok": False, "error": str(exc)}
+        )
+        raise HTTPException(status_code=503, detail=f"No se pudo reconectar: {exc}")
 
 
 class ModeUpdate(BaseModel):

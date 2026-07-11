@@ -1,7 +1,67 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchPositions } from '../../api/account'
 import { useRealtimeStore } from '../../store/realtime'
 import { fmtUsd, fmtPct } from '../../lib/format'
+import { Skeleton } from '../ui/Skeleton'
+import { EmptyState } from '../ui/EmptyState'
+import { useFlashOnChange } from '../../hooks/useFlashOnChange'
+import { ArrowUp, ArrowDown } from 'lucide-react'
+
+interface Row {
+  symbol: string
+  quantity: number
+  avg_cost: number
+  live: number | null
+  liveValue: number
+  livePnl: number
+  livePnlPct: number
+  weight: number
+}
+
+type SortKey = 'symbol' | 'live' | 'quantity' | 'liveValue' | 'livePnl'
+
+const pnlClass = (v: number | null) =>
+  v == null ? 'text-gray-500' : v >= 0 ? 'text-profit' : 'text-loss'
+
+function LivePrice({ value }: { value: number | null }) {
+  const flash = useFlashOnChange(value)
+  return (
+    <span className={`nums rounded px-1 ${flash}`}>{value !== null ? fmtUsd(value) : '—'}</span>
+  )
+}
+
+function MobileCard({ r }: { r: Row }) {
+  const flash = useFlashOnChange(r.live)
+  const up = r.livePnl >= 0
+  return (
+    <div className={`rounded-xl2 px-4 py-3 space-y-2 border ${
+      up ? 'bg-profit/[0.06] border-profit/20' : 'bg-loss/[0.06] border-loss/20'
+    }`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="font-bold text-gray-100 text-base">{r.symbol}</span>
+          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+            r.quantity >= 0 ? 'bg-profit/15 text-profit' : 'bg-loss/15 text-loss'
+          }`}>{r.quantity >= 0 ? 'LONG' : 'SHORT'}</span>
+        </div>
+        <span className={`font-semibold text-sm nums ${pnlClass(r.livePnl)}`}>
+          {fmtUsd(r.livePnl)} <span className="text-xs">({fmtPct(r.livePnlPct)})</span>
+        </span>
+      </div>
+      <div className="grid grid-cols-4 gap-2 text-xs">
+        <div><p className="text-gray-500">Qty</p><p className="text-gray-300 nums">{Math.abs(r.quantity)}</p></div>
+        <div><p className="text-gray-500">Costo</p><p className="text-gray-300 nums">{fmtUsd(r.avg_cost)}</p></div>
+        <div><p className="text-gray-500">Live</p><p className={`text-gray-300 nums rounded ${flash}`}>{r.live !== null ? fmtUsd(r.live) : '—'}</p></div>
+        <div><p className="text-gray-500">% cart.</p><p className="text-gray-300 nums">{r.weight.toFixed(1)}%</p></div>
+      </div>
+      <div className="flex items-center justify-between text-xs border-t border-surface-3 pt-2">
+        <span className="text-gray-500">Valor mercado</span>
+        <span className="text-gray-300 nums">{fmtUsd(r.liveValue)}</span>
+      </div>
+    </div>
+  )
+}
 
 export function PositionsTable() {
   const { data: positions, isLoading } = useQuery({
@@ -10,91 +70,80 @@ export function PositionsTable() {
     refetchInterval: 10000,
   })
   const priceMap = useRealtimeStore((s) => s.prices)
+  const [sortKey, setSortKey] = useState<SortKey>('liveValue')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
-  if (isLoading) return <div className="text-gray-500 text-sm">Cargando posiciones…</div>
-  if (!positions?.length) return (
-    <div className="flex flex-col items-center justify-center py-16 text-center">
-      <p className="text-2xl mb-2">📊</p>
-      <p className="text-gray-400 font-medium">Sin posiciones abiertas</p>
-    </div>
-  )
+  if (isLoading) return <Skeleton className="h-16 rounded-xl2" count={4} />
+  if (!positions?.length) return <EmptyState icon="📊" title="Sin posiciones abiertas" subtitle="Cuando el sistema o vos abran una posición, aparecerá acá con su P&L en vivo." />
 
-  const rows = positions.map((p) => {
+  const rows: Row[] = positions.map((p) => {
     const live = priceMap[p.symbol]?.price ?? null
     const liveValue = live !== null ? live * p.quantity : p.market_value
     const livePnl = live !== null ? (live - p.avg_cost) * p.quantity : p.unrealized_pnl
     const livePnlPct = live !== null ? ((live - p.avg_cost) / p.avg_cost) * 100 : p.unrealized_pnl_pct
-    return { p, live, liveValue, livePnl, livePnlPct }
+    return { symbol: p.symbol, quantity: p.quantity, avg_cost: p.avg_cost, live, liveValue, livePnl, livePnlPct, weight: 0 }
+  })
+  const totalValue = rows.reduce((a, r) => a + Math.abs(r.liveValue), 0) || 1
+  rows.forEach((r) => { r.weight = (Math.abs(r.liveValue) / totalValue) * 100 })
+
+  const sorted = [...rows].sort((a, b) => {
+    const dir = sortDir === 'asc' ? 1 : -1
+    if (sortKey === 'symbol') return a.symbol.localeCompare(b.symbol) * dir
+    return ((a[sortKey] ?? 0) - (b[sortKey] ?? 0)) * dir
   })
 
-  const pnlClass = (v: number | null) =>
-    v == null ? 'text-gray-500' : v >= 0 ? 'text-green-400' : 'text-red-400'
+  const toggleSort = (k: SortKey) => {
+    if (k === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else { setSortKey(k); setSortDir('desc') }
+  }
+
+  const Th = ({ k, children, className = '' }: { k: SortKey; children: React.ReactNode; className?: string }) => (
+    <th className={`pb-2 pr-4 cursor-pointer select-none ${className}`} onClick={() => toggleSort(k)}>
+      <span className="inline-flex items-center gap-1">
+        {children}
+        {sortKey === k && (sortDir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}
+      </span>
+    </th>
+  )
 
   return (
     <>
-      {/* Mobile: card view */}
+      {/* Móvil: tarjetas tintadas */}
       <div className="sm:hidden space-y-2">
-        {rows.map(({ p, live, liveValue, livePnl, livePnlPct }) => (
-          <div key={p.symbol} className="bg-gray-900 rounded-xl px-4 py-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-gray-100 text-base">{p.symbol}</span>
-              <span className={`font-semibold text-sm tabular-nums ${pnlClass(livePnl)}`}>
-                {livePnl != null ? fmtUsd(livePnl) : '—'}
-                <span className="text-xs ml-1">({livePnlPct != null ? fmtPct(livePnlPct) : '—'})</span>
-              </span>
-            </div>
-            <div className="grid grid-cols-3 gap-2 text-xs">
-              <div>
-                <p className="text-gray-500">Qty</p>
-                <p className="text-gray-300 tabular-nums">{p.quantity}</p>
-              </div>
-              <div>
-                <p className="text-gray-500">Costo avg</p>
-                <p className="text-gray-300 tabular-nums">{fmtUsd(p.avg_cost)}</p>
-              </div>
-              <div>
-                <p className="text-gray-500">Precio live</p>
-                <p className="text-gray-300 tabular-nums">{live !== null ? fmtUsd(live) : '—'}</p>
-              </div>
-            </div>
-            <div className="flex items-center justify-between text-xs border-t border-gray-800 pt-2">
-              <span className="text-gray-500">Valor mercado</span>
-              <span className="text-gray-300 tabular-nums">{fmtUsd(liveValue)}</span>
-            </div>
-          </div>
-        ))}
+        {sorted.map((r) => <MobileCard key={r.symbol} r={r} />)}
       </div>
 
-      {/* Desktop: table */}
+      {/* Desktop: tabla ordenable */}
       <div className="hidden sm:block overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-xs text-gray-500 uppercase border-b border-gray-800">
-              <th className="text-left pb-2 pr-4">Símbolo</th>
-              <th className="text-right pb-2 pr-4">Qty</th>
+            <tr className="text-xs text-gray-500 uppercase border-b border-surface-3">
+              <Th k="symbol" className="text-left">Instrumento</Th>
+              <Th k="quantity" className="text-right">Pos</Th>
               <th className="text-right pb-2 pr-4">Costo avg.</th>
-              <th className="text-right pb-2 pr-4">Precio live</th>
-              <th className="text-right pb-2 pr-4">Valor mercado</th>
-              <th className="text-right pb-2 pr-4">P&L no real.</th>
-              <th className="text-right pb-2">P&L %</th>
+              <Th k="live" className="text-right">Precio</Th>
+              <Th k="liveValue" className="text-right">Valor</Th>
+              <Th k="livePnl" className="text-right">P&L</Th>
+              <th className="text-right pb-2">%</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-800">
-            {rows.map(({ p, live, liveValue, livePnl, livePnlPct }) => (
-              <tr key={p.symbol} className="hover:bg-gray-900/50">
-                <td className="py-2 pr-4 font-semibold text-gray-100">{p.symbol}</td>
-                <td className="py-2 pr-4 text-right text-gray-300 tabular-nums">{p.quantity}</td>
-                <td className="py-2 pr-4 text-right text-gray-400 tabular-nums">{fmtUsd(p.avg_cost)}</td>
-                <td className="py-2 pr-4 text-right text-gray-300 tabular-nums">
-                  {live !== null ? fmtUsd(live) : '—'}
+          <tbody className="divide-y divide-surface-3">
+            {sorted.map((r) => (
+              <tr key={r.symbol} className="hover:bg-surface-2/50">
+                <td className="py-2 pr-4">
+                  <span className="font-semibold text-gray-100">{r.symbol}</span>
+                  <span className={`ml-2 text-[10px] font-semibold ${r.quantity >= 0 ? 'text-profit' : 'text-loss'}`}>
+                    {r.quantity >= 0 ? 'LONG' : 'SHORT'}
+                  </span>
                 </td>
-                <td className="py-2 pr-4 text-right text-gray-300 tabular-nums">{fmtUsd(liveValue)}</td>
-                <td className={`py-2 pr-4 text-right tabular-nums ${pnlClass(livePnl)}`}>
-                  {livePnl != null ? fmtUsd(livePnl) : '—'}
+                <td className="py-2 pr-4 text-right text-gray-300 nums">{r.quantity}</td>
+                <td className="py-2 pr-4 text-right text-gray-400 nums">{fmtUsd(r.avg_cost)}</td>
+                <td className="py-2 pr-4 text-right text-gray-300"><LivePrice value={r.live} /></td>
+                <td className="py-2 pr-4 text-right text-gray-300 nums">{fmtUsd(r.liveValue)}</td>
+                <td className={`py-2 pr-4 text-right nums ${pnlClass(r.livePnl)}`}>
+                  {fmtUsd(r.livePnl)} <span className="text-xs">({fmtPct(r.livePnlPct)})</span>
                 </td>
-                <td className={`py-2 text-right tabular-nums ${pnlClass(livePnlPct)}`}>
-                  {livePnlPct != null ? fmtPct(livePnlPct) : '—'}
-                </td>
+                <td className="py-2 text-right text-gray-500 nums">{r.weight.toFixed(1)}%</td>
               </tr>
             ))}
           </tbody>

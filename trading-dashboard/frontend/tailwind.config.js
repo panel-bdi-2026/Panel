@@ -18,7 +18,23 @@ export default {
           900: '#1e3a8a',
           950: '#172554',
         },
+        // Superficies con elevación (fondo → card → elevada → borde/overlay)
+        surface: {
+          0: '#0a0b0d',
+          1: '#121316',
+          2: '#1a1c20',
+          3: '#232629',
+        },
+        // Color semántico de trading
+        profit: { DEFAULT: '#22c55e', dim: '#16a34a' },
+        loss:   { DEFAULT: '#ef4444', dim: '#dc2626' },
+        warn:   { DEFAULT: '#f59e0b' },
       },
+      boxShadow: {
+        card: '0 1px 3px rgba(0,0,0,0.4)',
+        elevated: '0 8px 30px rgba(0,0,0,0.5)',
+      },
+      borderRadius: { xl2: '1rem' },
     },
   },
   plugins: [],

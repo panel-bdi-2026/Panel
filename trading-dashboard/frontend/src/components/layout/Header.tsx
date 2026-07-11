@@ -1,9 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchStatus, setMode, toggleHalt } from '../../api/account'
+import { fetchStatus, setMode } from '../../api/account'
 import { useRealtimeStore } from '../../store/realtime'
 import { useAuthStore } from '../../store/auth'
 import { Badge } from '../ui/Badge'
-import { Button } from '../ui/Button'
 import { fmtAge } from '../../lib/format'
 import { useToastStore } from '../ui/Toast'
 import { Wifi, WifiOff, LogOut, Settings } from 'lucide-react'
@@ -13,7 +12,7 @@ interface Props {
   onConfig?: () => void
 }
 
-export function Header({ onNewOrder, onConfig }: Props) {
+export function Header({ onConfig }: Props) {
   const qc = useQueryClient()
   const addToast = useToastStore((s) => s.add)
 
@@ -25,12 +24,6 @@ export function Header({ onNewOrder, onConfig }: Props) {
 
   const wsConnected = useRealtimeStore((s) => s.connected)
   const logout = useAuthStore((s) => s.logout)
-
-  const haltMutation = useMutation({
-    mutationFn: toggleHalt,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['status'] }),
-    onError: () => addToast('Error al cambiar halt', 'error'),
-  })
 
   const modeMutation = useMutation({
     mutationFn: () => setMode(status?.mode === 'live' ? 'paper' : 'live'),
@@ -80,18 +73,13 @@ export function Header({ onNewOrder, onConfig }: Props) {
           </button>
         )}
 
-        {/* Halt toggle — only show if halted, or on desktop always */}
-        {status && (status.halted || true) && (
-          <button
-            onClick={() => haltMutation.mutate()}
-            disabled={haltMutation.isPending}
-            title={status.halted ? 'Reanudar trading' : 'Pausar trading'}
-            className={`cursor-pointer hover:opacity-80 transition-opacity ${status.halted ? '' : 'hidden sm:block'}`}
-          >
+        {/* Halt status — solo lectura (la acción de pausar/reanudar vive en la ControlBar) */}
+        {status && (
+          <span title={status.halted ? 'Trading pausado' : 'Trading activo'}>
             <Badge variant={status.halted ? 'red' : 'gray'}>
               {status.halted ? 'HALTED' : 'ACTIVO'}
             </Badge>
-          </button>
+          </span>
         )}
 
         {/* Scan age — desktop only */}
@@ -110,13 +98,6 @@ export function Header({ onNewOrder, onConfig }: Props) {
           className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-400' : 'bg-gray-600'}`}
           title={wsConnected ? 'WebSocket conectado' : 'WebSocket desconectado'}
         />
-
-        {onNewOrder && (
-          <Button variant="primary" size="sm" onClick={onNewOrder}>
-            <span className="hidden sm:inline">+ Orden</span>
-            <span className="sm:hidden">+</span>
-          </Button>
-        )}
 
         {onConfig && (
           <button

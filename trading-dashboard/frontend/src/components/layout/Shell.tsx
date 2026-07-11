@@ -16,6 +16,8 @@ import { PositionsTable } from '../positions/PositionsTable'
 import { AuditTimeline } from '../audit/AuditTimeline'
 import { BacktestPanel } from '../backtest/BacktestPanel'
 import { ConfigModal } from '../config/ConfigModal'
+import { ControlBar } from '../system/ControlBar'
+import { HealthBanner } from '../system/HealthBanner'
 import { Button } from '../ui/Button'
 
 export function Shell() {
@@ -53,11 +55,12 @@ export function Shell() {
 
       <div className="flex flex-col flex-1 min-w-0">
         <Header
-          onNewOrder={() => openOrder()}
           onConfig={() => setShowConfig(true)}
         />
+        <HealthBanner />
+        <ControlBar onNewOrder={() => openOrder()} />
         <AccountSummaryPanel />
-        <main className="flex-1 overflow-auto p-3 sm:p-4 space-y-4">
+        <main className="flex-1 overflow-auto p-3 sm:p-4 pb-20 sm:pb-4 space-y-4">
           {section !== 'funds' && (
             <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
               {section === 'signals'   && 'Señales'}
