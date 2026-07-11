@@ -69,14 +69,14 @@ export function ControlBar({ onNewOrder }: Props) {
   }
 
   const pill =
-    'inline-flex items-center gap-1.5 h-11 sm:h-9 px-3 rounded-full text-sm font-medium ' +
+    'inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-xs font-medium ' +
     'border transition-colors disabled:opacity-50 shrink-0 whitespace-nowrap'
 
   return (
-    <div className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-surface-1 border-b border-surface-3 overflow-x-auto scrollbar-none shrink-0">
+    <div className="flex items-center gap-1.5 px-3 sm:px-4 py-1.5 bg-surface-1 border-b border-surface-3 overflow-x-auto scrollbar-none shrink-0">
       {/* Estado global */}
-      <span className="flex items-center gap-1.5 shrink-0 mr-1">
-        <span className={`w-2.5 h-2.5 rounded-full ${dotColor}`} />
+      <span className="flex items-center gap-1.5 shrink-0 mr-0.5">
+        <span className={`w-2 h-2 rounded-full ${dotColor}`} />
       </span>
 
       {/* Pausar / Reanudar */}
@@ -89,8 +89,8 @@ export function ControlBar({ onNewOrder }: Props) {
             : 'border-surface-3 text-gray-300 hover:bg-surface-2'
         }`}
       >
-        {haltMutation.isPending ? <Loader2 size={15} className="animate-spin" />
-          : status.halted ? <Play size={15} /> : <Pause size={15} />}
+        {haltMutation.isPending ? <Loader2 size={13} className="animate-spin" />
+          : status.halted ? <Play size={13} /> : <Pause size={13} />}
         {status.halted ? 'Reanudar' : 'Pausar'}
       </button>
 
@@ -105,8 +105,8 @@ export function ControlBar({ onNewOrder }: Props) {
         }`}
       >
         {reconnectMutation.isPending
-          ? <Loader2 size={15} className="animate-spin" />
-          : <Plug size={15} />}
+          ? <Loader2 size={13} className="animate-spin" />
+          : <Plug size={13} />}
         {!status.connected ? 'Reconectar IBKR' : 'Reconectar'}
       </button>
 
@@ -115,7 +115,7 @@ export function ControlBar({ onNewOrder }: Props) {
         onClick={onNewOrder}
         className={`${pill} border-brand-600 text-white bg-brand-600 hover:bg-brand-500`}
       >
-        <Plus size={15} /> Orden
+        <Plus size={13} /> Orden
       </button>
     </div>
   )

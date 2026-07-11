@@ -67,29 +67,38 @@ export function PendingOrders() {
             {pending.map((o) => (
               <Card key={o.id} padding="sm" className="border-warn/30">
                 <div className="flex items-start gap-3">
-                  <Clock size={18} className="text-warn shrink-0 mt-0.5" />
+                  <Clock size={16} className="text-warn shrink-0 mt-0.5" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-gray-100">{describe(o)}</span>
                       <span className="text-gray-600 text-xs ml-auto shrink-0">{fmtAge(o.created_at)}</span>
                     </div>
-                    {o.decision?.estimated_value_usd != null && (
-                      <p className="text-xs text-gray-500 nums mt-0.5">≈ {fmtUsd(o.decision.estimated_value_usd)}</p>
-                    )}
+
+                    {/* Cantidad / precio / valor estimado — explícitos, no solo en la frase */}
+                    <div className="flex items-center gap-4 mt-1.5 text-xs">
+                      <span className="text-gray-500">Cantidad <span className="text-gray-300 font-medium nums">{o.order.quantity}</span></span>
+                      {o.order.limit_price != null && (
+                        <span className="text-gray-500">Precio <span className="text-gray-300 font-medium nums">{fmtUsd(o.order.limit_price)}</span></span>
+                      )}
+                      {o.decision?.estimated_value_usd != null && (
+                        <span className="text-gray-500">Total <span className="text-gray-300 font-medium nums">≈ {fmtUsd(o.decision.estimated_value_usd)}</span></span>
+                      )}
+                    </div>
+
                     {o.decision?.violations?.map((v, i) => (
-                      <p key={i} className="text-xs text-loss mt-0.5 break-words">⚠ {v}</p>
+                      <p key={i} className="text-xs text-loss mt-1 break-words">⚠ {v}</p>
                     ))}
                     {o.notes && <p className="text-gray-500 text-xs mt-1 line-clamp-2">{o.notes}</p>}
                   </div>
                 </div>
-                <div className="flex gap-2 mt-3">
+                <div className="flex gap-2 mt-3 justify-stretch sm:justify-end">
                   <Button
-                    variant="primary" size="sm" className="flex-1"
+                    variant="primary" size="sm" className="flex-1 sm:flex-none sm:px-5"
                     onClick={() => { if (window.confirm(`¿Aprobar ${describe(o)}?`)) approve.mutate(o.id) }}
                     disabled={approve.isPending}
                   >Aprobar</Button>
                   <Button
-                    variant="danger" size="sm" className="flex-1"
+                    variant="danger" size="sm" className="flex-1 sm:flex-none sm:px-5"
                     onClick={() => reject.mutate(o.id)} disabled={reject.isPending}
                   >Rechazar</Button>
                 </div>

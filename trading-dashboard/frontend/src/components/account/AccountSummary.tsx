@@ -37,7 +37,7 @@ export function AccountSummaryPanel() {
 
   return (
     <div className={`px-4 py-3 bg-surface-1 border-b border-surface-3 shrink-0 ${flash}`}>
-      <div className="flex items-start justify-between gap-4 max-w-full">
+      <div className="flex items-start justify-between gap-4 max-w-6xl mx-auto">
         <div className="min-w-0">
           {/* Toggle Valor | Rendimiento */}
           <div className="flex items-center gap-3 mb-1">

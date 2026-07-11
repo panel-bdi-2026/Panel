@@ -60,38 +60,43 @@ export function Shell() {
         <HealthBanner />
         <ControlBar onNewOrder={() => openOrder()} />
         <AccountSummaryPanel />
-        <main className="flex-1 overflow-auto p-3 sm:p-4 pb-20 sm:pb-4 space-y-4">
-          {section !== 'funds' && (
-            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-              {section === 'signals'   && 'Señales'}
-              {section === 'orders'    && 'Órdenes'}
-              {section === 'positions' && 'Posiciones'}
-              {section === 'audit'     && 'Auditoría'}
-              {section === 'backtest'  && 'Backtest'}
-              {section === 'config'    && 'Configuración'}
-            </h2>
-          )}
-          {section === 'funds' && (
-            <>
-              <EquityChart />
-              <FundList />
-            </>
-          )}
-          {section === 'signals' && (
-            <SignalsTable onOrder={(sym) => openOrder(sym)} />
-          )}
-          {section === 'orders'    && <PendingOrders />}
-          {section === 'positions' && <PositionsTable />}
-          {section === 'audit'     && <AuditTimeline />}
-          {section === 'backtest'  && <BacktestPanel />}
-          {section === 'config'    && (
-            <div className="flex flex-col items-center justify-center py-12 gap-4">
-              <p className="text-gray-500 text-sm">Editá la configuración del sistema desde el modal</p>
-              <Button variant="primary" onClick={() => setShowConfig(true)}>
-                Abrir configuración
-              </Button>
-            </div>
-          )}
+        <main className="flex-1 overflow-auto p-3 sm:p-4 pb-20 sm:pb-4">
+          {/* Ancho máximo en pantallas anchas — sin esto, tablas de pocas
+              columnas (Posiciones, Órdenes) se estiran edge-to-edge y dejan
+              huecos enormes entre columnas en laptops/desktop. */}
+          <div className="max-w-6xl mx-auto space-y-4">
+            {section !== 'funds' && (
+              <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                {section === 'signals'   && 'Señales'}
+                {section === 'orders'    && 'Órdenes'}
+                {section === 'positions' && 'Posiciones'}
+                {section === 'audit'     && 'Auditoría'}
+                {section === 'backtest'  && 'Backtest'}
+                {section === 'config'    && 'Configuración'}
+              </h2>
+            )}
+            {section === 'funds' && (
+              <>
+                <EquityChart />
+                <FundList />
+              </>
+            )}
+            {section === 'signals' && (
+              <SignalsTable onOrder={(sym) => openOrder(sym)} />
+            )}
+            {section === 'orders'    && <PendingOrders />}
+            {section === 'positions' && <PositionsTable />}
+            {section === 'audit'     && <AuditTimeline />}
+            {section === 'backtest'  && <BacktestPanel />}
+            {section === 'config'    && (
+              <div className="flex flex-col items-center justify-center py-12 gap-4">
+                <p className="text-gray-500 text-sm">Editá la configuración del sistema desde el modal</p>
+                <Button variant="primary" onClick={() => setShowConfig(true)}>
+                  Abrir configuración
+                </Button>
+              </div>
+            )}
+          </div>
         </main>
       </div>
 

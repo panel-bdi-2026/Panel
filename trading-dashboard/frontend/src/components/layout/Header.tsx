@@ -41,25 +41,25 @@ export function Header({ onConfig }: Props) {
   const ibkrConnected = status?.connected ?? false
 
   return (
-    <header className="flex items-center justify-between px-3 sm:px-4 bg-gray-900 border-b border-gray-800 shrink-0 h-14 gap-2">
-      {/* Left: status indicators */}
+    <header className="flex items-center justify-between px-3 sm:px-4 bg-surface-1 border-b border-surface-3 shrink-0 h-10 sm:h-12 gap-2">
+      {/* Left: status indicators. IBKR/HALTED se ocultan en móvil — la
+          ControlBar de abajo ya muestra ese mismo estado (dot + pill),
+          duplicarlo acá solo suma altura sin agregar información. El modo
+          PAPER/LIVE se mantiene siempre visible: es la info de seguridad
+          más importante (evitar confundir plata real con paper). */}
       <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-        {/* IBKR status */}
         <div
-          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium ${
+          className={`hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium ${
             ibkrConnected
               ? 'text-green-400 bg-green-400/10'
               : 'text-gray-500 bg-gray-800'
           }`}
           title={ibkrConnected ? 'IBKR conectado' : 'IBKR desconectado'}
         >
-          {ibkrConnected
-            ? <Wifi size={13} />
-            : <WifiOff size={13} />}
-          <span className="hidden sm:inline">{ibkrConnected ? 'IBKR' : 'Sin IBKR'}</span>
+          {ibkrConnected ? <Wifi size={13} /> : <WifiOff size={13} />}
+          <span>{ibkrConnected ? 'IBKR' : 'Sin IBKR'}</span>
         </div>
 
-        {/* Mode toggle */}
         {status && (
           <button
             onClick={handleModeToggle}
@@ -73,16 +73,14 @@ export function Header({ onConfig }: Props) {
           </button>
         )}
 
-        {/* Halt status — solo lectura (la acción de pausar/reanudar vive en la ControlBar) */}
         {status && (
-          <span title={status.halted ? 'Trading pausado' : 'Trading activo'}>
+          <span className="hidden sm:inline" title={status.halted ? 'Trading pausado' : 'Trading activo'}>
             <Badge variant={status.halted ? 'red' : 'gray'}>
               {status.halted ? 'HALTED' : 'ACTIVO'}
             </Badge>
           </span>
         )}
 
-        {/* Scan age — desktop only */}
         {status?.last_scan_at && (
           <span className="hidden md:flex items-center gap-1 text-xs text-gray-500">
             Scan: {fmtAge(status.last_scan_at)}
@@ -93,7 +91,6 @@ export function Header({ onConfig }: Props) {
 
       {/* Right: actions */}
       <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-        {/* WebSocket indicator */}
         <div
           className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-400' : 'bg-gray-600'}`}
           title={wsConnected ? 'WebSocket conectado' : 'WebSocket desconectado'}
@@ -102,7 +99,7 @@ export function Header({ onConfig }: Props) {
         {onConfig && (
           <button
             onClick={onConfig}
-            className="p-1.5 text-gray-500 hover:text-gray-200 hover:bg-gray-800 rounded-lg transition-colors"
+            className="p-1.5 text-gray-500 hover:text-gray-200 hover:bg-surface-2 rounded-lg transition-colors"
             title="Configuración"
           >
             <Settings size={16} />
@@ -111,7 +108,7 @@ export function Header({ onConfig }: Props) {
 
         <button
           onClick={() => { if (window.confirm('¿Cerrar sesión?')) logout() }}
-          className="p-1.5 text-gray-600 hover:text-gray-300 hover:bg-gray-800 rounded-lg transition-colors"
+          className="p-1.5 text-gray-600 hover:text-gray-300 hover:bg-surface-2 rounded-lg transition-colors"
           title="Salir"
         >
           <LogOut size={15} />

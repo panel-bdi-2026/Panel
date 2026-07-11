@@ -4,8 +4,11 @@ import { fetchRules, updateRules, fetchScreenerConfig, updateScreenerConfig } fr
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { useToastStore } from '../ui/Toast'
+import { AutoForm } from './AutoForm'
+import { Code2, SlidersHorizontal } from 'lucide-react'
 
 type Tab = 'rules' | 'screener'
+type Mode = 'form' | 'json'
 
 const SYMBOL_LIST_KEYS = ['symbol_whitelist', 'universe']
 
@@ -53,7 +56,7 @@ function JsonEditor({ initialValue, onChange, onError }: JsonEditorProps) {
       <textarea
         value={text}
         onChange={(e) => handleChange(e.target.value)}
-        className="w-full h-52 sm:h-80 bg-gray-950 border border-gray-700 rounded-lg p-3 text-xs font-mono text-gray-300 focus:outline-none focus:border-brand-500 resize-none"
+        className="w-full h-52 sm:h-80 bg-surface-0 border border-surface-3 rounded-lg p-3 text-xs font-mono text-gray-300 focus:outline-none focus:border-brand-500 resize-none"
         spellCheck={false}
       />
       {localError && <p className="text-red-400 text-xs mt-1">{localError}</p>}
@@ -64,25 +67,25 @@ function JsonEditor({ initialValue, onChange, onError }: JsonEditorProps) {
 function SymbolListSection({ label, symbols }: { label: string; symbols: string[] }) {
   const [expanded, setExpanded] = useState(false)
   return (
-    <div className="border border-gray-800 rounded-lg overflow-hidden">
+    <div className="border border-surface-3 rounded-lg overflow-hidden">
       <button
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 bg-gray-900 hover:bg-gray-800 transition-colors text-left"
+        className="w-full flex items-center justify-between px-3 py-2 bg-surface-2 hover:bg-surface-3/60 transition-colors text-left"
       >
         <span className="text-xs font-medium text-gray-400">{label}</span>
         <div className="flex items-center gap-2">
-          <span className="bg-gray-700 text-gray-300 text-xs px-2 py-0.5 rounded-full">
+          <span className="bg-surface-3 text-gray-300 text-xs px-2 py-0.5 rounded-full">
             {symbols.length} símbolos
           </span>
           <span className="text-gray-600 text-xs">{expanded ? '▲' : '▼'}</span>
         </div>
       </button>
       {expanded && (
-        <div className="px-3 py-2 bg-gray-950 max-h-48 overflow-y-auto">
-          <p className="text-xs text-gray-600 mb-2">Solo lectura — editar en screener.yaml / rules.yaml</p>
+        <div className="px-3 py-2 bg-surface-0 max-h-48 overflow-y-auto">
+          <p className="text-xs text-gray-600 mb-2">Solo lectura — editar en JSON avanzado</p>
           <div className="flex flex-wrap gap-1">
             {symbols.map((s) => (
-              <span key={s} className="text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded font-mono">
+              <span key={s} className="text-xs bg-surface-2 text-gray-400 px-1.5 py-0.5 rounded font-mono">
                 {s}
               </span>
             ))}
@@ -97,6 +100,7 @@ interface Props { open: boolean; onClose: () => void }
 
 export function ConfigModal({ open, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('rules')
+  const [mode, setMode] = useState<Mode>('form')
   const [rulesEdited, setRulesEdited] = useState<Record<string, unknown> | null>(null)
   const [screenerEdited, setScreenerEdited] = useState<Record<string, unknown> | null>(null)
   const [jsonError, setJsonError] = useState<string | null>(null)
@@ -114,8 +118,6 @@ export function ConfigModal({ open, onClose }: Props) {
     enabled: open,
   })
 
-  // Split is based on server data only — never on rulesEdited — so the
-  // JsonEditor key only changes on server refetch, not on every user keystroke.
   const rulesSplit = useMemo(
     () => (rulesData ? splitSymbolLists(rulesData) : null),
     [rulesData],
@@ -163,22 +165,32 @@ export function ConfigModal({ open, onClose }: Props) {
     onClose()
   }
 
-  // Reset edits and JSON error on tab switch
-  useEffect(() => { setJsonError(null) }, [tab])
+  useEffect(() => { setJsonError(null) }, [tab, mode])
 
   // Stable key: changes only when server data changes (forces JsonEditor remount/reset)
   const rulesEditorKey = rulesSplit ? JSON.stringify(rulesSplit.rest) : 'empty'
   const screenerEditorKey = screenerSplit ? JSON.stringify(screenerSplit.rest) : 'empty'
 
+  const activeSplit = tab === 'rules' ? rulesSplit : screenerSplit
+  const activeEdited = tab === 'rules' ? rulesEdited : screenerEdited
+  const setActiveEdited = tab === 'rules' ? setRulesEdited : setScreenerEdited
+  // AutoForm/JsonEditor operan sobre "rest" (edits previos si hay, si no el valor del server)
+  const restValue = (activeEdited ?? activeSplit?.rest ?? {}) as Record<string, unknown>
+
+  const applyRestChange = (rest: Record<string, unknown>) => {
+    setActiveEdited({ ...(activeSplit?.lists ?? {}), ...rest })
+    setJsonError(null)
+  }
+
   return (
     <Modal open={open} onClose={handleClose} title="Configuración" width="max-w-3xl">
-      <div className="flex gap-1 mb-4 bg-gray-800 rounded-lg p-1">
+      <div className="flex gap-1 mb-3 bg-surface-2 rounded-lg p-1">
         {(['rules', 'screener'] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`flex-1 py-1.5 rounded-md text-sm font-medium transition-colors ${
-              tab === t ? 'bg-gray-700 text-gray-100' : 'text-gray-500 hover:text-gray-300'
+              tab === t ? 'bg-surface-3 text-gray-100' : 'text-gray-500 hover:text-gray-300'
             }`}
           >
             {t === 'rules' ? 'Reglas de trading' : 'Screener / Estrategia'}
@@ -186,35 +198,44 @@ export function ConfigModal({ open, onClose }: Props) {
         ))}
       </div>
 
-      {tab === 'rules' && rulesSplit && (
-        <div className="space-y-3">
-          <p className="text-xs text-gray-500">
-            Parámetros de riesgo y ejecución. Los cambios se aplican en el próximo ciclo.
-          </p>
-          <JsonEditor
-            key={rulesEditorKey}
-            initialValue={rulesSplit.rest}
-            onChange={(v) => setRulesEdited({ ...rulesSplit.lists, ...v })}
-            onError={setJsonError}
-          />
-          {Object.entries(rulesSplit.lists).map(([k, v]) => (
-            <SymbolListSection key={k} label={k} symbols={v} />
-          ))}
+      {/* Toggle Formulario | JSON avanzado */}
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-gray-500">
+          {tab === 'rules'
+            ? 'Parámetros de riesgo y ejecución. Los cambios se aplican en el próximo ciclo.'
+            : 'Configuración de la estrategia activa. Algunos cambios requieren reinicio.'}
+        </p>
+        <div className="flex gap-1 bg-surface-2 rounded-lg p-1 shrink-0 ml-2">
+          <button
+            onClick={() => setMode('form')}
+            title="Formulario"
+            className={`p-1.5 rounded-md transition-colors ${mode === 'form' ? 'bg-surface-3 text-gray-100' : 'text-gray-500 hover:text-gray-300'}`}
+          >
+            <SlidersHorizontal size={14} />
+          </button>
+          <button
+            onClick={() => setMode('json')}
+            title="JSON avanzado"
+            className={`p-1.5 rounded-md transition-colors ${mode === 'json' ? 'bg-surface-3 text-gray-100' : 'text-gray-500 hover:text-gray-300'}`}
+          >
+            <Code2 size={14} />
+          </button>
         </div>
-      )}
+      </div>
 
-      {tab === 'screener' && screenerSplit && (
+      {activeSplit && (
         <div className="space-y-3">
-          <p className="text-xs text-gray-500">
-            Configuración de la estrategia activa. Algunos cambios requieren reinicio.
-          </p>
-          <JsonEditor
-            key={screenerEditorKey}
-            initialValue={screenerSplit.rest}
-            onChange={(v) => setScreenerEdited({ ...screenerSplit.lists, ...v })}
-            onError={setJsonError}
-          />
-          {Object.entries(screenerSplit.lists).map(([k, v]) => (
+          {mode === 'form' ? (
+            <AutoForm value={restValue} onChange={applyRestChange} />
+          ) : (
+            <JsonEditor
+              key={tab === 'rules' ? rulesEditorKey : screenerEditorKey}
+              initialValue={restValue}
+              onChange={applyRestChange}
+              onError={setJsonError}
+            />
+          )}
+          {Object.entries(activeSplit.lists).map(([k, v]) => (
             <SymbolListSection key={k} label={k} symbols={v} />
           ))}
         </div>

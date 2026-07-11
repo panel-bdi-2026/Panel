@@ -1,16 +1,20 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchSignals, fetchLivePrices } from '../../api/signals'
+import { fetchStatus } from '../../api/account'
+import { Skeleton } from '../ui/Skeleton'
+import { EmptyState } from '../ui/EmptyState'
 import type { Signal } from '../../api/types'
 
 const STRATEGIES = [
-  { key: 'opportunistic' as const, label: 'Opor.' },
-  { key: 'momentum'      as const, label: 'Mom.' },
-  { key: 'long_term'     as const, label: 'LT'   },
-  { key: 'dividend'      as const, label: 'Div.' },
+  { key: 'opportunistic' as const, label: 'Oportunista', short: 'Opor.' },
+  { key: 'momentum'      as const, label: 'Momentum',    short: 'Mom.'  },
+  { key: 'long_term'     as const, label: 'Largo plazo', short: 'LT'    },
+  { key: 'dividend'      as const, label: 'Dividendo',   short: 'Div.'  },
 ]
+type StrategyKey = typeof STRATEGIES[number]['key']
 
-function MiniBar({ value }: { value: number | null }) {
+function MiniBar({ value, emphasized = false }: { value: number | null; emphasized?: boolean }) {
   const v = value ?? 0
   const color =
     v >= 75 ? 'bg-green-500' :
@@ -18,10 +22,12 @@ function MiniBar({ value }: { value: number | null }) {
     v >= 30 ? 'bg-yellow-500' : 'bg-gray-700'
   return (
     <div className="flex items-center gap-1.5 min-w-0">
-      <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+      <div className={`flex-1 bg-gray-800 rounded-full overflow-hidden ${emphasized ? 'h-2' : 'h-1.5'}`}>
         <div className={`h-full ${color} rounded-full`} style={{ width: `${v}%` }} />
       </div>
-      <span className="text-[10px] tabular-nums text-gray-500 w-7 text-right">{v.toFixed(0)}</span>
+      <span className={`text-[10px] tabular-nums text-gray-500 w-7 text-right ${emphasized ? 'font-semibold text-gray-300' : ''}`}>
+        {v.toFixed(0)}
+      </span>
     </div>
   )
 }
@@ -36,6 +42,11 @@ export function SignalsTable({ onOrder }: Props) {
     queryFn: fetchSignals,
     refetchInterval: 30000,
   })
+  const { data: status } = useQuery({
+    queryKey: ['status'],
+    queryFn: fetchStatus,
+    refetchInterval: 5000,
+  })
 
   const symbolList = signals?.map((s) => s.symbol) ?? []
 
@@ -47,46 +58,80 @@ export function SignalsTable({ onOrder }: Props) {
   })
 
   const [selected, setSelected] = useState<Signal | null>(null)
+  const [strategy, setStrategy] = useState<StrategyKey | 'all'>('all')
+
+  const sorted = useMemo(() => {
+    if (!signals) return []
+    if (strategy === 'all') {
+      return [...signals].sort((a, b) => Math.max(...Object.values(b.scores)) - Math.max(...Object.values(a.scores)))
+    }
+    return [...signals].sort((a, b) => (b.scores[strategy] ?? 0) - (a.scores[strategy] ?? 0))
+  }, [signals, strategy])
 
   if (isLoading) {
-    return (
-      <div className="flex flex-col gap-2 animate-pulse">
-        {[...Array(5)].map((_, i) => (
-          <div key={i} className="h-10 bg-gray-800 rounded-lg" />
-        ))}
-      </div>
-    )
+    return <Skeleton className="h-10 rounded-lg" count={5} />
   }
 
   if (!signals?.length) {
-    return (
-      <div className="flex flex-col items-center justify-center py-16 text-center">
-        <p className="text-2xl mb-2">📡</p>
-        <p className="text-gray-400 font-medium">Sin señales activas</p>
-        <p className="text-gray-600 text-sm mt-1">El escáner no encontró candidatos con el filtro actual</p>
-      </div>
-    )
+    return <EmptyState icon="📡" title="Sin señales activas" subtitle="El escáner no encontró candidatos con el filtro actual" />
   }
+
+  const liveCount = status?.live_hot_count ?? 0
+  const liveCap = status?.live_hot_cap ?? 0
 
   return (
     <>
+      {/* Selector de estrategia */}
+      <div className="flex items-center gap-1.5 mb-3 overflow-x-auto scrollbar-none">
+        <button
+          onClick={() => setStrategy('all')}
+          className={`px-3 py-1.5 rounded-full text-xs font-medium shrink-0 transition-colors border ${
+            strategy === 'all'
+              ? 'bg-brand-600 border-brand-600 text-white'
+              : 'border-surface-3 text-gray-400 hover:bg-surface-2'
+          }`}
+        >Todas</button>
+        {STRATEGIES.map((s) => (
+          <button
+            key={s.key}
+            onClick={() => setStrategy(s.key)}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium shrink-0 transition-colors border ${
+              strategy === s.key
+                ? 'bg-brand-600 border-brand-600 text-white'
+                : 'border-surface-3 text-gray-400 hover:bg-surface-2'
+            }`}
+          >{s.label}</button>
+        ))}
+      </div>
+
+      {/* Contexto de precios live */}
+      <div className="flex items-center gap-1.5 mb-2 text-[11px] text-gray-500">
+        <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+        <span>{liveCount}/{liveCap} símbolos con streaming en vivo (los de mayor score) — el resto muestra el precio del último scan</span>
+      </div>
+
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-xs text-gray-500 border-b border-gray-800">
+            <tr className="text-xs text-gray-500 border-b border-surface-3">
               <th className="text-left pb-2.5 pr-4">Símbolo</th>
               <th className="text-right pb-2.5 pr-4 hidden md:table-cell">Precio</th>
-              {STRATEGIES.map((s) => (
-                <th key={s.key} className="pb-2.5 pr-3 text-left w-24 hidden sm:table-cell">
-                  {s.label}
+              {strategy === 'all' ? (
+                STRATEGIES.map((s) => (
+                  <th key={s.key} className="pb-2.5 pr-3 text-left w-24 hidden sm:table-cell">{s.short}</th>
+                ))
+              ) : (
+                <th className="pb-2.5 pr-3 text-left w-32 hidden sm:table-cell">
+                  {STRATEGIES.find((s) => s.key === strategy)?.label}
                 </th>
-              ))}
+              )}
               <th className="pb-2.5 text-left w-24 sm:hidden">Score</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800/60">
-            {signals.map((s) => {
+            {sorted.map((s) => {
               const lp = livePrices?.[s.symbol]
+              const isLive = !!lp
               const isActive = selected?.symbol === s.symbol
               const bestScore = Math.max(...Object.values(s.scores))
               return (
@@ -106,23 +151,27 @@ export function SignalsTable({ onOrder }: Props) {
                     </div>
                   </td>
                   <td className="py-2.5 pr-4 text-right text-gray-300 tabular-nums hidden md:table-cell">
-                    {lp
+                    {isLive
                       ? <span className="flex items-center justify-end gap-1">
                           ${lp.last_price.toFixed(2)}
-                          <span className="w-2 h-2 rounded-full bg-green-500 shrink-0 animate-pulse" title="live" />
+                          <span className="w-2 h-2 rounded-full bg-green-500 shrink-0 animate-pulse" title="Precio en vivo (streaming IBKR)" />
                         </span>
-                      : <span className="text-gray-600">—</span>
+                      : <span className="text-gray-600" title="Sin streaming en vivo — fuera del top con datos en tiempo real">—</span>
                     }
                   </td>
-                  {/* Desktop: individual strategy bars */}
-                  {STRATEGIES.map((st) => (
-                    <td key={st.key} className="py-2.5 pr-3 hidden sm:table-cell">
-                      <MiniBar value={s.scores[st.key]} />
+                  {strategy === 'all' ? (
+                    STRATEGIES.map((st) => (
+                      <td key={st.key} className="py-2.5 pr-3 hidden sm:table-cell">
+                        <MiniBar value={s.scores[st.key]} />
+                      </td>
+                    ))
+                  ) : (
+                    <td className="py-2.5 pr-3 hidden sm:table-cell">
+                      <MiniBar value={s.scores[strategy]} emphasized />
                     </td>
-                  ))}
-                  {/* Mobile: best score only */}
+                  )}
                   <td className="py-2.5 sm:hidden">
-                    <MiniBar value={bestScore} />
+                    <MiniBar value={strategy === 'all' ? bestScore : s.scores[strategy]} />
                   </td>
                 </tr>
               )
@@ -130,7 +179,7 @@ export function SignalsTable({ onOrder }: Props) {
           </tbody>
         </table>
         <p className="text-xs text-gray-600 mt-3 text-right">
-          {signals.length} señal{signals.length !== 1 ? 'es' : ''} · precios live c/5s
+          {signals.length} señal{signals.length !== 1 ? 'es' : ''}
         </p>
       </div>
 
@@ -170,7 +219,7 @@ export function SignalsTable({ onOrder }: Props) {
                 return (
                   <div key={st.key}>
                     <div className="flex justify-between text-xs mb-1">
-                      <span className="text-gray-400 capitalize">{st.key.replace('_', ' ')}</span>
+                      <span className="text-gray-400">{st.label}</span>
                       <span className={`font-semibold ${
                         sc >= 75 ? 'text-green-400' :
                         sc >= 50 ? 'text-blue-400' :

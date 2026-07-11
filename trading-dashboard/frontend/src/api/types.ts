@@ -109,9 +109,17 @@ export interface AppStatus {
   connected: boolean
   mode: 'paper' | 'live'
   halted: boolean
-  uptime: number
-  last_scan_at: string | null
-  scan_stale: boolean
+  // uptime/last_scan_at/scan_stale no vienen de /api/status (viven en
+  // /api/health) — se dejan opcionales para no romper si algún caller viejo
+  // los espera acá.
+  uptime?: number
+  last_scan_at?: string | null
+  scan_stale?: boolean
+  market_scan_busy?: boolean
+  live_radar_enabled?: boolean
+  live_hot_count?: number
+  live_hot_cap?: number
+  live_radar_strategy_filter?: string | null
 }
 
 // ── Audit ─────────────────────────────────────────────────────────────────────

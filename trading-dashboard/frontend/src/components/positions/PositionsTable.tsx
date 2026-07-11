@@ -6,7 +6,10 @@ import { fmtUsd, fmtPct } from '../../lib/format'
 import { Skeleton } from '../ui/Skeleton'
 import { EmptyState } from '../ui/EmptyState'
 import { useFlashOnChange } from '../../hooks/useFlashOnChange'
-import { ArrowUp, ArrowDown } from 'lucide-react'
+import { ArrowUp, ArrowDown, Info } from 'lucide-react'
+
+const LONG_HELP  = 'LONG: tenés la acción comprada — ganás si el precio sube.'
+const SHORT_HELP = 'SHORT: vendida en corto (pedida prestada) — ganás si el precio baja.'
 
 interface Row {
   symbol: string
@@ -41,9 +44,12 @@ function MobileCard({ r }: { r: Row }) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="font-bold text-gray-100 text-base">{r.symbol}</span>
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-            r.quantity >= 0 ? 'bg-profit/15 text-profit' : 'bg-loss/15 text-loss'
-          }`}>{r.quantity >= 0 ? 'LONG' : 'SHORT'}</span>
+          <span
+            title={r.quantity >= 0 ? LONG_HELP : SHORT_HELP}
+            className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+              r.quantity >= 0 ? 'bg-profit/15 text-profit' : 'bg-loss/15 text-loss'
+            }`}
+          >{r.quantity >= 0 ? 'LONG' : 'SHORT'}</span>
         </div>
         <span className={`font-semibold text-sm nums ${pnlClass(r.livePnl)}`}>
           {fmtUsd(r.livePnl)} <span className="text-xs">({fmtPct(r.livePnlPct)})</span>
@@ -108,6 +114,13 @@ export function PositionsTable() {
 
   return (
     <>
+      {/* Leyenda LONG/SHORT — significado no es obvio para todos los usuarios */}
+      <div className="flex items-center gap-1.5 text-[11px] text-gray-500 mb-2">
+        <Info size={12} className="shrink-0" />
+        <span><span className="text-profit font-medium">LONG</span> = comprada, gana si sube ·{' '}
+          <span className="text-loss font-medium">SHORT</span> = vendida en corto, gana si baja</span>
+      </div>
+
       {/* Móvil: tarjetas tintadas */}
       <div className="sm:hidden space-y-2">
         {sorted.map((r) => <MobileCard key={r.symbol} r={r} />)}
@@ -132,7 +145,10 @@ export function PositionsTable() {
               <tr key={r.symbol} className="hover:bg-surface-2/50">
                 <td className="py-2 pr-4">
                   <span className="font-semibold text-gray-100">{r.symbol}</span>
-                  <span className={`ml-2 text-[10px] font-semibold ${r.quantity >= 0 ? 'text-profit' : 'text-loss'}`}>
+                  <span
+                    title={r.quantity >= 0 ? LONG_HELP : SHORT_HELP}
+                    className={`ml-2 text-[10px] font-semibold ${r.quantity >= 0 ? 'text-profit' : 'text-loss'}`}
+                  >
                     {r.quantity >= 0 ? 'LONG' : 'SHORT'}
                   </span>
                 </td>
