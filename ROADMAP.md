@@ -150,6 +150,16 @@ automáticos. Un crash sin backup borra el estado de todos los fondos.
 4. **Health check + alertas**: endpoint `GET /api/health` que verifique conexión IBKR,
    estado del scan, último heartbeat. Script externo (cron o Uptime Robot) que alerte
    vía Telegram si el health check falla.
+5. **Reconexión automática a IBKR** *(pendiente — prioridad alta)*: el backend intenta
+   conectar a IB Gateway una sola vez al arrancar; si falla (ej. durante el reinicio nocturno
+   de IBKR ~23:45 ET), queda desconectado permanentemente hasta que se reinicie el servicio a mano.
+   Fix: un loop en background que cada 60s verifique `ib.isConnected()` y llame a `ib.connectAsync()`
+   si no hay conexión. Beneficios: se recupera sola del reinicio nocturno, de caídas de red
+   transitorias y del restart semanal con 2FA sin necesidad de reiniciar el servicio.
+   > ⚠️ **Interim (2026-07-11)**: se agregó `POST /api/reconnect` + botón en el
+   > dashboard (ver 3.1.1) como fix manual mientras esto sigue pendiente — resuelve
+   > el "no puedo operar desde el celular" pero no la causa raíz (sigue haciendo
+   > falta accionar manualmente en vez de que el sistema se recupere solo).
 
 **Esfuerzo estimado con Claude:** 3-4 días.
 
@@ -286,18 +296,68 @@ trading-dashboard/frontend/src/
 
 #### Plan de ejecución
 
-1. [ ] Setup: Vite + React + TS + Tailwind + dependencias
-2. [ ] Auth + Shell: login overlay, layout principal, header, sidebar
-3. [ ] Account + Status: resumen de cuenta, indicadores IBKR
-4. [ ] Fondos + EquityChart (sección más compleja)
-5. [ ] Señales: tabla, live prices, filtros, detail panel
-6. [ ] Órdenes pendientes + Posiciones
-7. [ ] Audit + Config modal
-8. [ ] Backtest panel
+1. [x] Setup: Vite + React + TS + Tailwind + dependencias
+2. [x] Auth + Shell: login overlay, layout principal, header, sidebar
+3. [x] Account + Status: resumen de cuenta, indicadores IBKR
+4. [x] Fondos + EquityChart (sección más compleja)
+5. [x] Señales: tabla, live prices, filtros, detail panel
+6. [x] Órdenes pendientes + Posiciones
+7. [x] Audit + Config modal
+8. [x] Backtest panel
 9. [ ] Notificaciones push + polish responsive
-10. [ ] Conectar backend, tests manuales, deploy
+10. [x] Conectar backend, tests manuales, deploy
 
 **Estimado:** 2-3 días de trabajo en sesiones.
+
+#### 3.1.1 Pulido UI/UX post-migración *(en curso, 2026-07-11)*
+
+Con la SPA React ya en producción y con paridad funcional completa, se inició una
+segunda ronda enfocada en calidad visual/UX de nivel "app profesional" (referencia:
+IBKR GlobalTrader mobile), documentada en detalle en
+`trading-dashboard/frontend/UI_UX_PLAN.md` (visión + referencias) y
+`UI_UX_IMPLEMENTATION_PLAN.md` (plan de ejecución fase por fase, con contrato de
+preservación de features: fondos, radar, backtest, órdenes, posiciones, auditoría).
+
+**Motivador del arranque:** incidente real — IBKR se desconectó, el trading quedó
+pausado, y desde el celular no había forma de recuperar el sistema. La investigación
+encontró que el botón de pausar/reanudar estaba roto (`POST /api/halt` exigía un
+parámetro que el frontend nunca mandaba → 422 permanente) y que no existía ningún
+control para reconectar IBKR desde el UI.
+
+**Completado:**
+- **Fase A — Controles críticos**: fix del bug de halt, endpoint nuevo
+  `POST /api/reconnect`, `ControlBar` con pills persistentes (pausar/reanudar,
+  reconectar IBKR, nueva orden) siempre visibles en móvil, `HealthBanner`
+  accionable cuando el sistema está degradado.
+- **Fase B — Sistema de diseño**: tokens de superficie con elevación
+  (`surface-0..3`) y color semántico (`profit`/`loss`/`warn`) en Tailwind,
+  primitivos reutilizables (`Card`, `Stat`, `MetricDelta`, `Sparkline`,
+  `Skeleton`, `EmptyState`, `Toggle`), `tabular-nums` en cifras financieras.
+- **Fase C (parcial) — Datos/visualización**: hero de cuenta rediseñado (número
+  protagonista + toggle Valor/Rendimiento, patrón IBKR), posiciones con columnas
+  ordenables y tarjetas tintadas en móvil + leyenda LONG/SHORT, órdenes en
+  lenguaje natural con cantidad/precio/total explícitos, fondos con sparkline de
+  P&L acumulado real, radar con selector de estrategia e indicador de streaming
+  en vivo vs. precio de último scan.
+- **Fase D — Móvil**: bottom tab bar de 5 secciones (reemplaza el strip lateral
+  de 12px).
+- **Fase E (parcial) — Micro-interacciones**: flash verde/rojo en precios/P&L al
+  tickear, skeletons, empty states diseñados.
+- **`ConfigModal`**: reemplazado el editor de JSON crudo por un formulario
+  genérico (`AutoForm`) con toggles para booleanos e inputs numéricos con unidad
+  inferida (%, $, días); JSON avanzado queda como modo alternativo.
+- **Densidad desktop**: ancho máximo (`max-w-6xl`) en el contenido principal —
+  antes las tablas de pocas columnas se estiraban edge-to-edge en pantallas
+  anchas.
+- **Bug de calibración encontrado y limpiado**: 10 órdenes pendientes huérfanas
+  (9-10 días, `fund_id: None`) del bug ya retirado que dimensionaba órdenes
+  contra el equity de toda la cuenta en vez del fondo — rechazadas.
+
+**Pendiente (próxima sesión):**
+- EquityChart con gradiente + selector de rango (1S/MTD/1M/3M/YTD/1A/Todo)
+- Donut de asignación de capital por fondo
+- Pull-to-refresh en móvil
+- Notificaciones push + resto del polish responsive (ítem 9 de la lista original)
 
 ### 3.2 Factores adicionales
 
@@ -351,6 +411,7 @@ y comparar el comportamiento de ambos en paralelo con capital real pequeño.
 - [x] Arreglar sudoers de claude-rc como root
 - [x] Implementar backups automáticos de `funds.json`, `screener.yaml`, `audit.db`
 - [x] GitHub Actions CI/CD: tests en cada push, deploy automático en push (runner activo)
+- [ ] Reconexión automática a IBKR (loop cada 60s, sin restart manual)
 - [ ] Health check endpoint + alertas Telegram/email
 
 ---

@@ -49,10 +49,11 @@ BACKTEST_YEARS  = 9   # warmup para indicadores
 # Parámetros para fondo de $11k con ~99% deployment:
 # Avg concurrent positions ≈ 11 (stop-losses cortan rápido, hold real < 20d)
 # → max_pos = 99%/11 ≈ 9% → $990/posición; IBKR enforcea el cash en live
-RISK_PCT      = 2.0       # risk_per_trade_pct (sube de 1% → 2%)
-MAX_POS_PCT   = 9.0       # max_position_pct_of_equity → 11 × 9% ≈ 99%
-MAX_ORDER_USD = 5_000.0   # no binding (9% × $11k = $990 << $5k)
-ASSUMED_CAPITAL = 11_000.0
+RISK_PCT            = 2.0       # risk_per_trade_pct
+MAX_POS_PCT         = 9.0       # max_position_pct_of_equity
+MAX_ORDER_USD       = 1_500.0   # max_order_value_usd (producción actual)
+COOLDOWN_DAYS       = 5         # stop_loss_cooldown_days (producción actual)
+ASSUMED_CAPITAL     = 11_000.0
 
 
 def _build_cfg() -> ScreenerConfig:
@@ -62,6 +63,7 @@ def _build_cfg() -> ScreenerConfig:
     cfg.opportunistic.macd_crossover_lookback_days = MACD_DAYS
     cfg.opportunistic.rsi_max = RSI_MAX
     cfg.opportunistic.backtest_cross_sectional_gates = True
+    cfg.stop_loss_cooldown_days = COOLDOWN_DAYS
     return cfg
 
 
@@ -69,9 +71,9 @@ def _compute(trades, bench_bars, marks):
     if not trades:
         return None
     rules = RulesConfig()
-    rules.risk_per_trade_pct = RISK_PCT                # 1% (producción)
-    rules.max_position_pct_of_equity = MAX_POS_PCT     # 10% (producción)
-    rules.max_order_value_usd = MAX_ORDER_USD           # $5k (producción, binding)
+    rules.risk_per_trade_pct = RISK_PCT
+    rules.max_position_pct_of_equity = MAX_POS_PCT
+    rules.max_order_value_usd = MAX_ORDER_USD
     try:
         return _compute_summary_stats(
             trades, CONCURRENT_CAP, bench_bars, marks,
@@ -99,7 +101,7 @@ def main():
     print(f"  BACKTEST OPORTUNISTA — macd={MACD_DAYS}d  rsi_max={RSI_MAX:.0f}")
     print(f"  Período: {PERIOD_START} → {PERIOD_END}  (3 años out-of-sample)")
     print(f"  Gates cross-seccionales | cap_concurrent={CONCURRENT_CAP}")
-    print(f"  Capital: ${ASSUMED_CAPITAL:,.0f} | risk={RISK_PCT}%/trade | max_pos={MAX_POS_PCT:.0f}% | max_order=${MAX_ORDER_USD:,.0f}")
+    print(f"  Capital: ${ASSUMED_CAPITAL:,.0f} | risk={RISK_PCT}%/trade | max_pos={MAX_POS_PCT:.0f}% | max_order=${MAX_ORDER_USD:,.0f} | cooldown={COOLDOWN_DAYS}d")
     print(f"  → posición típica: ~${ASSUMED_CAPITAL*MAX_POS_PCT/100:,.0f} c/u | binding: max_pos")
     print(f"{'='*65}\n")
 
