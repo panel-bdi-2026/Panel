@@ -1,5 +1,7 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { RefreshCw } from 'lucide-react'
+import { usePullToRefresh } from '../../hooks/usePullToRefresh'
 import { Header } from './Header'
 import { Sidebar, type Section } from './Sidebar'
 import { fetchPendingOrders } from '../../api/orders'
@@ -9,6 +11,7 @@ import { ToastContainer } from '../ui/Toast'
 import { AccountSummaryPanel } from '../account/AccountSummary'
 import { FundList } from '../funds/FundList'
 import { EquityChart } from '../funds/EquityChart'
+import { AllocationDonut } from '../funds/AllocationDonut'
 import { SignalsTable } from '../signals/SignalsTable'
 import { PendingOrders } from '../orders/PendingOrders'
 import { NewOrderForm } from '../orders/NewOrderForm'
@@ -23,12 +26,14 @@ import { Button } from '../ui/Button'
 export function Shell() {
   useWebSocket()
   useNotifications()
+  const qc = useQueryClient()
 
   const [section, setSection] = useState<Section>('funds')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true)
   const [showNewOrder, setShowNewOrder] = useState(false)
   const [newOrderSymbol, setNewOrderSymbol] = useState<string | undefined>()
   const [showConfig, setShowConfig] = useState(false)
+  const mainRef = useRef<HTMLElement>(null)
 
   const { data: orders } = useQuery({
     queryKey: ['orders', 'pending'],
@@ -42,6 +47,11 @@ export function Shell() {
     setNewOrderSymbol(symbol)
     setShowNewOrder(true)
   }
+
+  // Pull-to-refresh (móvil): refresca todo lo que ve el usuario en este momento.
+  const { pull, refreshing, threshold } = usePullToRefresh(mainRef, () =>
+    qc.invalidateQueries()
+  )
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-950">
@@ -60,7 +70,20 @@ export function Shell() {
         <HealthBanner />
         <ControlBar onNewOrder={() => openOrder()} />
         <AccountSummaryPanel />
-        <main className="flex-1 overflow-auto p-3 sm:p-4 pb-20 sm:pb-4">
+
+        {/* Indicador de pull-to-refresh (solo móvil, aparece al arrastrar) */}
+        <div
+          className="sm:hidden flex items-center justify-center overflow-hidden transition-[height] shrink-0"
+          style={{ height: refreshing ? 36 : pull }}
+        >
+          <RefreshCw
+            size={16}
+            className={`text-gray-500 ${refreshing ? 'animate-spin' : ''}`}
+            style={!refreshing ? { transform: `rotate(${(pull / threshold) * 360}deg)`, opacity: Math.min(pull / threshold, 1) } : undefined}
+          />
+        </div>
+
+        <main ref={mainRef} className="flex-1 overflow-auto p-3 sm:p-4 pb-20 sm:pb-4">
           {/* Ancho máximo en pantallas anchas — sin esto, tablas de pocas
               columnas (Posiciones, Órdenes) se estiran edge-to-edge y dejan
               huecos enormes entre columnas en laptops/desktop. */}
@@ -78,6 +101,7 @@ export function Shell() {
             {section === 'funds' && (
               <>
                 <EquityChart />
+                <AllocationDonut />
                 <FundList />
               </>
             )}

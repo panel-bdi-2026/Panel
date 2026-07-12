@@ -2,7 +2,8 @@ import { useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   ResponsiveContainer,
-  LineChart,
+  ComposedChart,
+  Area,
   Line,
   XAxis,
   YAxis,
@@ -13,15 +14,10 @@ import {
 } from 'recharts'
 import { fetchRoiHistory } from '../../api/funds'
 
-type Range = '5D' | '1M' | '3M' | '1Y' | 'All'
+// Nomenclatura de rangos calcada del IBKR GlobalTrader.
+type Range = '1S' | 'MTD' | '1M' | '3M' | 'YTD' | '1A' | 'Todo'
 
-const RANGES: { label: Range; days: number | null }[] = [
-  { label: '5D',  days: 5   },
-  { label: '1M',  days: 30  },
-  { label: '3M',  days: 90  },
-  { label: '1Y',  days: 365 },
-  { label: 'All', days: null },
-]
+const RANGES: Range[] = ['1S', 'MTD', '1M', '3M', 'YTD', '1A', 'Todo']
 
 function fmt(v: number) {
   return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
@@ -49,14 +45,14 @@ function CustomTooltip({ active, payload, label }: TooltipProps) {
 
 function RangeSelector({ value, onChange }: { value: Range; onChange: (r: Range) => void }) {
   return (
-    <div className="flex gap-0.5 bg-gray-800 rounded-md p-0.5">
-      {RANGES.map(({ label }) => (
+    <div className="flex gap-0.5 bg-surface-2 rounded-md p-0.5 overflow-x-auto scrollbar-none">
+      {RANGES.map((label) => (
         <button
           key={label}
           onClick={() => onChange(label)}
-          className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+          className={`px-2 py-0.5 rounded text-xs font-medium transition-colors shrink-0 ${
             value === label
-              ? 'bg-gray-600 text-gray-100'
+              ? 'bg-surface-3 text-gray-100'
               : 'text-gray-500 hover:text-gray-300'
           }`}
         >
@@ -69,13 +65,25 @@ function RangeSelector({ value, onChange }: { value: Range; onChange: (r: Range)
 
 type ChartPoint = Record<string, string | number>
 
+// A diferencia de las demás (basadas en "hace N días"), MTD/YTD son de
+// calendario: desde el 1° del mes / del año actual.
+function rangeCutoff(range: Range): string | null {
+  const now = new Date()
+  switch (range) {
+    case '1S': { const d = new Date(now); d.setDate(d.getDate() - 7);  return d.toISOString().slice(0, 10) }
+    case '1M': { const d = new Date(now); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10) }
+    case '3M': { const d = new Date(now); d.setDate(d.getDate() - 90); return d.toISOString().slice(0, 10) }
+    case '1A': { const d = new Date(now); d.setDate(d.getDate() - 365); return d.toISOString().slice(0, 10) }
+    case 'MTD': return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10)
+    case 'YTD': return new Date(now.getFullYear(), 0, 1).toISOString().slice(0, 10)
+    case 'Todo': return null
+  }
+}
+
 function filterByRange(points: ChartPoint[], range: Range): ChartPoint[] {
-  const days = RANGES.find((r) => r.label === range)?.days
-  if (!days || points.length === 0) return points
-  const cutoff = new Date()
-  cutoff.setDate(cutoff.getDate() - days)
-  const cutoffStr = cutoff.toISOString().slice(0, 10)
-  return points.filter((p) => (p['date'] as string) >= cutoffStr)
+  const cutoff = rangeCutoff(range)
+  if (!cutoff || points.length === 0) return points
+  return points.filter((p) => (p['date'] as string) >= cutoff)
 }
 
 // Re-bases all numeric series so the first visible point = 0%
@@ -97,14 +105,17 @@ function rebase(points: ChartPoint[], keys: string[]): ChartPoint[] {
   })
 }
 
-const FUND_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4']
+// Exportada para que otros gráficos de fondos (ej. el donut de asignación)
+// usen la misma paleta y el color de un fondo sea consistente entre vistas.
+export const FUND_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4']
+const GRADIENT_ID = 'equityGradient'
 
 interface Props {
   fundId?: string
 }
 
 export function EquityChart({ fundId }: Props) {
-  const [range, setRange] = useState<Range>('All')
+  const [range, setRange] = useState<Range>('Todo')
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['roi-history'],
@@ -164,6 +175,16 @@ export function EquityChart({ fundId }: Props) {
     )
   }
 
+  // Gradiente compartido — verde si termina en positivo, rojo si negativo
+  const GradientDefs = ({ positive }: { positive: boolean }) => (
+    <defs>
+      <linearGradient id={GRADIENT_ID} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="5%" stopColor={positive ? '#22c55e' : '#ef4444'} stopOpacity={0.35} />
+        <stop offset="95%" stopColor={positive ? '#22c55e' : '#ef4444'} stopOpacity={0} />
+      </linearGradient>
+    </defs>
+  )
+
   // --- Per-fund chart ---
   if (fundId) {
     if (!fundPoints) {
@@ -175,6 +196,7 @@ export function EquityChart({ fundId }: Props) {
       )
     }
     const { fund, points } = fundPoints
+    const lastVal = (points.at(-1)?.[fund.name] ?? 0) as number
     return (
       <div className="space-y-2">
         <div className="flex justify-end">
@@ -182,15 +204,17 @@ export function EquityChart({ fundId }: Props) {
         </div>
         <div className="h-48">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={points} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+            <ComposedChart data={points} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+              <GradientDefs positive={lastVal >= 0} />
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
               <XAxis dataKey="date" tick={{ fill: '#6b7280', fontSize: 10 }} tickLine={false} interval="preserveStartEnd" />
               <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} tickLine={false} tickFormatter={fmt} width={52} />
               <Tooltip content={<CustomTooltip />} />
               <ReferenceLine y={0} stroke="#374151" />
-              <Line type="monotone" dataKey={fund.name} stroke="#3b82f6" dot={false} strokeWidth={2} />
+              <Area type="monotone" dataKey={fund.name} stroke="none" fill={`url(#${GRADIENT_ID})`} isAnimationActive={false} />
+              <Line type="monotone" dataKey={fund.name} stroke={lastVal >= 0 ? '#22c55e' : '#ef4444'} dot={false} strokeWidth={2} />
               <Line type="monotone" dataKey="SPY" stroke="#6b7280" dot={false} strokeWidth={1} strokeDasharray="4 2" />
-            </LineChart>
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
       </div>
@@ -204,8 +228,7 @@ export function EquityChart({ fundId }: Props) {
   const lastBench = points.length ? ((lastPoint['SPY'] ?? 0) as number) : 0
   const alpha = lastPortfolio - lastBench
 
-  // For "All" range show absolute numbers; for filtered ranges show rebased delta
-  const rangeLabel = range === 'All' ? 'total' : `en ${range}`
+  const rangeLabel = range === 'Todo' ? 'total' : `en ${range}`
 
   return (
     <div className="space-y-3">
@@ -213,17 +236,17 @@ export function EquityChart({ fundId }: Props) {
         <div className="flex items-center gap-6 text-sm">
           <div>
             <span className="text-gray-500 text-xs">Portfolio</span>
-            <span className={`ml-2 font-semibold ${lastPortfolio >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            <span className={`ml-2 font-semibold nums ${lastPortfolio >= 0 ? 'text-profit' : 'text-loss'}`}>
               {fmt(lastPortfolio)}
             </span>
           </div>
           <div>
             <span className="text-gray-500 text-xs">SPY</span>
-            <span className="ml-2 text-gray-400 font-medium">{fmt(lastBench)}</span>
+            <span className="ml-2 text-gray-400 font-medium nums">{fmt(lastBench)}</span>
           </div>
           <div>
             <span className="text-gray-500 text-xs">Alpha {rangeLabel}</span>
-            <span className={`ml-2 font-semibold ${alpha >= 0 ? 'text-blue-400' : 'text-red-400'}`}>
+            <span className={`ml-2 font-semibold nums ${alpha >= 0 ? 'text-blue-400' : 'text-loss'}`}>
               {fmt(alpha)}
             </span>
           </div>
@@ -233,14 +256,16 @@ export function EquityChart({ fundId }: Props) {
 
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={points} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+          <ComposedChart data={points} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+            <GradientDefs positive={lastPortfolio >= 0} />
             <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
             <XAxis dataKey="date" tick={{ fill: '#6b7280', fontSize: 10 }} tickLine={false} interval="preserveStartEnd" />
             <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} tickLine={false} tickFormatter={fmt} width={52} />
             <Tooltip content={<CustomTooltip />} />
             <Legend wrapperStyle={{ fontSize: '11px', color: '#9ca3af' }} />
             <ReferenceLine y={0} stroke="#374151" />
-            <Line type="monotone" dataKey="Portfolio" stroke="#10b981" dot={false} strokeWidth={2.5} />
+            <Area type="monotone" dataKey="Portfolio" stroke="none" fill={`url(#${GRADIENT_ID})`} isAnimationActive={false} legendType="none" />
+            <Line type="monotone" dataKey="Portfolio" stroke={lastPortfolio >= 0 ? '#22c55e' : '#ef4444'} dot={false} strokeWidth={2.5} />
             <Line type="monotone" dataKey="SPY" stroke="#6b7280" dot={false} strokeWidth={1.5} strokeDasharray="4 2" />
             {data.per_fund?.map((f, i) => (
               <Line
@@ -253,7 +278,7 @@ export function EquityChart({ fundId }: Props) {
                 strokeOpacity={0.6}
               />
             ))}
-          </LineChart>
+          </ComposedChart>
         </ResponsiveContainer>
       </div>
     </div>
