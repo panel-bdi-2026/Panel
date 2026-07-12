@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchStatus, setHalt, reconnectIbkr } from '../../api/account'
 import { fetchHealth } from '../../api/health'
 import { useToastStore } from '../ui/Toast'
-import { Play, Pause, Plug, Plus, Loader2 } from 'lucide-react'
+import { Play, Pause, Plug, Wifi, Plus, Loader2 } from 'lucide-react'
 
 interface Props {
   onNewOrder: () => void
@@ -94,20 +94,22 @@ export function ControlBar({ onNewOrder }: Props) {
         {status.halted ? 'Reanudar' : 'Pausar'}
       </button>
 
-      {/* Reconectar IBKR — destacado si está desconectado */}
+      {/* Conectado: estado en verde (clickeable igual, por si se quiere forzar
+          una reconexión). Desconectado: acción destacada en rojo. */}
       <button
         onClick={() => reconnectMutation.mutate()}
         disabled={reconnectMutation.isPending}
+        title={status.connected ? 'Conectado — click para forzar reconexión' : 'Reconectar IBKR'}
         className={`${pill} ${
           !status.connected
             ? 'border-loss/50 text-loss bg-loss/10 hover:bg-loss/20'
-            : 'border-surface-3 text-gray-400 hover:bg-surface-2'
+            : 'border-profit/30 text-profit bg-profit/10 hover:bg-profit/20'
         }`}
       >
         {reconnectMutation.isPending
           ? <Loader2 size={13} className="animate-spin" />
-          : <Plug size={13} />}
-        {!status.connected ? 'Reconectar IBKR' : 'Reconectar'}
+          : status.connected ? <Wifi size={13} /> : <Plug size={13} />}
+        {!status.connected ? 'Reconectar IBKR' : 'IBKR Conectado'}
       </button>
 
       {/* Nueva orden */}
