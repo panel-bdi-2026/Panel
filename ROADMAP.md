@@ -333,14 +333,16 @@ control para reconectar IBKR desde el UI.
   (`surface-0..3`) y color semántico (`profit`/`loss`/`warn`) en Tailwind,
   primitivos reutilizables (`Card`, `Stat`, `MetricDelta`, `Sparkline`,
   `Skeleton`, `EmptyState`, `Toggle`), `tabular-nums` en cifras financieras.
-- **Fase C (parcial) — Datos/visualización**: hero de cuenta rediseñado (número
+- **Fase C — Datos/visualización**: hero de cuenta rediseñado (número
   protagonista + toggle Valor/Rendimiento, patrón IBKR), posiciones con columnas
   ordenables y tarjetas tintadas en móvil + leyenda LONG/SHORT, órdenes en
   lenguaje natural con cantidad/precio/total explícitos, fondos con sparkline de
   P&L acumulado real, radar con selector de estrategia e indicador de streaming
-  en vivo vs. precio de último scan.
+  en vivo vs. precio de último scan, **EquityChart con gradiente de área +
+  rangos estilo IBKR (1S/MTD/1M/3M/YTD/1A/Todo, MTD/YTD de calendario)**, y
+  **donut de asignación de capital por fondo** (`AllocationDonut`).
 - **Fase D — Móvil**: bottom tab bar de 5 secciones (reemplaza el strip lateral
-  de 12px).
+  de 12px) + **pull-to-refresh** táctil en el contenido principal.
 - **Fase E (parcial) — Micro-interacciones**: flash verde/rojo en precios/P&L al
   tickear, skeletons, empty states diseñados.
 - **`ConfigModal`**: reemplazado el editor de JSON crudo por un formulario
@@ -353,10 +355,12 @@ control para reconectar IBKR desde el UI.
   (9-10 días, `fund_id: None`) del bug ya retirado que dimensionaba órdenes
   contra el equity de toda la cuenta en vez del fondo — rechazadas.
 
-**Pendiente (próxima sesión):**
-- EquityChart con gradiente + selector de rango (1S/MTD/1M/3M/YTD/1A/Todo)
-- Donut de asignación de capital por fondo
-- Pull-to-refresh en móvil
+**Pendiente:**
+- Notificaciones push + resto del polish responsive (ítem 9 de la lista original)
+- Reconexión automática a IBKR (loop en background, ver ítem 5 más arriba) —
+  el `/api/reconnect` manual ya cubre la emergencia, pero requiere accionar a
+  mano; se confirmó necesario de nuevo el 2026-07-12 (IBKR se desconectó otra
+  vez, reconectado en 2s con el botón nuevo en vez de SSH).
 - Notificaciones push + resto del polish responsive (ítem 9 de la lista original)
 
 ### 3.2 Factores adicionales
