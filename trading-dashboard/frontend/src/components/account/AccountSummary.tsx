@@ -69,7 +69,7 @@ export function AccountSummaryPanel() {
           {/* Delta del día */}
           {hasPnl && (
             <div className="flex items-center gap-1.5 mt-0.5">
-              <MetricDelta value={`${fmtUsd(dpnl)} (${fmtPct(dpnlPct * 100)})`} raw={dpnl} size="md" />
+              <MetricDelta value={`${fmtUsd(dpnl)} (${fmtPct(dpnlPct)})`} raw={dpnl} size="md" />
               <span className="text-xs text-gray-500">hoy</span>
             </div>
           )}
