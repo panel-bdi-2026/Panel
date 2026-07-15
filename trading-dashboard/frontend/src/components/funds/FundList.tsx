@@ -27,7 +27,10 @@ function FundCard({ fund, onClick }: { fund: Fund; onClick: () => void }) {
   const pnl = fund.realized_pnl_total
   const capital = fund.net_contributed_capital
   const roi = capital ? (pnl / capital) * 100 : null
-  const posCount = Object.keys(fund.positions).length
+  // El ledger conserva un registro por cada símbolo que el fondo alguna vez
+  // tuvo, incluso tras cerrarlo (quantity=0). Contar solo las que tienen
+  // acciones — si no, muestra posiciones "abiertas" que en realidad están en 0.
+  const posCount = Object.values(fund.positions).filter((p) => p.quantity !== 0).length
   const series = cumulativePnl(fund)
 
   return (

@@ -108,12 +108,13 @@ export function FundDetailModal({ fund, onClose }: Props) {
         <EquityChart fundId={fund.id} />
       </div>
 
-      {/* Positions */}
-      {Object.keys(fund.positions).length > 0 && (
+      {/* Positions — solo las que tienen acciones; el ledger conserva registros
+          en 0 de posiciones ya cerradas que no deben mostrarse como abiertas. */}
+      {Object.values(fund.positions).some((p) => p.quantity !== 0) && (
         <section className="mb-4">
           <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">Posiciones abiertas</h4>
           <div className="space-y-1">
-            {Object.entries(fund.positions).map(([sym, pos]) => (
+            {Object.entries(fund.positions).filter(([, pos]) => pos.quantity !== 0).map(([sym, pos]) => (
               <div key={sym} className="bg-gray-800 rounded-lg px-3 py-2.5">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-gray-100">{sym}</span>
