@@ -49,6 +49,7 @@ from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
 from .screener_config import ScreenerConfig
 from .sectors import SECTOR_ETF, get_sector, refresh_sector
+from .trade_rationale import build_buy_rationale
 from .session_store import SessionStore
 from .state_store import load_state, save_state
 from .strategies import STRATEGY_CLASSES, reload_strategy_registry
@@ -3571,6 +3572,7 @@ def get_trade_context(fund_id: str, trade_id: str, _: None = Depends(require_api
         "trade": trade.model_dump(),
         "action": entry["action"] if entry else None,
         "signal": signal,
+        "rationale": build_buy_rationale(signal) if signal else None,
         "reason": entry["result"].get("reason") if entry else None,
         "r_multiple": entry["result"].get("r_multiple") if entry else None,
         "approximate": entry["result"].get("approximate") if entry else None,

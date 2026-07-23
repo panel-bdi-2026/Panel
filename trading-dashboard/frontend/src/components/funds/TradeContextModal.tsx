@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchTradeContext } from '../../api/funds'
 import { Modal } from '../ui/Modal'
-import { fmtUsd, fmtPct, fmtAge } from '../../lib/format'
+import { fmtUsd, fmtAge } from '../../lib/format'
 
 interface Props {
   fundId: string
@@ -106,23 +106,9 @@ export function TradeContextModal({ fundId, tradeId, onClose }: Props) {
                       <p className="text-gray-200 font-medium">{data.signal.sector}</p>
                     </div>
                   )}
-                  <div>
-                    <p className="text-gray-500">Momentum 3m</p>
-                    <p className="text-gray-200 font-medium nums">{fmtPct(data.signal.momentum_3m_pct)}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">RSI</p>
-                    <p className="text-gray-200 font-medium nums">{data.signal.rsi.toFixed(1)}</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500">Stop sugerido</p>
-                    <p className="text-gray-200 font-medium nums">-{data.signal.suggested_stop_loss_pct.toFixed(1)}%</p>
-                  </div>
                 </div>
-                {data.signal.notes.length > 0 && (
-                  <ul className="mt-2 space-y-0.5 text-xs text-gray-400 list-disc list-inside">
-                    {data.signal.notes.map((n, i) => <li key={i}>{n}</li>)}
-                  </ul>
+                {data.rationale && (
+                  <p className="mt-2 text-gray-300 leading-relaxed">{data.rationale}</p>
                 )}
               </div>
 

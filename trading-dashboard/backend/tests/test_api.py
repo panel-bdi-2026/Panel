@@ -1430,6 +1430,17 @@ def test_get_trade_context_returns_signal_for_buy_trade():
     assert body["action"] == "auto_trade_executed"
     assert body["signal"]["score"] == 72
     assert body["reason"] is None
+    assert isinstance(body["rationale"], str) and len(body["rationale"]) > 0
+
+
+def test_get_trade_context_rationale_is_none_when_no_signal_found():
+    fund = main_module.funds_store.create("F", 10_000.0)
+    trade = main_module.funds_store.record_fill(fund.id, "ZZZZ", Side.BUY, 1, 10.0)
+    resp = client.get(
+        f"/api/funds/{fund.id}/trades/{trade.id}/context", headers={"X-API-Key": "test-key"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["rationale"] is None
 
 
 def test_get_trade_context_returns_reason_for_sell_trade():

@@ -47,18 +47,13 @@ export const fetchRoiHistory = () => apiFetch<RoiHistory>('/api/funds/roi-histor
 
 // Subconjunto de SignalResult (backend/app/models.py) que interesa mostrar
 // en el contexto de un trade -- el resto de los ~25 campos del modelo real
-// no se necesitan acá.
+// no se necesitan acá (ya se resumen en "rationale", ver trade_rationale.py).
 export interface TradeSignal {
   score: number
   strategy_id: string
   sector: string | null
-  momentum_3m_pct: number
-  momentum_1m_pct: number
-  rsi: number
-  notes: string[]
   news_sentiment: 'positive' | 'negative' | 'neutral' | null
   news_summary: string | null
-  suggested_stop_loss_pct: number
 }
 
 export interface TradeContext {
@@ -73,6 +68,7 @@ export interface TradeContext {
   }
   action: string | null
   signal: TradeSignal | null
+  rationale: string | null
   reason: string | null
   r_multiple: number | null
   approximate: boolean | null
