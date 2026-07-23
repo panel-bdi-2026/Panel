@@ -8,8 +8,19 @@ import { Skeleton } from '../ui/Skeleton'
 import { EmptyState } from '../ui/EmptyState'
 import { Sparkline } from '../ui/Sparkline'
 import { MetricDelta } from '../ui/MetricDelta'
+import { Toggle } from '../ui/Toggle'
 import { FundDetailModal } from './FundDetailModal'
 import type { Fund } from '../../api/types'
+
+// Preferencia persistida: por defecto los fondos cerrados quedan ocultos
+// (son de solo lectura y con el tiempo se acumulan), pero el usuario puede
+// volver a mostrarlos sin perder la eleccion entre recargas de pagina.
+const HIDE_CLOSED_KEY = 'funds.hideClosed'
+
+function getHideClosedDefault(): boolean {
+  const stored = localStorage.getItem(HIDE_CLOSED_KEY)
+  return stored === null ? true : stored === 'true'
+}
 
 // Serie de P&L realizado acumulado a partir de los trades (dato real del fondo)
 function cumulativePnl(fund: Fund): number[] {
@@ -85,6 +96,7 @@ export function FundList() {
     refetchInterval: 15000,
   })
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [hideClosed, setHideClosed] = useState(getHideClosedDefault)
   const selected = funds?.find((f) => f.id === selectedId) ?? null
 
   if (isLoading) return (
@@ -94,13 +106,33 @@ export function FundList() {
   )
   if (!funds?.length) return <EmptyState icon="💼" title="Sin fondos" subtitle="Creá un fondo para empezar a administrar capital con su propia estrategia y auto-trading." />
 
+  const closedCount = funds.filter((f) => f.closed).length
+  const visibleFunds = hideClosed ? funds.filter((f) => !f.closed) : funds
+
+  function toggleHideClosed(v: boolean) {
+    setHideClosed(v)
+    localStorage.setItem(HIDE_CLOSED_KEY, String(v))
+  }
+
   return (
     <>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {funds.map((f) => (
-          <FundCard key={f.id} fund={f} onClick={() => setSelectedId(f.id)} />
-        ))}
-      </div>
+      {closedCount > 0 && (
+        <div className="flex items-center justify-end gap-2 mb-3">
+          <span className="text-xs text-gray-500">
+            Ocultar cerrados{closedCount > 0 ? ` (${closedCount})` : ''}
+          </span>
+          <Toggle checked={hideClosed} onChange={toggleHideClosed} />
+        </div>
+      )}
+      {visibleFunds.length ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {visibleFunds.map((f) => (
+            <FundCard key={f.id} fund={f} onClick={() => setSelectedId(f.id)} />
+          ))}
+        </div>
+      ) : (
+        <EmptyState icon="💼" title="Todos los fondos están cerrados" subtitle="Desactivá 'Ocultar cerrados' para verlos, o creá uno nuevo." />
+      )}
       <FundDetailModal fund={selected} onClose={() => setSelectedId(null)} />
     </>
   )
