@@ -3447,6 +3447,7 @@ def _compute_roi_history(funds: list) -> dict:
             per_fund.append({
                 "id": fund.id,
                 "name": fund.name,
+                "closed": fund.closed,
                 "dates": f_dates,
                 "cumulative_return_pct": f_pct,
                 "benchmark_cumulative_return_pct": [round(bench_cum_by_date.get(d, 0.0), 2) for d in f_dates],

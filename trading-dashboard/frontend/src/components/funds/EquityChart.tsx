@@ -138,7 +138,13 @@ export function EquityChart({ fundId }: Props) {
     return { fund, points: rebase(filtered, [fund.name, 'SPY']) }
   }, [data, fundId, range])
 
-  // Portfolio view
+  // Portfolio view — los fondos cerrados no se overlayan acá (ya quedan
+  // fuera de la lista por defecto, ver FundList "Ocultar cerrados"): dejar
+  // su línea para siempre en este gráfico general lo satura sin aportar
+  // nada nuevo. Su curva individual sigue disponible entrando al detalle
+  // de ese fondo (fundId sí lo respeta, ver más abajo).
+  const openPerFund = useMemo(() => data?.per_fund?.filter((f) => !f.closed) ?? [], [data])
+
   const portfolioPoints = useMemo(() => {
     if (!data || fundId) return null
     const pts = data.dates.map((d, i) => {
@@ -147,16 +153,16 @@ export function EquityChart({ fundId }: Props) {
         Portfolio: data.fund_cumulative_return_pct[i],
         SPY: data.benchmark_cumulative_return_pct[i],
       }
-      data.per_fund?.forEach((f) => {
+      openPerFund.forEach((f) => {
         const idx = f.dates.indexOf(d)
         if (idx !== -1) row[f.name] = f.cumulative_return_pct[idx]
       })
       return row
     })
-    const seriesKeys = ['Portfolio', 'SPY', ...(data.per_fund?.map((f) => f.name) ?? [])]
+    const seriesKeys = ['Portfolio', 'SPY', ...openPerFund.map((f) => f.name)]
     const filtered = filterByRange(pts, range)
     return rebase(filtered, seriesKeys)
-  }, [data, fundId, range])
+  }, [data, fundId, range, openPerFund])
 
   if (isLoading) {
     return (
@@ -267,7 +273,7 @@ export function EquityChart({ fundId }: Props) {
             <Area type="monotone" dataKey="Portfolio" stroke="none" fill={`url(#${GRADIENT_ID})`} isAnimationActive={false} legendType="none" />
             <Line type="monotone" dataKey="Portfolio" stroke={lastPortfolio >= 0 ? '#22c55e' : '#ef4444'} dot={false} strokeWidth={2.5} />
             <Line type="monotone" dataKey="SPY" stroke="#6b7280" dot={false} strokeWidth={1.5} strokeDasharray="4 2" />
-            {data.per_fund?.map((f, i) => (
+            {openPerFund.map((f, i) => (
               <Line
                 key={f.id}
                 type="monotone"

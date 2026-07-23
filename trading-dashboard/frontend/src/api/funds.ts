@@ -30,6 +30,7 @@ export const setAutoTrading = (id: string, enabled: boolean) =>
 export interface PerFundHistory {
   id: string
   name: string
+  closed: boolean
   dates: string[]
   cumulative_return_pct: number[]
   benchmark_cumulative_return_pct: number[]
