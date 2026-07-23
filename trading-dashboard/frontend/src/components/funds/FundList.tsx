@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { fetchFunds } from '../../api/funds'
+import { fetchPositions } from '../../api/account'
 import { fmtUsd, fmtPct } from '../../lib/format'
 import { Badge } from '../ui/Badge'
 import { Card } from '../ui/Card'
@@ -34,7 +35,7 @@ function cumulativePnl(fund: Fund): number[] {
   return series
 }
 
-function FundCard({ fund, onClick }: { fund: Fund; onClick: () => void }) {
+function FundCard({ fund, onClick, priceBySymbol }: { fund: Fund; onClick: () => void; priceBySymbol: Record<string, number | null> }) {
   const pnl = fund.realized_pnl_total
   const capital = fund.net_contributed_capital
   const roi = capital ? (pnl / capital) * 100 : null
@@ -43,6 +44,19 @@ function FundCard({ fund, onClick }: { fund: Fund; onClick: () => void }) {
   // acciones — si no, muestra posiciones "abiertas" que en realidad están en 0.
   const posCount = Object.values(fund.positions).filter((p) => p.quantity !== 0).length
   const series = cumulativePnl(fund)
+
+  // Precio de mercado sale de /api/positions (misma cuenta de IBKR): las
+  // posiciones del fondo solo guardan cantidad/costo de compra, no precio
+  // actual (ver FundDetailModal, mismo criterio). Símbolos sin precio
+  // todavía disponible no aportan al cálculo (en vez de romperlo).
+  const unrealizedPnl = Object.entries(fund.positions).reduce((sum, [sym, pos]) => {
+    if (pos.quantity === 0) return sum
+    const price = priceBySymbol[sym]
+    if (price == null) return sum
+    return sum + (price - pos.avg_cost) * pos.quantity
+  }, 0)
+  const totalPnl = pnl + unrealizedPnl
+  const totalRoi = capital ? (totalPnl / capital) * 100 : null
 
   return (
     <Card interactive onClick={onClick}>
@@ -78,6 +92,19 @@ function FundCard({ fund, onClick }: { fund: Fund; onClick: () => void }) {
           <p className="text-[11px] uppercase tracking-wide text-gray-500">Capital aportado</p>
           <p className="font-medium text-gray-200 nums">{fmtUsd(capital)}</p>
         </div>
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-gray-500">P&L no realizado</p>
+          <p className={`font-medium nums ${unrealizedPnl >= 0 ? 'text-profit' : 'text-loss'}`}>{fmtUsd(unrealizedPnl)}</p>
+        </div>
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-gray-500">Rendimiento total</p>
+          <div className="flex items-baseline gap-1.5">
+            <span className={`font-medium nums ${totalPnl >= 0 ? 'text-profit' : 'text-loss'}`}>{fmtUsd(totalPnl)}</span>
+            {totalRoi != null && (
+              <span className={`text-xs nums ${totalPnl >= 0 ? 'text-profit' : 'text-loss'}`}>({fmtPct(totalRoi)})</span>
+            )}
+          </div>
+        </div>
       </div>
 
       {posCount > 0 && (
@@ -95,6 +122,13 @@ export function FundList() {
     queryFn: fetchFunds,
     refetchInterval: 15000,
   })
+  const { data: positions } = useQuery({
+    queryKey: ['positions'],
+    queryFn: fetchPositions,
+    refetchInterval: 10000,
+  })
+  const priceBySymbol: Record<string, number | null> = {}
+  for (const p of positions ?? []) priceBySymbol[p.symbol] = p.market_price
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [hideClosed, setHideClosed] = useState(getHideClosedDefault)
   const selected = funds?.find((f) => f.id === selectedId) ?? null
@@ -127,7 +161,7 @@ export function FundList() {
       {visibleFunds.length ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {visibleFunds.map((f) => (
-            <FundCard key={f.id} fund={f} onClick={() => setSelectedId(f.id)} />
+            <FundCard key={f.id} fund={f} onClick={() => setSelectedId(f.id)} priceBySymbol={priceBySymbol} />
           ))}
         </div>
       ) : (
