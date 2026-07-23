@@ -98,9 +98,8 @@ export interface Position {
   symbol: string
   quantity: number
   avg_cost: number
-  market_value: number
-  unrealized_pnl: number
-  unrealized_pnl_pct: number
+  market_price: number | null
+  unrealized_pnl: number | null
 }
 
 // ── Status ────────────────────────────────────────────────────────────────────

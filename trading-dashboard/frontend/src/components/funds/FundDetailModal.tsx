@@ -1,12 +1,13 @@
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Fund } from '../../api/types'
 import { addCapitalFlow, setAutoTrading } from '../../api/funds'
+import { fetchPositions } from '../../api/account'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { Badge } from '../ui/Badge'
 import { EquityChart } from './EquityChart'
-import { fmtUsd, fmtAge } from '../../lib/format'
+import { fmtUsd, fmtPct, fmtAge } from '../../lib/format'
 import { useToastStore } from '../ui/Toast'
 
 interface Props { fund: Fund | null; onClose: () => void }
@@ -34,6 +35,19 @@ export function FundDetailModal({ fund, onClose }: Props) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['funds'] }),
     onError: () => addToast('Error al cambiar auto-trading', 'error'),
   })
+
+  // Los fondos no traen precio de mercado propio (fund.positions solo tiene
+  // cantidad/costo de compra, ver FundPosition): se toma el precio actual
+  // por símbolo de /api/positions (posiciones reales de la cuenta de IBKR,
+  // ya usada por PositionsTable con la misma queryKey, así que no genera un
+  // fetch extra) para calcular valor de mercado y P&L no realizado acá.
+  const { data: positions } = useQuery({
+    queryKey: ['positions'],
+    queryFn: fetchPositions,
+    refetchInterval: 10000,
+  })
+  const priceBySymbol: Record<string, number | null> = {}
+  for (const p of positions ?? []) priceBySymbol[p.symbol] = p.market_price
 
   if (!fund) return null
 
@@ -114,22 +128,58 @@ export function FundDetailModal({ fund, onClose }: Props) {
         <section className="mb-4">
           <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">Posiciones abiertas</h4>
           <div className="space-y-1">
-            {Object.entries(fund.positions).filter(([, pos]) => pos.quantity !== 0).map(([sym, pos]) => (
-              <div key={sym} className="bg-gray-800 rounded-lg px-3 py-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-gray-100">{sym}</span>
-                  {pos.opened_at && (
-                    <span className="text-gray-500 text-xs">{fmtAge(pos.opened_at)}</span>
-                  )}
+            {Object.entries(fund.positions).filter(([, pos]) => pos.quantity !== 0).map(([sym, pos]) => {
+              const costTotal = pos.quantity * pos.avg_cost
+              const marketPrice = priceBySymbol[sym] ?? null
+              const marketValue = marketPrice !== null ? pos.quantity * marketPrice : null
+              const unrealizedPnl = marketPrice !== null ? (marketPrice - pos.avg_cost) * pos.quantity : null
+              const unrealizedPnlPct = marketPrice !== null && pos.avg_cost !== 0
+                ? ((marketPrice - pos.avg_cost) / pos.avg_cost) * 100
+                : null
+              return (
+                <div key={sym} className="bg-gray-800 rounded-lg px-3 py-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-gray-100">{sym}</span>
+                    <div className="flex items-center gap-2">
+                      {pos.stop_loss_price && (
+                        <span className="text-red-400 text-xs font-medium">SL {fmtUsd(pos.stop_loss_price)}</span>
+                      )}
+                      {pos.opened_at && (
+                        <span className="text-gray-500 text-xs">{fmtAge(pos.opened_at)}</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-x-3 gap-y-1.5 mt-2 text-xs">
+                    <div>
+                      <p className="text-gray-500">Cantidad</p>
+                      <p className="text-gray-200 font-medium nums">{pos.quantity}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Precio compra</p>
+                      <p className="text-gray-200 font-medium nums">{fmtUsd(pos.avg_cost)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Costo total</p>
+                      <p className="text-gray-200 font-medium nums">{fmtUsd(costTotal)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Precio actual</p>
+                      <p className="text-gray-200 font-medium nums">{fmtUsd(marketPrice)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">Valor mercado</p>
+                      <p className="text-gray-200 font-medium nums">{fmtUsd(marketValue)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">P&L no realizado</p>
+                      <p className={`font-medium nums ${unrealizedPnl == null ? 'text-gray-200' : unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {fmtUsd(unrealizedPnl)}{unrealizedPnlPct != null && <span className="ml-1">({fmtPct(unrealizedPnlPct)})</span>}
+                      </p>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-400">
-                  <span>{pos.quantity} acc. @ {fmtUsd(pos.avg_cost)}</span>
-                  {pos.stop_loss_price && (
-                    <span className="text-red-400 font-medium">SL {fmtUsd(pos.stop_loss_price)}</span>
-                  )}
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </section>
       )}

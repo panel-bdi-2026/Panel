@@ -83,10 +83,10 @@ export function PositionsTable() {
   if (!positions?.length) return <EmptyState icon="📊" title="Sin posiciones abiertas" subtitle="Cuando el sistema o vos abran una posición, aparecerá acá con su P&L en vivo." />
 
   const rows: Row[] = positions.map((p) => {
-    const live = priceMap[p.symbol]?.price ?? null
-    const liveValue = live !== null ? live * p.quantity : p.market_value
-    const livePnl = live !== null ? (live - p.avg_cost) * p.quantity : p.unrealized_pnl
-    const livePnlPct = live !== null ? ((live - p.avg_cost) / p.avg_cost) * 100 : p.unrealized_pnl_pct
+    const live = priceMap[p.symbol]?.price ?? p.market_price ?? null
+    const liveValue = live !== null ? live * p.quantity : NaN
+    const livePnl = live !== null ? (live - p.avg_cost) * p.quantity : (p.unrealized_pnl ?? NaN)
+    const livePnlPct = live !== null && p.avg_cost !== 0 ? ((live - p.avg_cost) / p.avg_cost) * 100 : NaN
     return { symbol: p.symbol, quantity: p.quantity, avg_cost: p.avg_cost, live, liveValue, livePnl, livePnlPct, weight: 0 }
   })
   const totalValue = rows.reduce((a, r) => a + Math.abs(r.liveValue), 0) || 1
