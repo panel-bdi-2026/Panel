@@ -1,3 +1,4 @@
+import json
 import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -10,12 +11,20 @@ def make_audit(tmp_path) -> AuditLog:
 
 
 def _insert_at(audit: AuditLog, action: str, ts: datetime, fund_id: str | None = None) -> None:
-    import json
-
     payload = json.dumps({"fund_id": fund_id} if fund_id is not None else {})
     audit._conn.execute(
         "INSERT INTO audit_log (ts, action, payload, result) VALUES (?, ?, ?, '{}')",
         (ts.isoformat(), action, payload),
+    )
+    audit._conn.commit()
+
+
+def _insert_full(
+    audit: AuditLog, action: str, ts: datetime, payload: dict, result: dict,
+) -> None:
+    audit._conn.execute(
+        "INSERT INTO audit_log (ts, action, payload, result) VALUES (?, ?, ?, ?)",
+        (ts.isoformat(), action, json.dumps(payload), json.dumps(result)),
     )
     audit._conn.commit()
 
@@ -126,3 +135,105 @@ def test_record_is_serialized_by_internal_lock(tmp_path):
     thread.join(timeout=1)
     assert finished.is_set()
     assert len(audit.recent()) == 1
+
+
+def test_find_trade_context_matches_closest_entry_within_window(tmp_path):
+    audit = make_audit(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_full(
+        audit, "auto_trade_executed", now,
+        {"fund_id": "f1", "symbol": "AAPL", "side": "BUY"},
+        {"signal": {"score": 72, "strategy_id": "momentum"}},
+    )
+    # Otra entrada del mismo símbolo/fondo pero mucho más lejos en el tiempo:
+    # no debe ganarle a la más cercana.
+    _insert_full(
+        audit, "auto_trade_executed", now - timedelta(days=5),
+        {"fund_id": "f1", "symbol": "AAPL", "side": "BUY"},
+        {"signal": {"score": 10, "strategy_id": "momentum"}},
+    )
+    entry = audit.find_trade_context(
+        "f1", "AAPL", ("auto_trade_executed", "order_executed"), now.isoformat(),
+    )
+    assert entry is not None
+    assert entry["result"]["signal"]["score"] == 72
+
+
+def test_find_trade_context_ignores_entries_outside_window(tmp_path):
+    audit = make_audit(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_full(
+        audit, "auto_trade_executed", now - timedelta(days=1),
+        {"fund_id": "f1", "symbol": "AAPL", "side": "BUY"}, {"signal": {"score": 50}},
+    )
+    entry = audit.find_trade_context(
+        "f1", "AAPL", ("auto_trade_executed",), now.isoformat(), window_seconds=300,
+    )
+    assert entry is None
+
+
+def test_find_trade_context_matches_action_without_side_field(tmp_path):
+    # auto_trade_stop_loss_reconciled no guarda "side" en el payload (ver
+    # main.py): el matching no puede depender de ese campo.
+    audit = make_audit(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_full(
+        audit, "auto_trade_stop_loss_reconciled", now,
+        {"fund_id": "f1", "symbol": "AAPL"},
+        {"quantity": 10, "price": 95.0, "approximate": True},
+    )
+    entry = audit.find_trade_context(
+        "f1", "AAPL", ("auto_trade_stop_loss_reconciled",), now.isoformat(),
+    )
+    assert entry is not None
+    assert entry["result"]["approximate"] is True
+
+
+def test_find_trade_context_filters_by_fund_and_symbol(tmp_path):
+    audit = make_audit(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_full(
+        audit, "auto_trade_exit", now,
+        {"fund_id": "OTHER_FUND", "symbol": "AAPL"}, {"reason": "trend_break"},
+    )
+    _insert_full(
+        audit, "auto_trade_exit", now,
+        {"fund_id": "f1", "symbol": "OTHER_SYMBOL"}, {"reason": "take_profit"},
+    )
+    entry = audit.find_trade_context("f1", "AAPL", ("auto_trade_exit",), now.isoformat())
+    assert entry is None
+
+
+def test_find_latest_before_returns_most_recent_draft_before_cutoff(tmp_path):
+    audit = make_audit(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_full(
+        audit, "signal_order_drafted", now - timedelta(hours=3),
+        {"fund_id": "f1", "symbol": "AAPL"}, {"signal": {"score": 60}},
+    )
+    _insert_full(
+        audit, "signal_order_drafted", now - timedelta(hours=1),
+        {"fund_id": "f1", "symbol": "AAPL"}, {"signal": {"score": 80}},
+    )
+    # Un draft DESPUES de before_ts (la aprobación) no debe poder "explicar"
+    # una compra que ya sucedió antes que él.
+    _insert_full(
+        audit, "signal_order_drafted", now + timedelta(hours=1),
+        {"fund_id": "f1", "symbol": "AAPL"}, {"signal": {"score": 99}},
+    )
+    entry = audit.find_latest_before("f1", "AAPL", "signal_order_drafted", now.isoformat())
+    assert entry is not None
+    assert entry["result"]["signal"]["score"] == 80
+
+
+def test_find_latest_before_respects_since_days_cutoff(tmp_path):
+    audit = make_audit(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_full(
+        audit, "signal_order_drafted", now - timedelta(days=40),
+        {"fund_id": "f1", "symbol": "AAPL"}, {"signal": {"score": 60}},
+    )
+    entry = audit.find_latest_before(
+        "f1", "AAPL", "signal_order_drafted", now.isoformat(), since_days=30,
+    )
+    assert entry is None

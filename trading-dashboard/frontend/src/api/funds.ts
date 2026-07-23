@@ -44,3 +44,39 @@ export interface RoiHistory {
 }
 
 export const fetchRoiHistory = () => apiFetch<RoiHistory>('/api/funds/roi-history')
+
+// Subconjunto de SignalResult (backend/app/models.py) que interesa mostrar
+// en el contexto de un trade -- el resto de los ~25 campos del modelo real
+// no se necesitan acá.
+export interface TradeSignal {
+  score: number
+  strategy_id: string
+  sector: string | null
+  momentum_3m_pct: number
+  momentum_1m_pct: number
+  rsi: number
+  notes: string[]
+  news_sentiment: 'positive' | 'negative' | 'neutral' | null
+  news_summary: string | null
+  suggested_stop_loss_pct: number
+}
+
+export interface TradeContext {
+  trade: {
+    id: string
+    symbol: string
+    side: 'BUY' | 'SELL'
+    quantity: number
+    price: number
+    executed_at: string
+    realized_pnl: number | null
+  }
+  action: string | null
+  signal: TradeSignal | null
+  reason: string | null
+  r_multiple: number | null
+  approximate: boolean | null
+}
+
+export const fetchTradeContext = (fundId: string, tradeId: string) =>
+  apiFetch<TradeContext>(`/api/funds/${fundId}/trades/${tradeId}/context`)

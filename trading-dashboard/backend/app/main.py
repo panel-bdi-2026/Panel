@@ -3512,6 +3512,60 @@ def get_fund(fund_id: str, _: None = Depends(require_api_key)):
     return _fund_view(fund)
 
 
+# Acciones de audit_log que representan la EJECUCION de una compra/venta (ver
+# find_trade_context en audit.py) -- separadas por lado porque "signal"
+# (razon de la compra) y "reason" (razon de la venta) solo tienen sentido en
+# un lado, aunque order_executed/order_executed_after_approval (manuales)
+# puedan ser cualquiera de los dos.
+_BUY_TRADE_CONTEXT_ACTIONS = (
+    "auto_trade_executed", "auto_trade_stop_loss_rejected", "auto_trade_fill_late",
+    "order_executed", "order_executed_after_approval", "order_fill_late",
+)
+_SELL_TRADE_CONTEXT_ACTIONS = (
+    "auto_trade_exit", "auto_trade_scale_out", "auto_trade_stop_loss_reconciled",
+    "order_executed", "order_executed_after_approval",
+)
+
+
+@app.get("/api/funds/{fund_id}/trades/{trade_id}/context")
+def get_trade_context(fund_id: str, trade_id: str, _: None = Depends(require_api_key)):
+    """Por qué se compró/vendió un trade puntual del ledger de un fondo:
+    busca en audit_log la entrada más cercana en el tiempo a este trade y,
+    para compras, la señal (score/sector/sentimiento) que la originó -- ver
+    find_trade_context/find_latest_before en audit.py para el detalle de la
+    búsqueda. Devuelve lo que se haya podido encontrar, nunca falla por
+    "sin datos": un trade viejo (de antes de que existiera esta feature, o
+    fuera de la ventana de búsqueda) simplemente devuelve todo en None."""
+    fund = funds_store.get(fund_id)
+    if fund is None:
+        raise HTTPException(status_code=404, detail="Fondo no encontrado.")
+    trade = next((t for t in fund.trades if t.id == trade_id), None)
+    if trade is None:
+        raise HTTPException(status_code=404, detail="Trade no encontrado.")
+
+    near_ts = trade.executed_at.isoformat()
+    is_buy = trade.side == Side.BUY
+    actions = _BUY_TRADE_CONTEXT_ACTIONS if is_buy else _SELL_TRADE_CONTEXT_ACTIONS
+    entry = audit.find_trade_context(fund_id, trade.symbol, actions, near_ts)
+
+    signal = entry["result"].get("signal") if entry else None
+    if is_buy and signal is None:
+        # order_executed_after_approval no vuelve a adjuntar la señal: la
+        # aprobación pudo pasar mucho después del draft que la generó.
+        draft = audit.find_latest_before(fund_id, trade.symbol, "signal_order_drafted", near_ts)
+        if draft is not None:
+            signal = draft["result"].get("signal")
+
+    return {
+        "trade": trade.model_dump(),
+        "action": entry["action"] if entry else None,
+        "signal": signal,
+        "reason": entry["result"].get("reason") if entry else None,
+        "r_multiple": entry["result"].get("r_multiple") if entry else None,
+        "approximate": entry["result"].get("approximate") if entry else None,
+    }
+
+
 class CapitalFlowCreate(BaseModel):
     amount: float
     note: Optional[str] = None

@@ -204,6 +204,65 @@ class AuditLog:
             )
             return cur.fetchone()[0]
 
+    def find_trade_context(
+        self, fund_id: str, symbol: str, actions: tuple[str, ...], near_ts: str, window_seconds: int = 300,
+    ) -> "dict | None":
+        """Entrada de audit_log más cercana en el tiempo a `near_ts` (ISO-8601
+        UTC) entre `actions`, para este fondo/símbolo -- reconstruye "por qué
+        se compró/vendió" un trade puntual del ledger de un fondo (FundTrade
+        no guarda ningún ID de vuelta hacia el audit log). No filtra por side:
+        algunas acciones relevantes (auto_trade_stop_loss_reconciled) no lo
+        tienen en el payload, y la ventana de tiempo acotada ya alcanza para
+        no confundir una compra con una venta del mismo símbolo (nunca pasan
+        en el mismo instante). `actions` ya viene filtrado por el caller a
+        las que tienen sentido para el lado (compra/venta) del trade."""
+        near = datetime.fromisoformat(near_ts)
+        lo = (near - timedelta(seconds=window_seconds)).isoformat()
+        hi = (near + timedelta(seconds=window_seconds)).isoformat()
+        placeholders = ", ".join("?" for _ in actions)
+        with self._lock:
+            cur = self._conn.execute(
+                f"SELECT id, ts, action, payload, result FROM audit_log "
+                f"WHERE action IN ({placeholders}) "
+                f"AND json_extract(payload,'$.fund_id') = ? "
+                f"AND json_extract(payload,'$.symbol') = ? "
+                f"AND ts BETWEEN ? AND ? "
+                f"ORDER BY ABS(julianday(ts) - julianday(?)) ASC LIMIT 1",
+                (*actions, fund_id, symbol, lo, hi, near_ts),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0], "ts": row[1], "action": row[2],
+            "payload": json.loads(row[3]), "result": json.loads(row[4]),
+        }
+
+    def find_latest_before(
+        self, fund_id: str, symbol: str, action: str, before_ts: str, since_days: int = 30,
+    ) -> "dict | None":
+        """Entrada `action` más reciente para (fund_id, symbol) con ts <=
+        before_ts, dentro de los últimos `since_days`. Usado para encontrar el
+        signal_order_drafted que originó una compra ejecutada bastante después
+        de aprobarse a mano (order_executed_after_approval no vuelve a
+        adjuntar la señal original -- ver find_trade_context)."""
+        cutoff = (datetime.fromisoformat(before_ts) - timedelta(days=since_days)).isoformat()
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT id, ts, action, payload, result FROM audit_log "
+                "WHERE action = ? AND json_extract(payload,'$.fund_id') = ? "
+                "AND json_extract(payload,'$.symbol') = ? AND ts <= ? AND ts >= ? "
+                "ORDER BY id DESC LIMIT 1",
+                (action, fund_id, symbol, before_ts, cutoff),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0], "ts": row[1], "action": row[2],
+            "payload": json.loads(row[3]), "result": json.loads(row[4]),
+        }
+
     def was_stopped_out_after(self, fund_id: str, symbol: str, since_ts: str) -> bool:
         """True si hay una entrada auto_trade_stop_loss_reconciled para
         (fund_id, symbol) con ts posterior a `since_ts` (ISO-8601 UTC).

@@ -1408,3 +1408,95 @@ def test_lifespan_shutdown_awaits_background_tasks_cancellation(monkeypatch):
 
     assert len(created_tasks) == 11
     assert all(t.done() for t in created_tasks)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/funds/{fund_id}/trades/{trade_id}/context
+# ---------------------------------------------------------------------------
+
+def test_get_trade_context_returns_signal_for_buy_trade():
+    fund = main_module.funds_store.create("F", 10_000.0)
+    trade = main_module.funds_store.record_fill(fund.id, "AAPL", Side.BUY, 10, 150.0)
+    main_module.audit.record(
+        "auto_trade_executed",
+        {"symbol": "AAPL", "side": "BUY", "fund_id": fund.id, "quantity": 10},
+        {"signal": {"score": 72, "strategy_id": "momentum", "sector": "Information Technology"}},
+    )
+    resp = client.get(
+        f"/api/funds/{fund.id}/trades/{trade.id}/context", headers={"X-API-Key": "test-key"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["action"] == "auto_trade_executed"
+    assert body["signal"]["score"] == 72
+    assert body["reason"] is None
+
+
+def test_get_trade_context_returns_reason_for_sell_trade():
+    fund = main_module.funds_store.create("F", 10_000.0)
+    main_module.funds_store.record_fill(fund.id, "AAPL", Side.BUY, 10, 150.0)
+    trade = main_module.funds_store.record_fill(fund.id, "AAPL", Side.SELL, 10, 160.0)
+    main_module.audit.record(
+        "auto_trade_exit",
+        {"symbol": "AAPL", "side": "SELL", "fund_id": fund.id, "quantity": 10},
+        {"reason": "trend_break"},
+    )
+    resp = client.get(
+        f"/api/funds/{fund.id}/trades/{trade.id}/context", headers={"X-API-Key": "test-key"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["action"] == "auto_trade_exit"
+    assert body["reason"] == "trend_break"
+    assert body["signal"] is None
+
+
+def test_get_trade_context_falls_back_to_draft_signal_when_execution_lacks_it():
+    # order_executed_after_approval no vuelve a adjuntar la señal original
+    # (ver docstring de approve_order) -- tiene que ir a buscar el
+    # signal_order_drafted que la origino.
+    fund = main_module.funds_store.create("F", 10_000.0)
+    main_module.audit.record(
+        "signal_order_drafted",
+        {"symbol": "AAPL", "side": "BUY", "fund_id": fund.id},
+        {"signal": {"score": 88, "strategy_id": "momentum"}},
+    )
+    trade = main_module.funds_store.record_fill(fund.id, "AAPL", Side.BUY, 10, 150.0)
+    main_module.audit.record(
+        "order_executed_after_approval",
+        {"symbol": "AAPL", "side": "BUY", "fund_id": fund.id, "quantity": 10},
+        {"filled_qty": 10, "avg_fill_price": 150.0},
+    )
+    resp = client.get(
+        f"/api/funds/{fund.id}/trades/{trade.id}/context", headers={"X-API-Key": "test-key"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["signal"]["score"] == 88
+
+
+def test_get_trade_context_returns_none_fields_when_no_audit_entry_found():
+    fund = main_module.funds_store.create("F", 10_000.0)
+    trade = main_module.funds_store.record_fill(fund.id, "ZZZZ", Side.BUY, 1, 10.0)
+    resp = client.get(
+        f"/api/funds/{fund.id}/trades/{trade.id}/context", headers={"X-API-Key": "test-key"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["action"] is None
+    assert body["signal"] is None
+    assert body["reason"] is None
+
+
+def test_get_trade_context_unknown_fund_returns_404():
+    resp = client.get(
+        "/api/funds/nope/trades/nope/context", headers={"X-API-Key": "test-key"}
+    )
+    assert resp.status_code == 404
+
+
+def test_get_trade_context_unknown_trade_returns_404():
+    fund = main_module.funds_store.create("F", 10_000.0)
+    resp = client.get(
+        f"/api/funds/{fund.id}/trades/nope/context", headers={"X-API-Key": "test-key"}
+    )
+    assert resp.status_code == 404

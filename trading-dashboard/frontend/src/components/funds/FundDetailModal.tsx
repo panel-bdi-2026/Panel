@@ -8,15 +8,34 @@ import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { Badge } from '../ui/Badge'
 import { EquityChart } from './EquityChart'
+import { TradeContextModal } from './TradeContextModal'
 import { fmtUsd, fmtPct, fmtAge } from '../../lib/format'
 import { useToastStore } from '../ui/Toast'
 
 interface Props { fund: Fund | null; onClose: () => void }
 
+// Una posicion abierta no tiene un solo "trade" -- puede haberse construido
+// de varias compras (scaling in). "Por qué se compró" se refiere siempre a
+// la compra que ABRIÓ la posición (la única que fija pos.opened_at, ver
+// FundPosition en funds.py): se busca el trade BUY de ese símbolo cuyo
+// executed_at está más cerca de pos.opened_at.
+function findOpeningTradeId(fund: Fund, symbol: string, openedAt: string | null): string | null {
+  const buys = fund.trades.filter((t) => t.symbol === symbol && t.side === 'BUY')
+  if (!buys.length) return null
+  if (!openedAt) return buys[buys.length - 1].id
+  const openedMs = new Date(openedAt).getTime()
+  return buys.reduce((best, t) => {
+    const bestDiff = Math.abs(new Date(best.executed_at).getTime() - openedMs)
+    const diff = Math.abs(new Date(t.executed_at).getTime() - openedMs)
+    return diff < bestDiff ? t : best
+  }, buys[0]).id
+}
+
 export function FundDetailModal({ fund, onClose }: Props) {
   const [flowAmount, setFlowAmount] = useState('')
   const [flowNote, setFlowNote] = useState('')
   const [showFlow, setShowFlow] = useState(false)
+  const [contextTradeId, setContextTradeId] = useState<string | null>(null)
   const qc = useQueryClient()
   const addToast = useToastStore((s) => s.add)
 
@@ -150,8 +169,16 @@ export function FundDetailModal({ fund, onClose }: Props) {
               const unrealizedPnlPct = marketPrice !== null && pos.avg_cost !== 0
                 ? ((marketPrice - pos.avg_cost) / pos.avg_cost) * 100
                 : null
+              const openingTradeId = findOpeningTradeId(fund, sym, pos.opened_at)
               return (
-                <div key={sym} className="bg-gray-800 rounded-lg px-3 py-2.5">
+                <div
+                  key={sym}
+                  className={`bg-gray-800 rounded-lg px-3 py-2.5 ${openingTradeId ? 'cursor-pointer hover:bg-gray-700 transition-colors' : ''}`}
+                  role={openingTradeId ? 'button' : undefined}
+                  tabIndex={openingTradeId ? 0 : undefined}
+                  onClick={openingTradeId ? () => setContextTradeId(openingTradeId) : undefined}
+                  onKeyDown={openingTradeId ? (e) => { if (e.key === 'Enter') setContextTradeId(openingTradeId) } : undefined}
+                >
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-baseline gap-1.5 min-w-0">
                       <span className="font-semibold text-gray-100 shrink-0">{sym}</span>
@@ -211,7 +238,14 @@ export function FundDetailModal({ fund, onClose }: Props) {
           </h4>
           <div className="max-h-52 overflow-y-auto scrollbar-thin space-y-1">
             {trades.slice(0, 20).map((t) => (
-              <div key={t.id} className="flex items-center gap-2 text-xs bg-gray-800 rounded px-3 py-1.5">
+              <div
+                key={t.id}
+                className="flex items-center gap-2 text-xs bg-gray-800 rounded px-3 py-1.5 cursor-pointer hover:bg-gray-700 transition-colors"
+                role="button"
+                tabIndex={0}
+                onClick={() => setContextTradeId(t.id)}
+                onKeyDown={(e) => { if (e.key === 'Enter') setContextTradeId(t.id) }}
+              >
                 <span className={`font-semibold shrink-0 w-7 ${t.side === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>{t.side}</span>
                 <span className="text-gray-200 font-semibold shrink-0">{t.symbol}</span>
                 <span className="text-gray-500 hidden sm:inline">{t.quantity} @ {fmtUsd(t.price)}</span>
@@ -227,6 +261,12 @@ export function FundDetailModal({ fund, onClose }: Props) {
           </div>
         </section>
       )}
+
+      <TradeContextModal
+        fundId={fund.id}
+        tradeId={contextTradeId}
+        onClose={() => setContextTradeId(null)}
+      />
     </Modal>
   )
 }
