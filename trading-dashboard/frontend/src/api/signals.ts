@@ -15,3 +15,8 @@ export const fetchCompanyNames = (symbols: string[]) =>
   apiFetch<Record<string, string>>(
     `/api/company-names?symbols=${symbols.join(',')}`,
   )
+
+export const fetchSectors = (symbols: string[]) =>
+  apiFetch<Record<string, string>>(
+    `/api/sectors?symbols=${symbols.join(',')}`,
+  )

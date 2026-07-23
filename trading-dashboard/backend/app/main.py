@@ -2508,6 +2508,17 @@ async def get_company_names(symbols: str, _: None = Depends(require_api_key)):
     return {s: name for s, name in zip(requested, names) if name}
 
 
+@app.get("/api/sectors")
+def get_sectors(symbols: str, _: None = Depends(require_api_key)):
+    """Sector GICS para cada símbolo en `symbols` (separados por coma), para
+    la exposición por sector del detalle de fondo. get_sector es sincrono y
+    sin red (mapeo estatico + cache en memoria, ver sectors.py), a diferencia
+    de get_company_name -- no hace falta paralelizar con threads. Un símbolo
+    sin clasificar simplemente no aparece en la respuesta."""
+    requested = [s.strip().upper() for s in symbols.split(",") if s.strip()][:50]
+    return {s: sector for s in requested if (sector := get_sector(s)) is not None}
+
+
 @app.get("/api/rules")
 def get_rules(_: None = Depends(require_api_key)):
     return rules_config.model_dump()

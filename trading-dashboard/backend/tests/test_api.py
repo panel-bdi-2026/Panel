@@ -1500,3 +1500,22 @@ def test_get_trade_context_unknown_trade_returns_404():
         f"/api/funds/{fund.id}/trades/nope/context", headers={"X-API-Key": "test-key"}
     )
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/sectors
+# ---------------------------------------------------------------------------
+
+def test_get_sectors_returns_known_symbols_only():
+    resp = client.get(
+        "/api/sectors?symbols=AAPL,ZZZZNOPE", headers={"X-API-Key": "test-key"}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["AAPL"] == "Information Technology"
+    assert "ZZZZNOPE" not in body
+
+
+def test_get_sectors_requires_api_key():
+    resp = client.get("/api/sectors?symbols=AAPL")
+    assert resp.status_code == 401

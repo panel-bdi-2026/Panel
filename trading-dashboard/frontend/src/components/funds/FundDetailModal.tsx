@@ -8,6 +8,7 @@ import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { Badge } from '../ui/Badge'
 import { EquityChart } from './EquityChart'
+import { SectorExposureChart } from './SectorExposureChart'
 import { TradeContextModal } from './TradeContextModal'
 import { fmtUsd, fmtPct, fmtAge } from '../../lib/format'
 import { useToastStore } from '../ui/Toast'
@@ -36,6 +37,7 @@ export function FundDetailModal({ fund, onClose }: Props) {
   const [flowNote, setFlowNote] = useState('')
   const [showFlow, setShowFlow] = useState(false)
   const [contextTradeId, setContextTradeId] = useState<string | null>(null)
+  const [chartView, setChartView] = useState<'equity' | 'sectors'>('equity')
   const qc = useQueryClient()
   const addToast = useToastStore((s) => s.add)
 
@@ -149,10 +151,29 @@ export function FundDetailModal({ fund, onClose }: Props) {
         </div>
       )}
 
-      {/* Equity chart */}
+      {/* Equity chart / exposición por sector */}
       <div className="mb-4">
-        <p className="text-xs text-gray-500 uppercase mb-2">Curva de equity</p>
-        <EquityChart fundId={fund.id} />
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs text-gray-500 uppercase">
+            {chartView === 'equity' ? 'Curva de equity' : 'Exposición por sector'}
+          </p>
+          <div className="flex gap-0.5 bg-surface-2 rounded-md p-0.5">
+            {(['equity', 'sectors'] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setChartView(v)}
+                className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+                  chartView === v ? 'bg-surface-3 text-gray-100' : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                {v === 'equity' ? 'Rendimiento' : 'Sectores'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {chartView === 'equity'
+          ? <EquityChart fundId={fund.id} />
+          : <SectorExposureChart fund={fund} priceBySymbol={priceBySymbol} />}
       </div>
 
       {/* Positions — solo las que tienen acciones; el ledger conserva registros
