@@ -187,15 +187,46 @@ _funds_order_lock = asyncio.Lock()
 _screener_config_lock = asyncio.Lock()
 
 # Recuerda que simbolos pasaban los filtros del screener en el ultimo ciclo del
-# scan proactivo, para poder detectar TRANSICIONES (no pasaba -> pasa) en vez
-# de redraftear el mismo simbolo en cada ciclo mientras siga pasando. None
-# significa "todavia no hay base": el primer ciclo solo la establece, sin
-# generar borradores, para no inundar la cola de pendientes apenas arranca el
-# backend o se cambia la config del screener.
+# scan proactivo. "previously_passing"/"previously_passing_by_strategy" solo
+# se usan para saber si YA HAY una base establecida (None = todavia no: el
+# primer ciclo la establece sin generar borradores, para no inundar la cola
+# de pendientes apenas arranca el backend o se cambia la config del
+# screener). "last_attempt_at"/"last_attempt_at_by_strategy" (symbol ->
+# datetime) son el mecanismo real de reintento: un simbolo se (re)intenta si
+# nunca se intento antes o si paso screener_config.retry_cooldown_minutes
+# desde el ultimo intento -- asi una señal que se rechazo (por la regla que
+# sea: stop-loss, cash, horario de trading, etc.) se reconsidera
+# periodicamente mientras siga pasando el filtro, en vez de quedar "vista"
+# para siempre (ver _select_signal_retry_candidates). No se persisten en
+# disco: un restart simplemente los resetea, lo que en el peor caso genera
+# un reintento de mas, no un problema de correctitud.
 _signal_state: dict = {
     "previously_passing": _restored["previously_passing"],
     "previously_passing_by_strategy": _restored["previously_passing_by_strategy"],
+    "last_attempt_at": {},
+    "last_attempt_at_by_strategy": {},
 }
+
+
+def _select_signal_retry_candidates(
+    passing_now: set[str],
+    last_attempt_at: dict[str, datetime],
+    now: datetime,
+) -> set[str]:
+    """Simbolos listos para (re)intentar de `passing_now`: nunca intentados,
+    o intentados hace mas de retry_cooldown_minutes. Poda de paso las
+    entradas de `last_attempt_at` para simbolos que ya no pasan el filtro --
+    limpieza (evita crecimiento sin limite) y efecto secundario deseado: si
+    un simbolo sale de "pasando" y vuelve a entrar mas adelante, se trata
+    como intento nuevo en vez de arrastrar el cooldown de la vez anterior."""
+    for symbol in list(last_attempt_at.keys()):
+        if symbol not in passing_now:
+            del last_attempt_at[symbol]
+    cooldown = timedelta(minutes=screener_config.retry_cooldown_minutes)
+    return {
+        s for s in passing_now
+        if s not in last_attempt_at or (now - last_attempt_at[s]) >= cooldown
+    }
 
 # Radar en vivo (ver _hot_set_loop / _price_rotation_loop mas abajo):
 # _hot_symbols son los simbolos con streaming persistente activo en IBKR en
@@ -899,6 +930,29 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
                     "fund_id": fund.id,
                 },
             )
+            # El fill de la orden padre puede llegar recien DESPUES de esta
+            # excepcion (mismo timing que _wait_for_fill, ver docstring de
+            # _register_fund_fill_reconciliation): sin suscribirse aca, una
+            # compra que llena tarde queda huerfana en IBKR -- sin
+            # contabilizar en el fondo y sin ningun stop protegiendola --
+            # hasta el proximo reinicio del backend (unico lugar que hoy la
+            # agarra es _reconcile_unfilled_on_startup; ver incidente
+            # MOS/TAP/CEG/APO/CCI del 2026-07-16 que motivo este fix). No se
+            # pasa el stop_order_id rechazado: si el fill tardio llega,
+            # _ensure_protective_stop coloca uno NUEVO en vez de asumir que
+            # el rechazado sigue vivo.
+            _register_fund_fill_reconciliation(
+                order_id=exc.order_id,
+                fund_id=fund.id,
+                symbol=symbol,
+                side=Side.BUY,
+                requested_qty=quantity,
+                already_filled_qty=exc.filled_qty,
+                already_avg_price=exc.avg_fill_price or live_price,
+                stop_loss_price=effective_stop_loss_price,
+                stop_order_id=None,
+                audit_action="auto_trade_fill_late",
+            )
             return
 
         filled_qty = result_payload.get("filled_qty") or 0.0
@@ -1082,54 +1136,72 @@ async def _run_score_recompute_cycle() -> None:
     # cap de posiciones concurrentes, pero en live el capital es el límite real.
     threshold = _live_score_entry_threshold(screener_config.strategy_id)
     passing_now = {r.symbol for r in results if r.score >= threshold and r.operational_gates_ok}
+
+    # Fuera de horario de mercado, rules_engine.evaluate() rechazaria
+    # cualquier orden igual por la regla trading_hours -- no vale la pena
+    # gastar un intento (ni arrancar su cooldown) hasta que abra.
+    market_open = rules_engine._within_trading_hours()
+
     # El lock es el mismo que toma update_screener_config (corre en un thread
     # del pool, no en el event loop, por ser un endpoint sync): sin compartirlo,
     # un reset de _signal_state tras un cambio de config en pleno vuelo de este
     # ciclo se podia perder -- este ciclo leia el valor previo al reset y lo
     # pisaba de nuevo con passing_now al escribir, devolviendo intacta la base
-    # vieja que el reset queria descartar.
+    # vieja que el reset queria descartar. Todo el trabajo sobre last_attempt_at
+    # (poda + seleccion + marcar el intento) tambien se hace bajo este lock:
+    # es solo manipulacion de dicts en memoria (sin I/O), y evita la misma
+    # clase de carrera si update_screener_config reemplaza el dict entero
+    # mientras este ciclo todavia sostiene una referencia vieja.
     async with _screener_config_lock:
         previously_passing = _signal_state["previously_passing"]
         _signal_state["previously_passing"] = passing_now
         _by_snap = dict(_signal_state["previously_passing_by_strategy"])
+        last_attempt_at = _signal_state["last_attempt_at"]
+
+        if previously_passing is None:
+            # Primer ciclo (o el primero tras un reset de config): no se
+            # intenta nada, pero SI arranca el cronometro de reintento para
+            # cada simbolo que ya viene pasando -- sin esto, se draftearia
+            # de una toda la lista al arrancar el backend; y sin arrancar el
+            # cronometro, esos simbolos quedarian excluidos para siempre en
+            # vez de reconsiderarse pasado retry_cooldown_minutes.
+            for symbol in passing_now:
+                last_attempt_at.setdefault(symbol, now)
+            attempted: list = []
+        elif not market_open:
+            attempted = []
+        else:
+            candidates = _select_signal_retry_candidates(passing_now, last_attempt_at, now)
+            # Ordenar por score desc: al recortar por max_auto_drafts_per_cycle
+            # se preservan las señales más fuertes del ciclo.
+            ranked = sorted(
+                [r for r in results if r.symbol in candidates],
+                key=lambda r: r.score, reverse=True,
+            )
+            attempted = ranked[: screener_config.max_auto_drafts_per_cycle]
+            for r in attempted:
+                last_attempt_at[r.symbol] = now
 
     await asyncio.to_thread(_store.save_signal_state, passing_now, _by_snap)
 
-    if previously_passing is None:
-        # Primer ciclo (o el primero tras un reset de config): solo establece
-        # la base, sin generar borradores. Sin esto, cada simbolo que ya
-        # viniera pasando los filtros desde antes de que arrancara el backend
-        # (o desde el ultimo cambio de config) se draftearia de una al primer
-        # ciclo, en vez de solo los que cambian de estado.
-        pass
-    else:
-        new_symbols = passing_now - previously_passing
-        if new_symbols:
-            # Ordenar por score desc: al recortar por max_auto_drafts_per_cycle
-            # se preservan las señales más fuertes del ciclo.
-            new_signals = sorted(
-                [r for r in results if r.symbol in new_symbols],
-                key=lambda r: r.score, reverse=True,
-            )
+    if attempted:
+        for r in attempted:
+            await _try_auto_trade_entry(r, screener_config.strategy_id)
 
-            for r in new_signals[: screener_config.max_auto_drafts_per_cycle]:
-                await _try_auto_trade_entry(r, screener_config.strategy_id)
+        # Sin tope por top_n: el límite real es el cash disponible del fondo.
+        # _draft_fund_order_from_signal descarta automáticamente la señal si
+        # el fondo no tiene cash suficiente para min_transaction_usd.
+        drafted = []
+        for r in attempted:
+            p = await _draft_fund_order_from_signal(r, screener_config.strategy_id)
+            if p is not None:
+                drafted.append(p)
 
-            # Sin tope por top_n: el límite real es el cash disponible del fondo.
-            # _draft_fund_order_from_signal descarta automáticamente la señal si
-            # el fondo no tiene cash suficiente para min_transaction_usd.
-            cap = screener_config.max_auto_drafts_per_cycle
-            drafted = []
-            for r in new_signals[:cap]:
-                p = await _draft_fund_order_from_signal(r, screener_config.strategy_id)
-                if p is not None:
-                    drafted.append(p)
-
-            await _broadcast({
-                "type": "signal_alert",
-                "new_signals": [r.model_dump() for r in new_signals[:cap]],
-                "drafted_orders": [p.model_dump() for p in drafted],
-            })
+        await _broadcast({
+            "type": "signal_alert",
+            "new_signals": [r.model_dump() for r in attempted],
+            "drafted_orders": [p.model_dump() for p in drafted],
+        })
 
     # Fondos en auto-trading que eligieron explicitamente una estrategia
     # distinta a la activa global (ver fund.strategy_id) necesitan que ESA
@@ -1178,38 +1250,54 @@ async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
 
     threshold = _live_score_entry_threshold(strategy_id)
     passing_now = {r.symbol for r in results if r.score >= threshold and r.operational_gates_ok}
+    now = datetime.now(timezone.utc)
+
+    # Fuera de horario de mercado, no vale la pena gastar un intento (ni
+    # arrancar su cooldown) -- se rechazaria por trading_hours de cualquier
+    # forma. Ver _select_signal_retry_candidates para el mecanismo de
+    # reintento en si.
+    market_open = rules_engine._within_trading_hours()
 
     # Mismo lock que _run_signal_scan_cycle y update_screener_config: ademas de
     # la razon de ahi, update_screener_config REEMPLAZA el dict completo
     # (_signal_state["previously_passing_by_strategy"] = {}), no lo muta in
     # place -- sin el lock, este ciclo podia guardarse una referencia al dict
     # VIEJO antes del reemplazo y escribir ahi, perdiendo la escritura sin que
-    # _signal_state la vea nunca.
+    # _signal_state la vea nunca. Mismo motivo aplica a last_attempt_at_by_strategy.
     async with _screener_config_lock:
         by_strategy = _signal_state["previously_passing_by_strategy"]
         previously_passing = by_strategy.get(strategy_id)
         by_strategy[strategy_id] = passing_now
         _pp_snap = _signal_state["previously_passing"]
         _by_snap2 = dict(by_strategy)
+        last_attempt_at = _signal_state["last_attempt_at_by_strategy"].setdefault(strategy_id, {})
+
+        if previously_passing is None:
+            for symbol in passing_now:
+                last_attempt_at.setdefault(symbol, now)
+            attempted: list = []
+        elif not market_open:
+            attempted = []
+        else:
+            candidates = _select_signal_retry_candidates(passing_now, last_attempt_at, now)
+            ranked = sorted(
+                [r for r in results if r.symbol in candidates],
+                key=lambda r: r.score, reverse=True,
+            )
+            attempted = ranked[: screener_config.max_auto_drafts_per_cycle]
+            for r in attempted:
+                last_attempt_at[r.symbol] = now
 
     await asyncio.to_thread(_store.save_signal_state, _pp_snap, _by_snap2)
 
-    if previously_passing is None:
+    if not attempted:
         return
 
-    new_symbols = passing_now - previously_passing
-    if not new_symbols:
-        return
-    new_signals = sorted(
-        [r for r in results if r.symbol in new_symbols],
-        key=lambda r: r.score, reverse=True,
-    )
-    cap = screener_config.max_auto_drafts_per_cycle
-    for r in new_signals[:cap]:
+    for r in attempted:
         await _try_auto_trade_entry(r, strategy_id)
 
     drafted = []
-    for r in new_signals[:cap]:
+    for r in attempted:
         p = await _draft_fund_order_from_signal(r, strategy_id)
         if p is not None:
             drafted.append(p)
@@ -1217,7 +1305,7 @@ async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
     if drafted:
         await _broadcast({
             "type": "signal_alert",
-            "new_signals": [r.model_dump() for r in new_signals[:cap]],
+            "new_signals": [r.model_dump() for r in attempted],
             "drafted_orders": [p.model_dump() for p in drafted],
         })
 
@@ -2520,6 +2608,8 @@ async def update_screener_config(body: ScreenerUpdate, _: None = Depends(require
         # strategy_id propio (ver _run_fund_strategy_auto_trade_scan).
         _signal_state["previously_passing"] = None
         _signal_state["previously_passing_by_strategy"] = {}
+        _signal_state["last_attempt_at"] = {}
+        _signal_state["last_attempt_at_by_strategy"] = {}
         _store.save_signal_state(None, {})
 
         # Simbolos nuevos en el universo (agregados en este PUT) que todavia

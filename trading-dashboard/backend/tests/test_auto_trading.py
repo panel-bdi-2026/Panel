@@ -68,6 +68,8 @@ def reset_state(monkeypatch, tmp_path):
     main_module.state["pending_orders"] = {}
     main_module.state["peak_equity_usd"] = None
     main_module.state["market_data_degraded"] = False
+    main_module._signal_state["last_attempt_at"] = {}
+    main_module._signal_state["last_attempt_at_by_strategy"] = {}
     monkeypatch.setattr(main_module, "funds_store", FundsStore(tmp_path / "funds.json"))
     # audit es un AuditLog real compartido a nivel de modulo con
     # test_signal_engine.py (y el resto de la suite): sin aislarlo, los

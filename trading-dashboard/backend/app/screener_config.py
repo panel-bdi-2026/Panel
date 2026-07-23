@@ -639,6 +639,22 @@ class ScreenerConfig(BaseModel):
     # respecto a top_n contando lo que ya esta pendiente.
     max_auto_drafts_per_cycle: int = 3
 
+    # Cuantos minutos esperar antes de reintentar un simbolo que sigue
+    # pasando los filtros pero cuyo ultimo intento de compra no se pudo
+    # ejecutar/draftear (rechazado por alguna regla de riesgo -- stop-loss,
+    # exposicion por sector, cash, horario de trading, etc. -- o sin fondo
+    # candidato con cupo en ese momento). Sin esto, la deteccion de "señal
+    # nueva" (transicion no-pasa -> pasa) solo dispara UNA vez por simbolo:
+    # si esa unica oportunidad se pierde, el simbolo queda "visto" para
+    # siempre y nunca se reconsidera mientras siga pasando el filtro, aunque
+    # las condiciones que lo bloquearon cambien ciclo a ciclo (precio/ATR
+    # moviendo el % de stop-loss, cash que se libera al cerrar otra
+    # posicion, el mercado que abre). Ver incidente 2026-07-17:
+    # STLD/CLX/TEL rechazados de madrugada (fuera de trading_hours) nunca se
+    # reintentaron durante el horario normal aunque siguieran pasando el
+    # filtro horas despues.
+    retry_cooldown_minutes: int = 60
+
     # Sentimiento de noticias via Claude Haiku 4.5 (ver app/news_sentiment.py):
     # ajuste acotado de score en una segunda etapa, posterior al ranking
     # cross-sectional, solo para el shortlist de los mejores candidatos (no

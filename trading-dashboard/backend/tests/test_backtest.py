@@ -45,7 +45,7 @@ FAKE_BARS = {
 
 @pytest.fixture
 def patched_market_data(monkeypatch):
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         if symbol not in FAKE_BARS:
             raise MarketDataError(f"sin datos sinteticos para {symbol}")
         return FAKE_BARS[symbol]
@@ -63,7 +63,7 @@ def test_backtest_produces_trades_and_metrics(patched_market_data):
 
 
 def test_backtest_raises_when_benchmark_unavailable(monkeypatch):
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         raise MarketDataError("no data")
 
     monkeypatch.setattr(backtest_module, "get_daily_bars", fake_get_daily_bars)
@@ -74,7 +74,7 @@ def test_backtest_raises_when_benchmark_unavailable(monkeypatch):
 
 def test_backtest_raises_when_no_trades_generated(monkeypatch):
     # Universo vacio de simbolos validos -> nunca hay senal de entrada.
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         if symbol == "SPY":
             return FAKE_BARS["SPY"]
         raise MarketDataError("no data")
@@ -105,7 +105,7 @@ def test_backtest_never_requests_market_data_for_growth_tickers(monkeypatch):
     # siquiera si estan presentes en cfg.universe.
     requested = []
 
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         requested.append(symbol)
         if symbol not in FAKE_BARS:
             raise MarketDataError(f"sin datos sinteticos para {symbol}")
@@ -651,7 +651,7 @@ def test_regime_filter_blocks_entries_when_benchmark_below_regime_sma(monkeypatc
     bench_closes = [200.0 - 0.3 * i for i in range(n)]
     bench_bars = _bars(bench_closes)
 
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         if symbol == "SPY":
             return bench_bars
         if symbol == "MOM":
@@ -678,7 +678,7 @@ def test_opportunistic_regime_filter_blocks_entries_when_enabled_and_benchmark_b
     buddy_bars = _opportunistic_buddy_bars(n=n)
     bench_bars = _bars([200.0 - 0.3 * i for i in range(n)])
 
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         if symbol == "SPY":
             return bench_bars
         if symbol == "OPP":
@@ -719,7 +719,7 @@ def test_regime_filter_is_independent_per_strategy(monkeypatch):
         "OPP2": _opportunistic_buddy_bars(n=n),
     }
 
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         if symbol in bars_by_symbol:
             return bars_by_symbol[symbol]
         raise MarketDataError("no data")
@@ -1510,7 +1510,7 @@ def test_near_high_filter_reduces_entries_far_from_52w_high(monkeypatch):
     bars2 = _mk(close2)
     bench = _mk(pd.Series([100.0] * (n_ramp + n_tail), index=idx))
 
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         if symbol == "SPY":
             return bench
         if symbol == "FARHI":
@@ -1779,7 +1779,7 @@ def test_opportunistic_backtest_produces_trades_and_metrics(monkeypatch):
     bench_bars = _bars([100.0] * len(bars))
     buddy_bars = _opportunistic_buddy_bars(len(bars))
 
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         if symbol == "SPY":
             return bench_bars
         if symbol == "OPP":
@@ -1816,7 +1816,7 @@ def test_opportunistic_backtest_skips_throttle_for_already_cached_symbol(monkeyp
     bench_bars = _bars([100.0] * len(bars))
     buddy_bars = _opportunistic_buddy_bars(len(bars))
 
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         if symbol == "SPY":
             return bench_bars
         if symbol == "OPP":
@@ -1854,7 +1854,7 @@ def test_opportunistic_backtest_never_requests_market_data_for_growth_tickers(mo
 
     requested = []
 
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         requested.append(symbol)
         if symbol == "SPY":
             return bench_bars
@@ -1888,7 +1888,7 @@ def test_opportunistic_backtest_raises_when_benchmark_unavailable(monkeypatch):
     bars = _opportunistic_oscillating_bars()
     buddy_bars = _opportunistic_buddy_bars(len(bars))
 
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         if symbol == "OPP":
             return bars
         if symbol == "OPP2":
@@ -1909,7 +1909,7 @@ def test_opportunistic_backtest_raises_when_no_trades_generated(monkeypatch):
     flat_bars = _bars([100.0] * 320)
     bench_bars = _bars([100.0] * 320)
 
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         if symbol == "FLAT":
             return flat_bars
         if symbol == "SPY":
@@ -1979,7 +1979,7 @@ def test_opportunistic_backtest_walk_forward_partitions_all_trades_without_loss(
     bench_bars = _bars([100.0] * len(bars))
     buddy_bars = _opportunistic_buddy_bars(len(bars))
 
-    def fake_get_daily_bars(symbol, lookback_days):
+    def fake_get_daily_bars(symbol, lookback_days, **kwargs):
         if symbol == "SPY":
             return bench_bars
         if symbol == "OPP":

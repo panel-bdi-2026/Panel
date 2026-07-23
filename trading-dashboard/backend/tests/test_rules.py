@@ -273,13 +273,20 @@ def test_suggested_quantity_lower_score_decreases_risk_based_quantity():
 
 
 def test_suggested_quantity_score_multiplier_does_not_bypass_hard_caps():
-    # Aun con score=100 (multiplicador maximo 1.5x), max_order_value_usd sigue
-    # topeando la cantidad final -- la conviccion solo afecta la pata de riesgo.
+    # Desde "Sizing por convicción" (de61a17), el multiplicador de conviccion
+    # (0.5x-1.5x segun score) tambien escala max_order_value_usd y
+    # max_position_pct_of_equity, no solo la pata de riesgo -- a proposito,
+    # para que el score tenga efecto real incluso cuando esos topes son la
+    # restriccion vinculante (el caso comun). El limite YA NO es
+    # max_order_value_usd a secas: con score=100 (multiplicador maximo 1.5x)
+    # el limite real es max_order_value_usd * 1.5 -- pero sigue habiendo un
+    # limite, nunca crece sin cota.
     config = RulesConfig(max_order_value_usd=5_000, max_position_pct_of_equity=100, risk_per_trade_pct=50)
     engine = RulesEngine(config)
     suggestion = engine.suggested_quantity(100_000, 0, entry_price=200, stop_loss_price=190, score=100)
-    assert suggestion.quantity == 25
+    assert suggestion.quantity == 37  # floor(5_000 * 1.5 / 200)
     assert suggestion.limited_by == "max_order_value_usd"
+    assert suggestion.quantity * 200 <= 5_000 * 1.5
 
 
 # ---------------------------------------------------------------------------

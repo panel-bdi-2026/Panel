@@ -2,7 +2,7 @@ import asyncio
 import os
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # app.main importa app.config, que instancia Settings() (y por lo tanto exige
@@ -64,6 +64,8 @@ def reset_state(monkeypatch, tmp_path):
     main_module.state["peak_equity_usd"] = None
     main_module.state["market_data_degraded"] = False
     main_module._signal_state["previously_passing"] = None
+    main_module._signal_state["last_attempt_at"] = {}
+    main_module._signal_state["last_attempt_at_by_strategy"] = {}
     # Varios tests mutan atributos de screener_config directamente (ej.
     # auto_scan_enabled, top_n) sin pasar por monkeypatch. Sin aislar el
     # objeto, esa mutacion persiste mas alla del test (y del archivo, ya que
@@ -139,16 +141,22 @@ def test_draft_fund_order_from_signal_creates_pending_order_with_signal_source()
 def test_draft_fund_order_from_signal_sizes_against_fund_equity_not_whole_account():
     # Antes (_draft_order_from_signal, retirada), el sizing usaba
     # account.net_liquidation (100,000 en make_account()) sin importar el
-    # fondo: un fondo bien mas chico ($2,000) debe producir una cantidad
-    # sugerida mucho menor a la que hubiera dado dimensionar contra toda la
-    # cuenta.
-    make_auto_trading_fund(cash=2_000.0)
+    # fondo: un fondo bien mas chico debe producir una cantidad sugerida
+    # mucho menor a la que hubiera dado dimensionar contra toda la cuenta.
+    #
+    # $2,000 (el valor original de este test) ya no alcanza desde que
+    # min_transaction_usd=$500 (de61a17) descarta ordenes chicas: al 10%
+    # default de max_position_pct_of_equity, $2,000 solo puede producir
+    # una posicion de ~$200-230, por debajo del piso -- _draft_fund_order_
+    # from_signal devolveria None. $10,000 sigue siendo un fondo chico
+    # frente a los $100,000 de la cuenta completa, pero ya limpia el piso.
+    make_auto_trading_fund(cash=10_000.0)
     pending = asyncio.run(main_module._draft_fund_order_from_signal(make_signal(), "momentum"))
     assert pending is not None
-    # risk_per_trade_pct default 1% de $2,000 = $20 de riesgo; con
-    # stop a $5 de distancia (100 vs 95), la cantidad sugerida es ~4, muy
-    # por debajo de lo que hubiera dado sizear contra $100,000 (~200).
-    assert pending.order.quantity < 20
+    # risk_per_trade_pct default 1% de $10,000 (mas el multiplicador de
+    # conviccion para score=65) da una cantidad sugerida de un digito,
+    # muy por debajo de lo que hubiera dado sizear contra $100,000 (~cientos).
+    assert 0 < pending.order.quantity < 20
 
 
 def test_draft_fund_order_from_signal_records_signal_rationale_in_audit():
@@ -287,14 +295,88 @@ def test_signal_scan_cycle_drafts_order_for_new_passing_symbol(monkeypatch):
     assert drafted.strategy_id == "momentum"
 
 
-def test_signal_scan_cycle_does_not_redraft_symbol_already_passing(monkeypatch):
+def test_signal_scan_cycle_does_not_reattempt_rejected_symbol_within_cooldown(monkeypatch):
+    # Antes, un simbolo "ya visto" (siga o no pasando el filtro) nunca se
+    # reevaluaba hasta salir y volver a entrar al set de "pasando". Ahora se
+    # reintenta pasado retry_cooldown_minutes -- pero NO antes: este test
+    # cubre el "todavia no" (ver el de al lado para el "ya paso el cooldown").
+    make_auto_trading_fund()
     main_module.screener_config.auto_scan_enabled = True
+    main_module.screener_config.retry_cooldown_minutes = 60
+    main_module.rules_engine.reload(RulesConfig(symbol_whitelist=[], allow_extended_hours=True))  # rechaza todo
     main_module._signal_state["previously_passing"] = {"AAPL"}  # ya estaba pasando antes
+    # Simula un intento reciente (hace 1 minuto) que ya fue rechazado.
+    first_attempt_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    main_module._signal_state["last_attempt_at"]["AAPL"] = first_attempt_at
     monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [make_signal(symbol="AAPL", passes=True)])
+
+    # Dentro del cooldown de 60 min: no se reintenta, el timestamp no cambia.
+    asyncio.run(main_module._run_score_recompute_cycle())
+    assert main_module.state["pending_orders"] == {}
+    assert main_module._signal_state["last_attempt_at"]["AAPL"] == first_attempt_at
+
+
+def test_signal_scan_cycle_retries_rejected_symbol_after_cooldown_elapses(monkeypatch):
+    make_auto_trading_fund()
+    main_module.screener_config.auto_scan_enabled = True
+    main_module.screener_config.retry_cooldown_minutes = 30
+    main_module.rules_engine.reload(RulesConfig(symbol_whitelist=[], allow_extended_hours=True))  # rechaza todo
+    main_module._signal_state["previously_passing"] = set()
+    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [make_signal(symbol="AAPL", passes=True)])
+
+    asyncio.run(main_module._run_score_recompute_cycle())
+    assert main_module.state["pending_orders"] == {}  # 1er intento: rechazado por whitelist vacia
+
+    # Simular que paso el cooldown retrocediendo el timestamp del intento, y
+    # que ahora la condicion que bloqueaba (whitelist) se resolvio -- analogo
+    # a que el precio/ATR se movio y el stop-loss ya no excede el maximo.
+    main_module._signal_state["last_attempt_at"]["AAPL"] -= timedelta(minutes=31)
+    main_module.rules_engine.reload(RulesConfig(symbol_whitelist=["AAPL"], allow_extended_hours=True))
+
+    asyncio.run(main_module._run_score_recompute_cycle())
+    assert len(main_module.state["pending_orders"]) == 1
+
+
+def test_signal_scan_cycle_skips_attempts_and_cooldown_timer_when_market_closed(monkeypatch):
+    make_auto_trading_fund()
+    main_module.screener_config.auto_scan_enabled = True
+    main_module.rules_engine.reload(RulesConfig(symbol_whitelist=["AAPL"], allow_extended_hours=True))
+    main_module._signal_state["previously_passing"] = set()
+    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: [make_signal(symbol="AAPL", passes=True)])
+    # Forzar mercado cerrado independientemente de la hora real de la corrida.
+    monkeypatch.setattr(main_module.rules_engine, "_within_trading_hours", lambda: False)
 
     asyncio.run(main_module._run_score_recompute_cycle())
 
     assert main_module.state["pending_orders"] == {}
+    # El cronometro de cooldown tampoco arranca: intentar mientras el mercado
+    # esta cerrado seria gasto en vano (se rechazaria por trading_hours de
+    # cualquier forma).
+    assert "AAPL" not in main_module._signal_state["last_attempt_at"]
+
+
+def test_select_signal_retry_candidates_includes_never_attempted_and_cooldown_elapsed():
+    main_module.screener_config.retry_cooldown_minutes = 30
+    now = datetime.now(timezone.utc)
+    last_attempt_at = {
+        "OLD": now - timedelta(minutes=31),
+        "RECENT": now - timedelta(minutes=5),
+    }
+    passing_now = {"NEW", "OLD", "RECENT"}
+
+    candidates = main_module._select_signal_retry_candidates(passing_now, last_attempt_at, now)
+
+    assert candidates == {"NEW", "OLD"}
+
+
+def test_select_signal_retry_candidates_prunes_symbols_no_longer_passing():
+    now = datetime.now(timezone.utc)
+    last_attempt_at = {"GONE": now, "STAYS": now}
+
+    main_module._select_signal_retry_candidates({"STAYS"}, last_attempt_at, now)
+
+    assert "GONE" not in last_attempt_at
+    assert "STAYS" in last_attempt_at
 
 
 def test_signal_scan_cycle_handles_scan_failure_gracefully(monkeypatch):
@@ -433,37 +515,11 @@ def test_signal_scan_cycle_caps_drafts_per_cycle(monkeypatch):
     assert len(drafted) == 3
     assert {p.order.symbol for p in drafted} == {"S0", "S1", "S2"}
 
-
-def test_signal_scan_cycle_respects_free_slots_vs_top_n(monkeypatch):
-    make_auto_trading_fund()
-    main_module.screener_config.auto_scan_enabled = True
-    main_module.screener_config.top_n = 2
-    main_module.screener_config.max_auto_drafts_per_cycle = 5
-    main_module._signal_state["previously_passing"] = set()
-    main_module.rules_engine.reload(RulesConfig(
-        symbol_whitelist=["S0", "S1", "S2"],
-        allow_extended_hours=True,
-        manual_approval_threshold_usd=1_000_000,
-    ))
-    # Ya hay 1 orden pendiente: con top_n=2 solo queda 1 cupo libre, asi que
-    # aunque el tope por ciclo sea 5 y haya 3 señales nuevas, se draftea 1 sola.
-    existing = PendingOrder(
-        id="pending-x",
-        order=main_module.OrderRequest(symbol="ZZ", side=main_module.Side.BUY, quantity=1, stop_loss_price=90),
-        decision=OrderDecision(approved=True, requires_manual_approval=True, estimated_value_usd=100),
-        created_at=datetime.now(timezone.utc),
-        source="user",
-    )
-    main_module.state["pending_orders"]["pending-x"] = existing
-
-    signals = [make_signal(symbol=f"S{i}", score=100 - i, passes=True) for i in range(3)]
-    monkeypatch.setattr(main_module.screener, "scan", lambda *a, **kw: signals)
-
-    asyncio.run(main_module._run_score_recompute_cycle())
-
-    drafted = [p for p in main_module.state["pending_orders"].values() if p.source == "signal_engine"]
-    assert len(drafted) == 1
-    assert drafted[0].order.symbol == "S0"
+# test_signal_scan_cycle_respects_free_slots_vs_top_n (probaba que top_n
+# topeaba cupos libres para drafts en vivo) se elimino: de61a17 quito ese
+# tope a proposito (el limite real pasa a ser cash del fondo / min_transaction_
+# usd, y por ciclo max_auto_drafts_per_cycle -- ver el test de arriba,
+# que ya cubre ese reemplazo con top_n puesto alto para probar que no influye).
 
 
 # ---------------------------------------------------------------------------
