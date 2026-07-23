@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Fund } from '../../api/types'
 import { addCapitalFlow, setAutoTrading } from '../../api/funds'
 import { fetchPositions } from '../../api/account'
+import { fetchCompanyNames } from '../../api/signals'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import { Badge } from '../ui/Badge'
@@ -48,6 +49,19 @@ export function FundDetailModal({ fund, onClose }: Props) {
   })
   const priceBySymbol: Record<string, number | null> = {}
   for (const p of positions ?? []) priceBySymbol[p.symbol] = p.market_price
+
+  // Nombre comercial al lado del ticker (ej. "Apple Inc." junto a AAPL) —
+  // cache de 24hs en el backend y acá: el nombre de una empresa no cambia.
+  const openSymbols = Object.entries(fund?.positions ?? {})
+    .filter(([, pos]) => pos.quantity !== 0)
+    .map(([sym]) => sym)
+    .sort()
+  const { data: companyNames } = useQuery({
+    queryKey: ['company-names', openSymbols.join(',')],
+    queryFn: () => fetchCompanyNames(openSymbols),
+    enabled: openSymbols.length > 0,
+    staleTime: 24 * 60 * 60 * 1000,
+  })
 
   if (!fund) return null
 
@@ -138,9 +152,14 @@ export function FundDetailModal({ fund, onClose }: Props) {
                 : null
               return (
                 <div key={sym} className="bg-gray-800 rounded-lg px-3 py-2.5">
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-gray-100">{sym}</span>
-                    <div className="flex items-center gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-baseline gap-1.5 min-w-0">
+                      <span className="font-semibold text-gray-100 shrink-0">{sym}</span>
+                      {companyNames?.[sym] && (
+                        <span className="text-gray-500 text-xs truncate">{companyNames[sym]}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
                       {pos.stop_loss_price && (
                         <span className="text-red-400 text-xs font-medium">SL {fmtUsd(pos.stop_loss_price)}</span>
                       )}

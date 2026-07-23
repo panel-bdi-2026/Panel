@@ -38,6 +38,7 @@ from .indicators import atr, market_regime_ok, rate_of_change, sma
 from .market_data import (
     MarketDataError,
     get_bars_failure_stats,
+    get_company_name,
     get_daily_bars,
     get_fundamentals,
     is_bars_cached,
@@ -2493,6 +2494,18 @@ async def get_positions(_: None = Depends(require_api_key)):
     if not state["connected"]:
         raise HTTPException(status_code=503, detail="No conectado a IBKR.")
     return await broker.get_positions()
+
+
+@app.get("/api/company-names")
+async def get_company_names(symbols: str, _: None = Depends(require_api_key)):
+    """Nombre comercial (ej. 'Apple Inc.') para cada símbolo en `symbols`
+    (separados por coma), para mostrar al lado del ticker en el frontend.
+    Solo devuelve las claves que se pudieron resolver -- un símbolo sin
+    nombre disponible simplemente no aparece en la respuesta, en vez de
+    romper el resto del lote."""
+    requested = [s.strip().upper() for s in symbols.split(",") if s.strip()][:50]
+    names = await asyncio.gather(*(asyncio.to_thread(get_company_name, s) for s in requested))
+    return {s: name for s, name in zip(requested, names) if name}
 
 
 @app.get("/api/rules")

@@ -10,3 +10,8 @@ export const fetchLivePrices = (symbols: string[]) =>
   apiFetch<Record<string, LivePriceEntry>>(
     `/api/signals/live-prices?symbols=${symbols.join(',')}`,
   )
+
+export const fetchCompanyNames = (symbols: string[]) =>
+  apiFetch<Record<string, string>>(
+    `/api/company-names?symbols=${symbols.join(',')}`,
+  )

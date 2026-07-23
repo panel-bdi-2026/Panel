@@ -47,6 +47,12 @@ _FUNDAMENTALS_CACHE_TTL_SECONDS = 24 * 3600
 _FUNDAMENTALS_FAILURE_CACHE_TTL_SECONDS = _CACHE_TTL_SECONDS
 _fundamentals_cache: dict[str, tuple[float, dict, bool]] = {}  # (timestamp, value, ok)
 
+# El nombre comercial de una empresa no cambia (salvo un rebranding
+# excepcional): mismo cache largo que fundamentals/earnings.
+_COMPANY_NAME_CACHE_TTL_SECONDS = 24 * 3600
+_COMPANY_NAME_FAILURE_CACHE_TTL_SECONDS = _CACHE_TTL_SECONDS
+_company_name_cache: dict[str, tuple[float, "str | None", bool]] = {}  # (timestamp, value, ok)
+
 
 class _KeyedLocks:
     """Un threading.Lock por clave, creado on-demand. get_daily_bars y
@@ -75,6 +81,7 @@ class _KeyedLocks:
 _bars_locks = _KeyedLocks()
 _earnings_locks = _KeyedLocks()
 _fundamentals_locks = _KeyedLocks()
+_company_name_locks = _KeyedLocks()
 
 # Rate limiter para Tiingo: los 10 workers del executor pueden rafaguear la API
 # simultáneamente en el primer scan en frío, provocando 429. Un lock + timestamp
@@ -513,6 +520,39 @@ def get_fundamentals(symbol: str, force: bool = False, cache_only: bool = False)
         return result
 
 
+def get_company_name(symbol: str) -> "str | None":
+    """Nombre comercial de `symbol` (shortName de yfinance, ej. 'Apple Inc.'
+    para AAPL), o None si no se pudo resolver. Usado solo para mostrarlo al
+    lado del ticker en el frontend -- best-effort, nunca bloquea nada si
+    yfinance no tiene el dato o falla."""
+    key = symbol.upper()
+    now = time.time()
+    cached = _company_name_cache.get(key)
+    if cached:
+        ttl = _COMPANY_NAME_CACHE_TTL_SECONDS if cached[2] else _COMPANY_NAME_FAILURE_CACHE_TTL_SECONDS
+        if now - cached[0] < ttl:
+            return cached[1]
+
+    with _company_name_locks.get(key):
+        now = time.time()
+        cached = _company_name_cache.get(key)
+        if cached:
+            ttl = _COMPANY_NAME_CACHE_TTL_SECONDS if cached[2] else _COMPANY_NAME_FAILURE_CACHE_TTL_SECONDS
+            if now - cached[0] < ttl:
+                return cached[1]
+
+        ok = True
+        try:
+            info = _fetch_with_timeout(lambda: yf.Ticker(symbol).get_info()) or {}
+            name = info.get("shortName") or info.get("longName") or None
+        except Exception:
+            name = None
+            ok = False
+
+        _company_name_cache[key] = (now, name, ok)
+        return name
+
+
 def evict_stale_cache() -> None:
     """Elimina entradas expiradas de todos los caches en memoria.
 
@@ -539,4 +579,9 @@ def evict_stale_cache() -> None:
         ttl = _FUNDAMENTALS_CACHE_TTL_SECONDS if ok else _FUNDAMENTALS_FAILURE_CACHE_TTL_SECONDS
         if now - ts >= ttl:
             _fundamentals_cache.pop(key, None)
+    for key in list(_company_name_cache):
+        ts, _, ok = _company_name_cache[key]
+        ttl = _COMPANY_NAME_CACHE_TTL_SECONDS if ok else _COMPANY_NAME_FAILURE_CACHE_TTL_SECONDS
+        if now - ts >= ttl:
+            _company_name_cache.pop(key, None)
 
