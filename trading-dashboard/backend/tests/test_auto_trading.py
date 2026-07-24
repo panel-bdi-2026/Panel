@@ -469,6 +469,114 @@ def test_check_fund_exit_closes_on_max_holding_days(monkeypatch):
     assert fund.cash_usd == 10_049  # 10000 - 10*100 (compra) + 10*105 (salida) - 1 (comision venta)
 
 
+def test_check_fund_exit_cancels_orphaned_stop_loss_on_full_close(monkeypatch):
+    # Bug real 2026-07-24 (AEHR/TAP): al cerrar la posicion entera por
+    # sector_exit/take_profit/trend_break/max_holding_days, el stop-loss
+    # protector que se habia colocado al abrir la posicion quedaba vivo en
+    # IBKR. Si el precio lo tocaba mas tarde, vendia de mas sobre una
+    # posicion que ya no existia -- generando un short pese a
+    # allow_short_selling=false. Este test verifica que ahora se cancela.
+    main_module.screener_config.max_holding_days = 5
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=95, stop_order_id=777
+    )
+    fund = main_module.funds_store.get(fund.id)
+    fund.positions["AAPL"].opened_at = datetime.now(timezone.utc) - timedelta(days=10)
+    monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
+
+    def fail_bars(symbol, days):
+        raise main_module.MarketDataError("sin datos")
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fail_bars)
+
+    async def fake_reference_price(symbol):
+        return 105.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
+    monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
+
+    cancel_calls = []
+
+    async def fake_cancel(order_id):
+        cancel_calls.append(order_id)
+        return True
+
+    monkeypatch.setattr(main_module.broker, "cancel_resting_order", fake_cancel)
+
+    asyncio.run(main_module._check_fund_exit(fund.id, "AAPL"))
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.owned_quantity("AAPL") == 0
+    assert cancel_calls == [777]
+
+
+def test_check_fund_exit_skips_cancel_when_position_had_no_stop_order_id(monkeypatch):
+    main_module.screener_config.max_holding_days = 5
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    # Sin stop_order_id (ej. posicion reconciliada sin stop conocido).
+    main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=95)
+    fund = main_module.funds_store.get(fund.id)
+    fund.positions["AAPL"].opened_at = datetime.now(timezone.utc) - timedelta(days=10)
+    monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
+
+    def fail_bars(symbol, days):
+        raise main_module.MarketDataError("sin datos")
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fail_bars)
+
+    async def fake_reference_price(symbol):
+        return 105.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
+    monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
+
+    async def fail_if_called(order_id):
+        raise AssertionError("no deberia intentar cancelar sin stop_order_id")
+
+    monkeypatch.setattr(main_module.broker, "cancel_resting_order", fail_if_called)
+
+    asyncio.run(main_module._check_fund_exit(fund.id, "AAPL"))  # no debe lanzar
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.owned_quantity("AAPL") == 0
+
+
+def test_check_fund_exit_survives_cancel_resting_order_failure(monkeypatch):
+    # Best-effort: si la cancelacion del stop huerfano falla (ej. error de
+    # red con IBKR), el cierre de la posicion en el ledger del fondo ya
+    # ocurrio y no debe revertirse ni propagar la excepcion.
+    main_module.screener_config.max_holding_days = 5
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(
+        fund.id, "AAPL", main_module.Side.BUY, 10, 100, stop_loss_price=95, stop_order_id=777
+    )
+    fund = main_module.funds_store.get(fund.id)
+    fund.positions["AAPL"].opened_at = datetime.now(timezone.utc) - timedelta(days=10)
+    monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
+
+    def fail_bars(symbol, days):
+        raise main_module.MarketDataError("sin datos")
+
+    monkeypatch.setattr(main_module, "get_daily_bars", fail_bars)
+
+    async def fake_reference_price(symbol):
+        return 105.0
+
+    monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
+    monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
+
+    async def fake_cancel(order_id):
+        raise ConnectionError("IBKR no responde")
+
+    monkeypatch.setattr(main_module.broker, "cancel_resting_order", fake_cancel)
+
+    asyncio.run(main_module._check_fund_exit(fund.id, "AAPL"))  # no debe propagar
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.owned_quantity("AAPL") == 0
+
+
 def test_check_fund_exit_closes_on_trend_break(monkeypatch):
     main_module.screener_config.sma_fast = 3
     fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
@@ -915,7 +1023,9 @@ def test_check_fund_scale_out_sells_partial_and_moves_stop_to_breakeven(monkeypa
     monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
     modify_calls = []
     monkeypatch.setattr(
-        main_module.broker, "modify_stop_price", lambda order_id, price: modify_calls.append((order_id, price)) or True
+        main_module.broker,
+        "modify_stop_price",
+        lambda order_id, price, new_quantity=None: modify_calls.append((order_id, price, new_quantity)) or True,
     )
 
     asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))
@@ -926,7 +1036,10 @@ def test_check_fund_scale_out_sells_partial_and_moves_stop_to_breakeven(monkeypa
     assert pos.avg_cost == 100  # no se toca en una venta
     assert pos.stop_loss_price == 100  # movido a breakeven
     assert pos.scaled_out_at is not None
-    assert modify_calls == [(1, 100)]
+    # new_quantity=5 (el remanente): sin esto el stop-loss que ya estaba
+    # colocado en IBKR queda dimensionado para las 10 acciones originales, y
+    # si se dispara mas tarde vende de mas (ver incidente AEHR/TAP 2026-07-24).
+    assert modify_calls == [(1, 100, 5)]
     entries = main_module.audit.recent(1)
     assert entries[0]["action"] == "auto_trade_scale_out"
 
@@ -942,7 +1055,7 @@ def test_check_fund_scale_out_does_not_repeat_after_first_trigger(monkeypatch):
 
     monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
     monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
-    monkeypatch.setattr(main_module.broker, "modify_stop_price", lambda order_id, price: True)
+    monkeypatch.setattr(main_module.broker, "modify_stop_price", lambda order_id, price, new_quantity=None: True)
 
     asyncio.run(main_module._check_fund_scale_out(fund.id, "AAPL"))
     fund = main_module.funds_store.get(fund.id)
@@ -998,7 +1111,7 @@ def test_check_fund_exit_scale_out_leaves_position_open_when_no_full_exit_condit
 
     monkeypatch.setattr(main_module.broker, "get_reference_price", fake_reference_price)
     monkeypatch.setattr(main_module.broker, "place_order", _fake_place_order)
-    monkeypatch.setattr(main_module.broker, "modify_stop_price", lambda order_id, price: True)
+    monkeypatch.setattr(main_module.broker, "modify_stop_price", lambda order_id, price, new_quantity=None: True)
     monkeypatch.setattr(main_module.broker, "get_trade_fill", lambda order_id: None)
     monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 10)
 

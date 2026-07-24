@@ -311,11 +311,20 @@ class IBKRBroker:
                 out[_from_ib_symbol(t.contract.symbol)] = price
         return out
 
-    def modify_stop_price(self, stop_order_id: int, new_stop_price: float) -> bool:
+    def modify_stop_price(
+        self, stop_order_id: int, new_stop_price: float, new_quantity: "float | None" = None,
+    ) -> bool:
         """Sube (o ajusta) el precio de un stop-loss ya colocado, reenviando
         la MISMA orden (mismo orderId) con auxPrice actualizado: la API de
         IBKR trata un placeOrder sobre el orderId de una orden viva como una
         modificacion in-place, no como una orden nueva.
+
+        new_quantity (opcional) resizea la orden a la vez -- necesario tras un
+        scale-out parcial: si solo se ajusta el precio y se deja la cantidad
+        original, el stop queda sobredimensionado para la posicion que
+        realmente queda, y si se dispara mas tarde vende de mas (mismo patron
+        que el incidente AEHR/TAP 2026-07-24, aca por cantidad en vez de por
+        no cancelar).
 
         Devuelve False sin lanzar si la orden no se encuentra viva (ya se
         ejecuto/cancelo, o es de otra sesion -- self.ib.trades() solo cubre
@@ -328,7 +337,33 @@ class IBKRBroker:
                 if trade.orderStatus.status in OrderStatus.DoneStates:
                     return False
                 trade.order.auxPrice = new_stop_price
+                if new_quantity is not None:
+                    trade.order.totalQuantity = new_quantity
                 self.ib.placeOrder(trade.contract, trade.order)
+                return True
+        return False
+
+    async def cancel_resting_order(self, order_id: int) -> bool:
+        """Cancela una orden viva en IBKR por su order_id, via
+        reqAllOpenOrdersAsync en vez de buscar en self.ib.trades().
+
+        self.ib.trades() (usado por has_live_protective_stop/modify_stop_price/
+        get_trade_fill) solo ve ordenes que ESTA sesion vio colocarse o
+        actualizarse; reqAllOpenOrdersAsync pide a IBKR el estado real de todas
+        las ordenes vivas del cliente, incluidas las que quedaron resting de
+        una sesion anterior (ej. tras un restart del backend). Necesario para
+        poder cancelar con confianza el stop-loss protector de una posicion
+        que se cierra por otro camino (ver _check_fund_exit): sin esto, un
+        stop viejo puede seguir vivo en IBKR y dispararse mas tarde sobre una
+        posicion que ya no existe, dejando una posicion corta no intencional
+        (ver incidente AEHR/TAP 2026-07-24).
+
+        Best-effort: si la orden ya no esta viva (ya se ejecuto o cancelo),
+        no hace nada y devuelve False -- es el resultado esperado la mayoria
+        de las veces, no un error."""
+        for trade in await self.ib.reqAllOpenOrdersAsync():
+            if trade.order.orderId == order_id:
+                self.ib.cancelOrder(trade.order)
                 return True
         return False
 

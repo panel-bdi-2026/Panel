@@ -1444,7 +1444,10 @@ async def _check_fund_scale_out(fund_id: str, symbol: str) -> None:
     funds_store.mark_scaled_out(fund_id, symbol)
 
     new_stop = position.avg_cost
-    if broker.modify_stop_price(position.stop_order_id, new_stop):
+    # position es la misma instancia que funds_store.record_fill acaba de
+    # mutar in-place: position.quantity ya refleja el remanente POST-venta
+    # (no hace falta restar filled_qty de nuevo).
+    if broker.modify_stop_price(position.stop_order_id, new_stop, new_quantity=position.quantity):
         funds_store.update_stop_loss(fund_id, symbol, new_stop)
 
     audit.record(
@@ -1638,6 +1641,7 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
         if not reference_price:
             return
 
+        stop_order_id = position.stop_order_id
         order = OrderRequest(
             symbol=symbol, side=Side.SELL, quantity=position.quantity, order_type=OrderType.MKT, fund_id=fund_id
         )
@@ -1659,6 +1663,22 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                 fund_id, symbol, Side.SELL, filled_qty, fill_price,
                 commission=screener_config.commission_per_trade_usd,
             )
+            # Esta venta cierra la posicion entera (order.quantity ya pedia
+            # toda la cantidad); si quedo un stop-loss protector vivo en
+            # IBKR de la compra original, hay que cancelarlo YA -- si no,
+            # sigue resting sin ninguna posicion detras y puede dispararse
+            # mas tarde, vendiendo de mas y dejando una posicion corta no
+            # intencional (ver incidente AEHR/TAP 2026-07-24, donde
+            # exactamente este stop huerfano genero un short pese a tener
+            # allow_short_selling=false).
+            if filled_qty >= order.quantity and stop_order_id is not None:
+                try:
+                    await broker.cancel_resting_order(stop_order_id)
+                except Exception:
+                    logger.exception(
+                        "No se pudo cancelar el stop-loss huerfano %s de %s tras el exit",
+                        stop_order_id, symbol,
+                    )
         reason = ("take_profit" if hit_target else ("max_holding_days" if timed_out else ("trend_break" if trend_broke else "sector_exit")))
         audit.record(
             "auto_trade_exit" if filled_qty > 0 else "auto_trade_exit_unfilled",

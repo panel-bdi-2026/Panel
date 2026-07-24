@@ -215,6 +215,78 @@ def test_modify_stop_price_returns_false_when_order_already_done(broker, monkeyp
     assert trade.order.auxPrice == 90.0  # no se toco
 
 
+def test_modify_stop_price_resizes_quantity_when_new_quantity_given(broker, monkeypatch):
+    # Necesario tras un scale-out parcial: si solo se ajustara el precio, el
+    # stop quedaria dimensionado para la cantidad ORIGINAL de la posicion, no
+    # para lo que realmente queda -- si se dispara despues, vende de mas (ver
+    # incidente AEHR/TAP 2026-07-24).
+    trade = FakeTrade(order_id=42, status="Submitted", aux_price=90.0, total_quantity=10.0)
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+    monkeypatch.setattr(broker.ib, "placeOrder", lambda contract, order: None)
+
+    assert broker.modify_stop_price(42, 95.0, new_quantity=5.0) is True
+    assert trade.order.totalQuantity == 5.0
+
+
+def test_modify_stop_price_leaves_quantity_untouched_when_not_given(broker, monkeypatch):
+    trade = FakeTrade(order_id=42, status="Submitted", aux_price=90.0, total_quantity=10.0)
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+    monkeypatch.setattr(broker.ib, "placeOrder", lambda contract, order: None)
+
+    assert broker.modify_stop_price(42, 95.0) is True
+    assert trade.order.totalQuantity == 10.0
+
+
+def test_cancel_resting_order_cancels_when_found(broker, monkeypatch):
+    trade = FakeTrade(order_id=42, status="PreSubmitted")
+
+    async def fake_req_all_open_orders():
+        return [trade]
+
+    monkeypatch.setattr(broker.ib, "reqAllOpenOrdersAsync", fake_req_all_open_orders)
+    cancelled = []
+    monkeypatch.setattr(broker.ib, "cancelOrder", lambda order: cancelled.append(order))
+
+    assert asyncio.run(broker.cancel_resting_order(42)) is True
+    assert cancelled == [trade.order]
+
+
+def test_cancel_resting_order_returns_false_when_not_found(broker, monkeypatch):
+    # Caso esperado la mayoria de las veces: la orden ya se ejecuto/cancelo
+    # sola antes de que hiciera falta cancelarla a mano -- no debe tratarse
+    # como un error.
+    async def fake_req_all_open_orders():
+        return []
+
+    monkeypatch.setattr(broker.ib, "reqAllOpenOrdersAsync", fake_req_all_open_orders)
+
+    def fail_if_called(order):
+        raise AssertionError("no deberia intentar cancelar nada")
+
+    monkeypatch.setattr(broker.ib, "cancelOrder", fail_if_called)
+
+    assert asyncio.run(broker.cancel_resting_order(42)) is False
+
+
+def test_cancel_resting_order_finds_orders_from_a_previous_session(broker, monkeypatch):
+    # A diferencia de modify_stop_price/has_live_protective_stop (que miran
+    # self.ib.trades(), vacio tras un restart), cancel_resting_order usa
+    # reqAllOpenOrdersAsync -- debe encontrar la orden aunque self.ib.trades()
+    # este vacio, como pasaria justo despues de reconectar.
+    trade = FakeTrade(order_id=99, status="PreSubmitted")
+    monkeypatch.setattr(broker.ib, "trades", lambda: [])  # sesion actual vacia
+
+    async def fake_req_all_open_orders():
+        return [trade]
+
+    monkeypatch.setattr(broker.ib, "reqAllOpenOrdersAsync", fake_req_all_open_orders)
+    cancelled = []
+    monkeypatch.setattr(broker.ib, "cancelOrder", lambda order: cancelled.append(order))
+
+    assert asyncio.run(broker.cancel_resting_order(99)) is True
+    assert cancelled == [trade.order]
+
+
 class _StopCheckContract:
     def __init__(self, symbol, con_id=1):
         self.symbol = symbol
