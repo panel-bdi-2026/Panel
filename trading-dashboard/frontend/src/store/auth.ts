@@ -1,19 +1,16 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
 
 interface AuthState {
-  apiKey: string | null
-  setApiKey: (key: string) => void
+  authed: boolean
+  setAuthed: (v: boolean) => void
   logout: () => void
 }
 
-export const useAuthStore = create<AuthState>()(
-  persist(
-    (set) => ({
-      apiKey: null,
-      setApiKey: (key) => set({ apiKey: key }),
-      logout: () => set({ apiKey: null }),
-    }),
-    { name: 'panel-auth' },
-  ),
-)
+export const useAuthStore = create<AuthState>()((set) => ({
+  authed: false,
+  setAuthed: (v) => set({ authed: v }),
+  logout: () => {
+    fetch('/api/logout', { method: 'POST' }).catch(() => {})
+    set({ authed: false })
+  },
+}))

@@ -11,18 +11,16 @@ export class ApiError extends Error {
 }
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const key = useAuthStore.getState().apiKey
   const isGet = !init.method || init.method.toUpperCase() === 'GET'
   const headers: Record<string, string> = {
     ...(isGet ? {} : { 'Content-Type': 'application/json' }),
     ...(init.headers as Record<string, string>),
   }
-  if (key) headers['X-API-Key'] = key
 
   const res = await fetch(`${BASE}${path}`, { ...init, headers })
 
   if (res.status === 401) {
-    useAuthStore.getState().logout()
+    useAuthStore.getState().setAuthed(false)
     throw new ApiError(401, 'Unauthorized')
   }
   if (!res.ok) {

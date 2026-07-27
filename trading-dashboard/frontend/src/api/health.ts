@@ -1,5 +1,3 @@
-import { useAuthStore } from '../store/auth'
-
 export type HealthIssue =
   | 'ibkr_disconnected'
   | 'market_data_degraded'
@@ -21,10 +19,7 @@ export interface Health {
 // cuando está degradado. No usamos apiFetch porque ese lanza en 503; acá
 // queremos leer el payload en ambos casos.
 export async function fetchHealth(): Promise<Health> {
-  const key = useAuthStore.getState().apiKey
-  const res = await fetch('/api/health', {
-    headers: key ? { 'X-API-Key': key } : {},
-  })
+  const res = await fetch('/api/health')
   const body = await res.json().catch(() => null)
   // Cuando FastAPI hace raise HTTPException(503, detail=payload), el payload
   // viaja en body.detail; cuando responde 200, es el body directo.

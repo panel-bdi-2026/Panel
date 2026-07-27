@@ -5,20 +5,22 @@ import { useRealtimeStore } from '../store/realtime'
 const RECONNECT_DELAY_MS = 3000
 
 export function useWebSocket() {
-  const apiKey = useAuthStore((s) => s.apiKey)
+  const authed = useAuthStore((s) => s.authed)
   const { setConnected, updatePrice, addAlert } = useRealtimeStore()
   const wsRef = useRef<WebSocket | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    if (!apiKey) return
+    if (!authed) return
 
     let cancelled = false
 
     function connect() {
       if (cancelled) return
       const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-      const url = `${proto}://${location.host}/ws?api_key=${apiKey}`
+      // La cookie de sesión viaja automáticamente en el handshake (same-origin).
+      // No se pasa ?api_key= para evitar que la clave quede expuesta en logs.
+      const url = `${proto}://${location.host}/ws`
       const ws = new WebSocket(url)
       wsRef.current = ws
 
@@ -56,5 +58,5 @@ export function useWebSocket() {
       if (timerRef.current) clearTimeout(timerRef.current)
       wsRef.current?.close()
     }
-  }, [apiKey])
+  }, [authed])
 }

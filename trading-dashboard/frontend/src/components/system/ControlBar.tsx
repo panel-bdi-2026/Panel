@@ -181,7 +181,7 @@ export function ControlBar({ onNewOrder, onConfig }: Props) {
         )}
 
         <button
-          onClick={() => { if (window.confirm('¿Cerrar sesión?')) logout() }}
+          onClick={() => { if (window.confirm('¿Cerrar sesión?')) void logout() }}
           className="p-1.5 text-gray-600 hover:text-gray-300 hover:bg-surface-2 rounded-lg transition-colors"
           title="Salir"
         >

@@ -12,7 +12,7 @@ const qc = new QueryClient({
   },
 })
 
-function LoginOverlay({ onLogin }: { onLogin: (key: string) => void }) {
+function LoginOverlay({ onLogin }: { onLogin: () => void }) {
   const [key, setKey] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -23,14 +23,16 @@ function LoginOverlay({ onLogin }: { onLogin: (key: string) => void }) {
     setLoading(true)
     setError('')
     try {
-      const res = await fetch('/api/status', {
-        headers: { 'X-API-Key': key.trim() },
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: key.trim() }),
       })
       if (!res.ok) {
-        setError('API key inválida')
+        setError('Contraseña inválida')
         return
       }
-      onLogin(key.trim())
+      onLogin()
     } catch {
       setError('No se pudo conectar con el servidor')
     } finally {
@@ -42,16 +44,16 @@ function LoginOverlay({ onLogin }: { onLogin: (key: string) => void }) {
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
       <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 w-full max-w-sm shadow-2xl">
         <h1 className="text-xl font-bold text-gray-100 mb-1">Panel Trading</h1>
-        <p className="text-sm text-gray-500 mb-6">Ingresá tu API key para continuar</p>
+        <p className="text-sm text-gray-500 mb-6">Ingresá tu contraseña para continuar</p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">API Key</label>
+            <label className="block text-xs text-gray-500 mb-1">Contraseña</label>
             <input
               type="password"
               value={key}
               onChange={(e) => setKey(e.target.value)}
-              placeholder="sk-…"
+              placeholder="••••••••"
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-brand-500"
               autoFocus
             />
@@ -71,15 +73,28 @@ function LoginOverlay({ onLogin }: { onLogin: (key: string) => void }) {
 }
 
 export default function App() {
-  const { apiKey, setApiKey } = useAuthStore()
-  const [checked, setChecked] = useState(false)
+  const { authed, setAuthed } = useAuthStore()
+  const [checking, setChecking] = useState(true)
 
-  useEffect(() => { setChecked(true) }, [])
+  useEffect(() => {
+    // Limpiar la API key que la versión anterior guardaba en localStorage
+    localStorage.removeItem('panel-auth')
 
-  if (!checked) return null
+    fetch('/api/status')
+      .then((r) => {
+        setAuthed(r.ok)
+        setChecking(false)
+      })
+      .catch(() => {
+        setAuthed(false)
+        setChecking(false)
+      })
+  }, [])
 
-  if (!apiKey) {
-    return <LoginOverlay onLogin={setApiKey} />
+  if (checking) return null
+
+  if (!authed) {
+    return <LoginOverlay onLogin={() => setAuthed(true)} />
   }
 
   return (
