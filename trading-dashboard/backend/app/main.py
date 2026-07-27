@@ -553,9 +553,12 @@ def _compute_open_portfolio_risk_usd(exclude_symbol: "str | None" = None) -> flo
     total = 0.0
     for fund in funds_store.list():
         for symbol, pos in fund.positions.items():
-            if symbol == exclude_symbol or pos.quantity <= 0 or pos.stop_loss_price is None:
+            if symbol == exclude_symbol or pos.quantity == 0 or pos.stop_loss_price is None:
                 continue
-            total += max(0.0, pos.avg_cost - pos.stop_loss_price) * pos.quantity
+            if pos.quantity > 0:
+                total += max(0.0, pos.avg_cost - pos.stop_loss_price) * pos.quantity
+            else:
+                total += max(0.0, pos.stop_loss_price - pos.avg_cost) * abs(pos.quantity)
     return total
 
 

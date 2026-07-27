@@ -129,7 +129,18 @@ class Fund(BaseModel):
         return pos.quantity if pos else 0.0
 
     def has_open_positions(self) -> bool:
-        return any(p.quantity > 0 for p in self.positions.values())
+        return any(p.quantity != 0 for p in self.positions.values())
+
+    def _reset_position(self, pos: "FundPosition") -> None:
+        """Limpia todos los campos de estado de una posicion cerrada."""
+        pos.quantity = 0.0
+        pos.avg_cost = 0.0
+        pos.opened_at = None
+        pos.stop_loss_price = None
+        pos.stop_order_id = None
+        pos.cost_basis_commission = 0.0
+        pos.initial_stop_loss_price = None
+        pos.scaled_out_at = None
 
     def can_afford(self, estimated_cost_usd: float) -> bool:
         return estimated_cost_usd <= self.cash_usd
@@ -210,19 +221,34 @@ class Fund(BaseModel):
         pos = self.positions.setdefault(symbol, FundPosition())
         realized_pnl = None
         if side == Side.BUY:
-            if pos.quantity == 0:
-                pos.opened_at = datetime.now(timezone.utc)
-                pos.stop_loss_price = stop_loss_price
-                pos.stop_order_id = stop_order_id
-                pos.initial_stop_loss_price = stop_loss_price
-                pos.scaled_out_at = None
-            new_qty = pos.quantity + quantity
-            pos.avg_cost = (
-                (pos.avg_cost * pos.quantity + price * quantity) / new_qty if new_qty else 0.0
-            )
-            pos.quantity = new_qty
-            pos.cost_basis_commission += commission
-            self.cash_usd -= price * quantity + commission
+            if pos.quantity < 0:
+                # Cobertura de posición corta: BUY cierra (parcial o totalmente) un short
+                qty_covered = min(quantity, abs(pos.quantity))
+                entry_commission_share = (
+                    pos.cost_basis_commission / abs(pos.quantity) * qty_covered
+                    if pos.quantity else 0.0
+                )
+                realized_pnl = (pos.avg_cost - price) * qty_covered - commission - entry_commission_share
+                pos.cost_basis_commission -= entry_commission_share
+                pos.quantity += qty_covered
+                if pos.quantity == 0:
+                    self._reset_position(pos)
+                quantity = qty_covered
+                self.cash_usd -= price * qty_covered + commission
+            else:
+                if pos.quantity == 0:
+                    pos.opened_at = datetime.now(timezone.utc)
+                    pos.stop_loss_price = stop_loss_price
+                    pos.stop_order_id = stop_order_id
+                    pos.initial_stop_loss_price = stop_loss_price
+                    pos.scaled_out_at = None
+                new_qty = pos.quantity + quantity
+                pos.avg_cost = (
+                    (pos.avg_cost * pos.quantity + price * quantity) / new_qty if new_qty else 0.0
+                )
+                pos.quantity = new_qty
+                pos.cost_basis_commission += commission
+                self.cash_usd -= price * quantity + commission
         else:
             if quantity > pos.quantity:
                 logger.warning(
@@ -238,14 +264,7 @@ class Fund(BaseModel):
             pos.cost_basis_commission -= entry_commission_share
             pos.quantity -= quantity
             if pos.quantity <= 0:
-                pos.quantity = 0.0
-                pos.avg_cost = 0.0
-                pos.opened_at = None
-                pos.stop_loss_price = None
-                pos.stop_order_id = None
-                pos.cost_basis_commission = 0.0
-                pos.initial_stop_loss_price = None
-                pos.scaled_out_at = None
+                self._reset_position(pos)
             self.cash_usd += price * quantity - commission
 
         trade = FundTrade(

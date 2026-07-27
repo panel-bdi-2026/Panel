@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from app.funds import FundsStore, FundValidationError
+from app.funds import FundPosition, FundsStore, FundValidationError
 from app.models import Side
 
 
@@ -457,3 +457,77 @@ def test_apply_capital_flow_is_serialized_by_internal_lock(store):
     thread.join(timeout=1)
     assert finished.is_set()
     assert store.get(fund.id).cash_usd == 6000
+
+
+# --- Posiciones cortas (A1 + A2) ---
+
+def _open_short(store, fund_id, symbol, quantity, avg_cost, stop_loss_price=None):
+    """Helper: inserta una posicion corta directamente en el store (simula un
+    fill de SELL que abrio el short en el broker). No pasa por record_fill
+    porque el SELL branch actual no admite abrir cortos (solo cubre largos)."""
+    fund = store.funds[fund_id]
+    fund.positions[symbol] = FundPosition(
+        quantity=-quantity,
+        avg_cost=avg_cost,
+        stop_loss_price=stop_loss_price,
+        initial_stop_loss_price=stop_loss_price,
+        cost_basis_commission=0.0,
+    )
+    store.save()
+
+
+def test_has_open_positions_true_for_short(store):
+    fund = store.create("Test", 10_000)
+    _open_short(store, fund.id, "AAPL", 10, 150.0)
+    assert store.get(fund.id).has_open_positions() is True
+
+
+def test_buy_covers_short_fully_clears_position(store):
+    fund = store.create("Test", 10_000)
+    _open_short(store, fund.id, "AAPL", 10, 150.0)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 140.0)
+    fund = store.get(fund.id)
+    pos = fund.positions["AAPL"]
+    assert pos.quantity == 0.0
+    assert pos.avg_cost == 0.0
+    assert pos.stop_loss_price is None
+    assert pos.opened_at is None
+
+
+def test_buy_covers_short_realized_pnl_profit(store):
+    """Cubrir a 140 un short abierto a 150 debe generar PnL positivo."""
+    fund = store.create("Test", 10_000)
+    _open_short(store, fund.id, "AAPL", 10, 150.0)
+    trade = store.record_fill(fund.id, "AAPL", Side.BUY, 10, 140.0, commission=1.0)
+    # PnL = (150 - 140) * 10 - 1.0 commission = 99.0
+    assert trade.realized_pnl == pytest.approx(99.0)
+
+
+def test_buy_covers_short_realized_pnl_loss(store):
+    """Cubrir a 160 un short abierto a 150 debe generar PnL negativo."""
+    fund = store.create("Test", 10_000)
+    _open_short(store, fund.id, "AAPL", 10, 150.0)
+    trade = store.record_fill(fund.id, "AAPL", Side.BUY, 10, 160.0, commission=0.0)
+    # PnL = (150 - 160) * 10 = -100.0
+    assert trade.realized_pnl == pytest.approx(-100.0)
+
+
+def test_buy_covers_short_partially_leaves_residual(store):
+    fund = store.create("Test", 10_000)
+    _open_short(store, fund.id, "AAPL", 10, 150.0)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 4, 145.0)
+    fund = store.get(fund.id)
+    pos = fund.positions["AAPL"]
+    assert pos.quantity == pytest.approx(-6.0)
+    assert pos.avg_cost == pytest.approx(150.0)
+    assert pos.stop_loss_price is None  # heredado del helper que no puso stop
+
+
+def test_buy_covers_short_cash_reduced_by_cover_cost(store):
+    initial_cash = 10_000.0
+    fund = store.create("Test", initial_cash)
+    _open_short(store, fund.id, "AAPL", 10, 150.0)
+    store.record_fill(fund.id, "AAPL", Side.BUY, 10, 140.0, commission=2.0)
+    fund = store.get(fund.id)
+    # cash se reduce por el precio de recompra + comision
+    assert fund.cash_usd == pytest.approx(initial_cash - 10 * 140.0 - 2.0)
