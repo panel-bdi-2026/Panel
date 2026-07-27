@@ -51,17 +51,26 @@ class AuditLog:
         self._conn.commit()
 
     def record(self, action: str, payload: dict, result: dict) -> None:
-        with self._lock:
-            self._conn.execute(
-                "INSERT INTO audit_log (ts, action, payload, result) VALUES (?, ?, ?, ?)",
-                (
-                    datetime.now(timezone.utc).isoformat(),
-                    action,
-                    json.dumps(payload, default=str),
-                    json.dumps(result, default=str),
-                ),
-            )
-            self._conn.commit()
+        # Perder una entrada de auditoria es malo pero recuperable; matar el
+        # loop que sincroniza state["connected"] o el kill switch es mucho peor
+        # (mismo criterio que _persist_state en main.py). Sin este try/except,
+        # un fallo de sqlite (disco lleno, conexion cerrada) propagaria como
+        # excepcion no atrapada y mataria la tarea de asyncio que llamo record().
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "INSERT INTO audit_log (ts, action, payload, result) VALUES (?, ?, ?, ?)",
+                    (
+                        datetime.now(timezone.utc).isoformat(),
+                        action,
+                        json.dumps(payload, default=str),
+                        json.dumps(result, default=str),
+                    ),
+                )
+                self._conn.commit()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("audit.record fallo para action=%r", action)
 
     def recent(self, limit: int = 100) -> list[dict]:
         with self._lock:

@@ -244,6 +244,14 @@ _live_prices_as_of: dict[str, datetime] = {}
 _rotation_cursor = 0
 _data_refresh_cursor = 0
 
+# Estado de salud de cada loop de background (ver _supervised_loop, C2 del
+# NUEVO_INFORME). Expuesto en /api/health para hacer visible un loop muerto.
+_loop_health: dict[str, dict] = {}
+
+# Estado entre ciclos de _run_health_alert_cycle (los issues que ya se notificaron).
+# Debe sobrevivir entre llamadas, de ahi que sea de modulo y no local al loop.
+_health_alerting: set[str] = set()
+
 
 def _persist_state() -> None:
     # No deja propagar la excepcion: save_state puede fallar (disco lleno,
@@ -286,70 +294,124 @@ def _session_valid(token: str) -> bool:
     return _store.valid(token)
 
 
+async def _supervised_loop(cycle_fn, name: str, interval_fn, initial_delay: float = 0.0) -> None:
+    """Envuelve un ciclo de background para que una excepcion no atrapada no
+    mate la tarea de forma permanente y silenciosa (ver C2 del NUEVO_INFORME).
+
+    Una excepcion en el ciclo se loguea y el loop continua; CancelledError se
+    propaga para que el shutdown pueda cancelar la tarea limpiamente.
+
+    interval_fn es un callable (no un numero) porque algunos loops leen
+    screener_config.auto_scan_interval_minutes en cada vuelta y ese valor
+    cambia en caliente via PUT /api/signals/config. Pasarlo como numero
+    congelaria el intervalo al valor del arranque.
+
+    Backoff ante fallos CONSECUTIVOS: multiplica el intervalo x2 hasta un
+    tope de 300s; se resetea a 1x en el primer ciclo exitoso para evitar
+    inundar el log a razon de un traceback cada 5s cuando algo esta caido
+    de forma permanente (ej. IBKR desconectado)."""
+    health: dict = {"fails": 0, "last_error": None}
+    _loop_health[name] = health
+    if initial_delay > 0:
+        try:
+            await asyncio.sleep(initial_delay)
+        except asyncio.CancelledError:
+            raise
+    while True:
+        try:
+            await cycle_fn()
+            health["fails"] = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            health["fails"] += 1
+            health["last_error"] = str(exc)
+            logger.exception("[%s] ciclo fallo (consecutivo #%d), se reintenta", name, health["fails"])
+        base = interval_fn()
+        fails = health["fails"]
+        sleep_secs = min(base * (2 ** fails), 300.0) if fails > 0 else base
+        try:
+            await asyncio.sleep(sleep_secs)
+        except asyncio.CancelledError:
+            raise
+
+
+async def _run_cache_eviction_cycle() -> None:
+    await asyncio.to_thread(market_data.evict_stale_cache)
+
+
 async def _cache_eviction_loop() -> None:
     """Elimina entradas expiradas del cache de market_data cada hora para
-    evitar acumulación ilimitada de DataFrames en universos grandes."""
-    while True:
-        await asyncio.sleep(3600)
-        await asyncio.to_thread(market_data.evict_stale_cache)
+    evitar acumulacion ilimitada de DataFrames en universos grandes."""
+    await _supervised_loop(_run_cache_eviction_cycle, "cache_eviction", lambda: 3600, initial_delay=3600)
+
+
+async def _run_session_cleanup_cycle() -> None:
+    await asyncio.to_thread(_store.cleanup_expired)
 
 
 async def _session_cleanup_loop() -> None:
     """Elimina tokens expirados de SQLite cada hora."""
-    while True:
-        await asyncio.sleep(3600)
-        await asyncio.to_thread(_store.cleanup_expired)
+    await _supervised_loop(_run_session_cleanup_cycle, "session_cleanup", lambda: 3600, initial_delay=3600)
+
+
+async def _run_health_alert_cycle() -> None:
+    """Un ciclo de deteccion de salud: envia alertas por email cuando aparecen
+    o se resuelven problemas. Solo en transiciones para no inundar el correo.
+
+    Usa _health_alerting (modulo) en vez de una variable local: el set debe
+    sobrevivir entre llamadas a _supervised_loop para que la deteccion de
+    "nuevo/resuelto" funcione correctamente a lo largo de multiples ciclos."""
+    global _health_alerting
+    now = datetime.now(timezone.utc)
+    current: set[str] = set()
+    if not state["connected"]:
+        current.add("IBKR desconectado")
+    if state.get("market_data_degraded"):
+        current.add("datos de mercado degradados")
+    if state.get("halted"):
+        current.add("trading detenido (halted)")
+    scan_ages = [
+        (now - e["as_of"]).total_seconds()
+        for e in signal_cache.values()
+        if e.get("as_of")
+    ]
+    if scan_ages and all(a > 2700 for a in scan_ages):
+        current.add("scan paralizado (>45 min sin actualizar)")
+
+    new_issues = current - _health_alerting
+    resolved = _health_alerting - current
+
+    now_str = datetime.now().strftime("%H:%M:%S")
+
+    if new_issues:
+        subject = "⚠ Alerta: " + ", ".join(sorted(new_issues))
+        body = f"Problemas detectados a las {now_str}:\n\n"
+        body += "\n".join(f"• {i}" for i in sorted(new_issues))
+        send_alert(settings, subject, body)
+
+    for issue in resolved:
+        send_alert(
+            settings,
+            f"✓ Resuelto: {issue}",
+            f"El problema fue resuelto a las {now_str}:\n\n• {issue}",
+        )
+
+    _health_alerting = current
 
 
 async def _health_alert_loop() -> None:
-    """Detecta cambios en el estado de salud del sistema y envía alertas por
+    """Detecta cambios en el estado de salud del sistema y envia alertas por
     email cuando aparecen o se resuelven problemas.
 
-    Solo envía email en transiciones (aparece/desaparece un problema) para
-    no inundar el correo. El primer chequeo arranca 90 segundos después del
-    startup para darle tiempo al broker de conectar antes de evaluar.
-    """
-    await asyncio.sleep(90)
-
-    alerting: set[str] = set()
-
-    while True:
-        now = datetime.now(timezone.utc)
-        current: set[str] = set()
-        if not state["connected"]:
-            current.add("IBKR desconectado")
-        if state.get("market_data_degraded"):
-            current.add("datos de mercado degradados")
-        if state.get("halted"):
-            current.add("trading detenido (halted)")
-        scan_ages = [
-            (now - e["as_of"]).total_seconds()
-            for e in signal_cache.values()
-            if e.get("as_of")
-        ]
-        if scan_ages and all(a > 2700 for a in scan_ages):
-            current.add("scan paralizado (>45 min sin actualizar)")
-
-        new_issues = current - alerting
-        resolved = alerting - current
-
-        now_str = datetime.now().strftime("%H:%M:%S")
-
-        if new_issues:
-            subject = "⚠ Alerta: " + ", ".join(sorted(new_issues))
-            body = f"Problemas detectados a las {now_str}:\n\n"
-            body += "\n".join(f"• {i}" for i in sorted(new_issues))
-            send_alert(settings, subject, body)
-
-        for issue in resolved:
-            send_alert(
-                settings,
-                f"✓ Resuelto: {issue}",
-                f"El problema fue resuelto a las {now_str}:\n\n• {issue}",
-            )
-
-        alerting = current
-        await asyncio.sleep(settings.health_alert_interval_seconds)
+    El primer chequeo arranca 90 segundos despues del startup para dar tiempo
+    al broker de conectar antes de evaluar."""
+    await _supervised_loop(
+        _run_health_alert_cycle,
+        "health_alert",
+        lambda: settings.health_alert_interval_seconds,
+        initial_delay=90,
+    )
 
 
 def require_api_key(
@@ -407,25 +469,32 @@ def _sync_connection_state() -> None:
         audit.record("ibkr_disconnected", {}, {})
 
 
+async def _run_broadcast_cycle() -> None:
+    _sync_connection_state()
+    if not clients or not state["connected"]:
+        return
+    try:
+        payload = {
+            "type": "update",
+            "account": (await broker.get_account_summary()).model_dump(),
+            "positions": [p.model_dump() for p in await broker.get_positions()],
+        }
+    except Exception as exc:
+        # No se reenvia str(exc) crudo a todos los clientes conectados: el
+        # detalle (puede incluir trazas/info interna de ib_async) queda en
+        # el log del servidor, el cliente solo recibe un mensaje generico.
+        logger.warning("Error en broadcast_loop al leer cuenta/posiciones: %s", exc)
+        payload = {"type": "error", "message": "No se pudieron obtener los datos de cuenta/posiciones."}
+    await _broadcast(payload)
+
+
 async def _broadcast_loop() -> None:
-    while True:
-        await asyncio.sleep(settings.poll_interval_seconds)
-        _sync_connection_state()
-        if not clients or not state["connected"]:
-            continue
-        try:
-            payload = {
-                "type": "update",
-                "account": (await broker.get_account_summary()).model_dump(),
-                "positions": [p.model_dump() for p in await broker.get_positions()],
-            }
-        except Exception as exc:
-            # No se reenvia str(exc) crudo a todos los clientes conectados: el
-            # detalle (puede incluir trazas/info interna de ib_async) queda en
-            # el log del servidor, el cliente solo recibe un mensaje generico.
-            logger.warning("Error en broadcast_loop al leer cuenta/posiciones: %s", exc)
-            payload = {"type": "error", "message": "No se pudieron obtener los datos de cuenta/posiciones."}
-        await _broadcast(payload)
+    await _supervised_loop(
+        _run_broadcast_cycle,
+        "broadcast",
+        lambda: settings.poll_interval_seconds,
+        initial_delay=settings.poll_interval_seconds,
+    )
 
 
 def _compute_sector_exposure(positions: list[Position], exclude_symbol: str) -> dict[str, float]:
@@ -1328,66 +1397,65 @@ async def _run_fund_strategy_auto_trade_scan(strategy_id: str) -> None:
 async def _score_recompute_loop() -> None:
     """Recalculo de scores en background: corre cache_only (sin red) cada
     auto_scan_interval_minutes. El refresco de datos lo hace _data_refresh_loop."""
-    while True:
-        await asyncio.sleep(screener_config.auto_scan_interval_minutes * 60)
-        await _run_score_recompute_cycle()
+    await _supervised_loop(
+        _run_score_recompute_cycle,
+        "score_recompute",
+        lambda: screener_config.auto_scan_interval_minutes * 60,
+        initial_delay=screener_config.auto_scan_interval_minutes * 60,
+    )
+
+
+async def _run_risk_monitor_cycle() -> None:
+    """Un ciclo del kill switch automatico. Ver _risk_monitor_loop para el
+    contexto completo."""
+    if not state["connected"] or state["halted"]:
+        return
+    try:
+        account = await broker.get_account_summary()
+    except Exception:
+        logger.exception("Kill switch: no se pudo leer el resumen de cuenta, se reintenta en el proximo ciclo")
+        return
+
+    if account.daily_pnl_pct <= -abs(rules_config.daily_loss_limit_pct):
+        state["halted"] = True
+        _persist_state()
+        audit.record("auto_halt_daily_loss_limit", {}, {"daily_pnl_pct": account.daily_pnl_pct})
+        logger.warning(
+            "[KILL SWITCH] Perdida diaria %.2f%% alcanzo el limite. Trading pausado automaticamente.",
+            account.daily_pnl_pct,
+        )
+        return
+
+    equity = account.net_liquidation
+    peak = state["peak_equity_usd"]
+    if peak is None or equity > peak:
+        state["peak_equity_usd"] = equity
+        _persist_state()
+    elif peak > 0:
+        drawdown_pct = (peak - equity) / peak * 100
+        if drawdown_pct >= abs(rules_config.max_drawdown_pct):
+            state["halted"] = True
+            _persist_state()
+            audit.record(
+                "auto_halt_max_drawdown", {},
+                {"drawdown_pct": round(drawdown_pct, 2), "peak_equity_usd": peak, "equity_usd": equity},
+            )
+            logger.warning(
+                "[KILL SWITCH] Drawdown acumulado %.2f%% (maximo $%.2f -> actual $%.2f) alcanzo el limite. "
+                "Trading pausado automaticamente.",
+                drawdown_pct, peak, equity,
+            )
 
 
 async def _risk_monitor_loop() -> None:
-    """Kill switch automatico: a diferencia de RulesEngine.evaluate(), que solo
-    chequea daily_loss_limit_pct cuando llega una orden nueva, esto corre en
-    background y pausa el trading aunque no se envie ninguna orden mientras la
-    cuenta sigue perdiendo (ej. por posiciones abiertas moviendose en contra).
-
-    Dos circuit breakers independientes, sobre el mismo account_summary leido
-    una sola vez por ciclo:
-    1. daily_loss_limit_pct: perdida del DIA actual (se resetea solo, junto
-       con daily_pnl_pct de IBKR).
-    2. max_drawdown_pct: caida ACUMULADA desde el maximo historico de equity
-       (state["peak_equity_usd"], persistido -- ver su definicion mas
-       arriba). No se resetea nunca: una racha de perdidas repartida en
-       varios dias, cada uno por debajo del umbral diario, igual la dispara
-       si la suma cruza este umbral mas holgado.
-    """
-    while True:
-        await asyncio.sleep(settings.poll_interval_seconds)
-        if not state["connected"] or state["halted"]:
-            continue
-        try:
-            account = await broker.get_account_summary()
-        except Exception:
-            logger.exception("Kill switch: no se pudo leer el resumen de cuenta, se reintenta en el proximo ciclo")
-            continue
-
-        if account.daily_pnl_pct <= -abs(rules_config.daily_loss_limit_pct):
-            state["halted"] = True
-            _persist_state()
-            audit.record("auto_halt_daily_loss_limit", {}, {"daily_pnl_pct": account.daily_pnl_pct})
-            logger.warning(
-                "[KILL SWITCH] Perdida diaria %.2f%% alcanzo el limite. Trading pausado automaticamente.",
-                account.daily_pnl_pct,
-            )
-            continue
-
-        equity = account.net_liquidation
-        peak = state["peak_equity_usd"]
-        if peak is None or equity > peak:
-            state["peak_equity_usd"] = equity
-            _persist_state()
-        elif peak > 0:
-            drawdown_pct = (peak - equity) / peak * 100
-            if drawdown_pct >= abs(rules_config.max_drawdown_pct):
-                state["halted"] = True
-                _persist_state()
-                audit.record(
-                    "auto_halt_max_drawdown", {},
-                    {"drawdown_pct": round(drawdown_pct, 2), "peak_equity_usd": peak, "equity_usd": equity},
-                )
-                logger.warning(
-                    "[KILL SWITCH] Drawdown acumulado %.2f%% (maximo $%.2f -> actual $%.2f) alcanzo el limite. "
-                    "Trading pausado automaticamente.",
-                    drawdown_pct, peak, equity,
-                )
+    """Kill switch automatico: pausa el trading cuando la perdida diaria o el
+    drawdown acumulado cruzan sus limites, incluso sin que llegue una orden nueva."""
+    await _supervised_loop(
+        _run_risk_monitor_cycle,
+        "risk_monitor",
+        lambda: settings.poll_interval_seconds,
+        initial_delay=settings.poll_interval_seconds,
+    )
 
 
 async def _check_fund_scale_out(fund_id: str, symbol: str) -> None:
@@ -1860,9 +1928,12 @@ async def _reconcile_protective_stops_cycle() -> None:
 async def _reconcile_protective_stops_loop() -> None:
     """Bucle de reconciliacion de stops duplicados. Ver _reconcile_protective_
     stops_cycle para la logica de negocio."""
-    while True:
-        await asyncio.sleep(5 * 60)  # cada 5 minutos
-        await _reconcile_protective_stops_cycle()
+    await _supervised_loop(
+        _reconcile_protective_stops_cycle,
+        "reconcile_stops",
+        lambda: 5 * 60,
+        initial_delay=5 * 60,
+    )
 
 
 async def _run_auto_exit_monitor_cycle() -> None:
@@ -1890,9 +1961,12 @@ async def _auto_exit_monitor_loop() -> None:
     proactivo de entradas: las señales (trend-break, max-holding-days) se
     basan en cierres diarios, asi que chequear mas seguido no aporta nada y
     solo gastaria cuota de la API de datos de mercado."""
-    while True:
-        await asyncio.sleep(screener_config.auto_scan_interval_minutes * 60)
-        await _run_auto_exit_monitor_cycle()
+    await _supervised_loop(
+        _run_auto_exit_monitor_cycle,
+        "auto_exit_monitor",
+        lambda: screener_config.auto_scan_interval_minutes * 60,
+        initial_delay=screener_config.auto_scan_interval_minutes * 60,
+    )
 
 
 async def _run_trailing_stop_monitor_cycle() -> None:
@@ -1925,16 +1999,15 @@ async def _run_trailing_stop_monitor_cycle() -> None:
 
 async def _trailing_stop_loop() -> None:
     """Sube el trailing stop a la misma cadencia que _broadcast_loop
-    (poll_interval_seconds) en vez de auto_scan_interval_minutes: a
-    diferencia de la señal de entrada/salida (atada a cierres diarios), el
-    trailing stop solo necesita precio actual -- ya disponible cada pocos
-    segundos via la misma conexion a IBKR -- y el ATR de la ultima barra
-    cacheada (eso si, sin necesidad de ser "en vivo"). Sin este loop
-    separado, una caida o suba fuerte del precio entre ciclos de 30 min
-    quedaria sin reflejarse en el stop hasta el proximo scan."""
-    while True:
-        await asyncio.sleep(settings.poll_interval_seconds)
-        await _run_trailing_stop_monitor_cycle()
+    (poll_interval_seconds): el trailing stop solo necesita precio actual,
+    sin necesidad de cierres diarios, y la cadencia rapida evita perder una
+    caida fuerte entre ciclos largos."""
+    await _supervised_loop(
+        _run_trailing_stop_monitor_cycle,
+        "trailing_stop",
+        lambda: settings.poll_interval_seconds,
+        initial_delay=settings.poll_interval_seconds,
+    )
 
 
 async def _run_hot_set_cycle() -> None:
@@ -1990,10 +2063,15 @@ async def _run_hot_set_cycle() -> None:
 async def _hot_set_loop() -> None:
     """Misma cadencia que el TTL del cache de señales: no tiene sentido
     recalcular el hot-set mas seguido que lo que tarda en cambiar algun score
-    (signal_cache no se refresca antes de eso de todas formas)."""
-    while True:
-        await _run_hot_set_cycle()
-        await asyncio.sleep(SIGNAL_CACHE_TTL_SECONDS)
+    (signal_cache no se refresca antes de eso de todas formas). El ciclo
+    corre ANTES del sleep (initial_delay=0) para que el radar en vivo
+    arranque en el primer tick, no un TTL entero despues del restart."""
+    await _supervised_loop(
+        _run_hot_set_cycle,
+        "hot_set",
+        lambda: SIGNAL_CACHE_TTL_SECONDS,
+        initial_delay=0,
+    )
 
 
 async def _run_price_rotation_cycle() -> None:
@@ -2029,9 +2107,12 @@ async def _run_price_rotation_cycle() -> None:
 
 
 async def _price_rotation_loop() -> None:
-    while True:
-        await _run_price_rotation_cycle()
-        await asyncio.sleep(settings.poll_interval_seconds)
+    await _supervised_loop(
+        _run_price_rotation_cycle,
+        "price_rotation",
+        lambda: settings.poll_interval_seconds,
+        initial_delay=0,
+    )
 
 
 async def _run_data_refresh_cycle() -> None:
@@ -2078,9 +2159,12 @@ async def _data_refresh_loop() -> None:
     """Trickle feed de yfinance en background: mantiene caliente el cache de
     barras de precio para que _score_recompute_loop nunca tenga que esperar a
     la red."""
-    while True:
-        await _run_data_refresh_cycle()
-        await asyncio.sleep(settings.poll_interval_seconds)
+    await _supervised_loop(
+        _run_data_refresh_cycle,
+        "data_refresh",
+        lambda: settings.poll_interval_seconds,
+        initial_delay=0,
+    )
 
 
 async def _restore_persisted_mode() -> None:
@@ -2445,6 +2529,14 @@ def health_check():
         if most_recent:
             last_scan_at = most_recent.isoformat()
 
+    # Un loop con 3+ fallos consecutivos es un loop practicamente muerto:
+    # con backoff exponencial el intervalo ya subio a 8x el normal.
+    failing_loops = [
+        name for name, h in _loop_health.items() if h.get("fails", 0) >= 3
+    ]
+    if failing_loops:
+        issues.append("background_loop_failing")
+
     payload = {
         "status": "ok" if not issues else "degraded",
         "issues": issues,
@@ -2453,6 +2545,10 @@ def health_check():
         "halted": state.get("halted", False),
         "uptime_seconds": int((now - _startup_time).total_seconds()),
         "last_scan_at": last_scan_at,
+        "loops": {
+            name: {"consecutive_failures": h["fails"], "last_error": h.get("last_error")}
+            for name, h in _loop_health.items()
+        },
     }
     if issues:
         raise HTTPException(status_code=503, detail=payload)

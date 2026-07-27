@@ -1530,3 +1530,153 @@ def test_get_sectors_returns_known_symbols_only():
 def test_get_sectors_requires_api_key():
     resp = client.get("/api/sectors?symbols=AAPL")
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# _supervised_loop: C2 del NUEVO_INFORME.
+# Los loops de background no tenian try/except: una excepcion no atrapada
+# mataba la tarea de forma permanente y silenciosa. _supervised_loop la
+# captura, loguea y continua; CancelledError se propaga para el shutdown.
+# ---------------------------------------------------------------------------
+
+def test_supervised_loop_survives_exception_and_runs_next_cycle():
+    """Un ciclo que lanza ValueError no debe matar el loop: el siguiente
+    ciclo debe correr. ESTE TEST DEBIA FALLAR antes del fix (sin supervisor,
+    la excepcion habria matado el while-True)."""
+    calls = []
+
+    async def flaky_cycle():
+        calls.append(len(calls))
+        if len(calls) == 1:
+            raise ValueError("fallo simulado del ciclo")
+        # El segundo ciclo levanta CancelledError para terminar el test.
+        raise asyncio.CancelledError
+
+    async def scenario():
+        await main_module._supervised_loop(flaky_cycle, "test_flaky", lambda: 0)
+
+    try:
+        asyncio.run(scenario())
+    except asyncio.CancelledError:
+        pass
+
+    assert len(calls) == 2, "el loop debe haber corrido 2 ciclos (el primero fallo, el segundo se cancelo)"
+
+
+def test_supervised_loop_propagates_cancelled_error():
+    """CancelledError no debe quedar atrapada: el shutdown necesita poder
+    cancelar los loops limpiamente."""
+    ran = []
+
+    async def cancel_immediately():
+        raise asyncio.CancelledError
+
+    async def scenario():
+        await main_module._supervised_loop(cancel_immediately, "test_cancel", lambda: 0)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(scenario())
+
+
+def test_supervised_loop_backoff_grows_on_consecutive_failures():
+    """Ante fallos consecutivos, el sleep debe crecer hasta 300s (tope)."""
+    import asyncio as _asyncio
+
+    slept = []
+    original_sleep = _asyncio.sleep
+
+    async def counting_cycle():
+        raise ValueError("siempre falla")
+
+    async def scenario():
+        async def fake_sleep(secs):
+            slept.append(secs)
+            if len(slept) >= 4:
+                raise asyncio.CancelledError
+
+        main_module.asyncio.sleep = fake_sleep
+        try:
+            await main_module._supervised_loop(counting_cycle, "test_backoff", lambda: 10)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            main_module.asyncio.sleep = original_sleep
+
+    asyncio.run(scenario())
+
+    # Primer fallo: 10*2=20; segundo: 10*4=40; tercero: 10*8=80
+    assert slept[0] == pytest.approx(20.0)
+    assert slept[1] == pytest.approx(40.0)
+    assert slept[2] == pytest.approx(80.0)
+
+
+def test_supervised_loop_backoff_resets_after_success():
+    """Un ciclo exitoso debe resetear el contador de fallos (backoff a 1x)."""
+    import asyncio as _asyncio
+
+    slept = []
+    calls = []
+    original_sleep = _asyncio.sleep
+
+    async def sometimes_fail():
+        calls.append(1)
+        if len(calls) == 1:
+            raise ValueError("primer fallo")
+        # segundo ciclo: exito
+        if len(calls) >= 3:
+            raise asyncio.CancelledError
+
+    async def scenario():
+        async def fake_sleep(secs):
+            slept.append(secs)
+            # dejar correr hasta que el ciclo cancele
+
+        main_module.asyncio.sleep = fake_sleep
+        try:
+            await main_module._supervised_loop(sometimes_fail, "test_reset", lambda: 10)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            main_module.asyncio.sleep = original_sleep
+
+    asyncio.run(scenario())
+
+    # Primer sleep: backoff (1 fallo -> 20s); segundo: reset (0 fallos -> 10s)
+    assert slept[0] == pytest.approx(20.0), "post-fallo debe aplicar backoff"
+    assert slept[1] == pytest.approx(10.0), "post-exito debe resetear al intervalo normal"
+
+
+def test_audit_record_does_not_propagate_on_sqlite_error():
+    """Si sqlite falla, audit.record no debe propagar: matar el loop de
+    background que llamo record() es peor que perder una entrada de auditoria."""
+    import sqlite3
+    import tempfile
+    from app.audit import AuditLog
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+
+    log = AuditLog(db_path)
+    # Cerrar la conexion a mano para simular un error de sqlite irrecuperable.
+    log._conn.close()
+
+    # No debe propagar -- debe quedar atrapado internamente.
+    log.record("test_action", {}, {})
+
+
+def test_health_check_reports_background_loop_failing(monkeypatch):
+    """/api/health debe incluir 'background_loop_failing' en issues si algun
+    loop tiene 3+ fallos consecutivos."""
+    main_module._loop_health["test_loop"] = {"fails": 3, "last_error": "boom"}
+    try:
+        resp = client.get("/api/health")
+        # Puede ser 200 o 503 dependiendo del estado del sistema en el test;
+        # lo que importa es que el payload contiene el issue y el dato del loop.
+        body = resp.json()
+        if resp.status_code == 503:
+            body = body.get("detail", body)
+        assert "background_loop_failing" in body.get("issues", [])
+        assert "test_loop" in body.get("loops", {})
+        assert body["loops"]["test_loop"]["consecutive_failures"] == 3
+    finally:
+        del main_module._loop_health["test_loop"]
