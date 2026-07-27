@@ -1406,7 +1406,7 @@ def test_lifespan_shutdown_awaits_background_tasks_cancellation(monkeypatch):
 
     asyncio.run(scenario())
 
-    assert len(created_tasks) == 11
+    assert len(created_tasks) == 12  # 11 previas + reconcile_protective_stops_loop (Fase 1)
     assert all(t.done() for t in created_tasks)
 
 

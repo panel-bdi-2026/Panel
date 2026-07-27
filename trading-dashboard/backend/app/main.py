@@ -667,33 +667,46 @@ async def _draft_fund_order_from_signal(result: SignalResult, strategy_id: str) 
 
 
 async def _ensure_protective_stop(fund_id: str, symbol: str, stop_price: float) -> None:
-    """Si `symbol` no tiene un stop-loss de venta vivo en IBKR (ver
-    broker.has_live_protective_stop), coloca uno nuevo standalone al precio
-    conocido y lo registra en el fondo.
+    """Garantiza que `symbol` tenga exactamente un stop-loss protector vivo en
+    IBKR. Si ya hay uno (o mas), limpia duplicados sin colocar nada nuevo. Si
+    no hay ninguno, coloca uno standalone al precio dado.
 
-    Se llama tanto despues de un fill tardio (ver _register_fund_fill_
-    reconciliation) como desde la reconciliacion de arranque
-    (_reconcile_unfilled_on_startup): el stop original de una orden que
-    parecio "Cancelled" transitoriamente en IBKR (ver
-    broker._register_stop_reconciliation, que cancela el stop cuando el
-    padre aparenta estar muerto) probablemente ya se cancelo, dejando la
-    posicion sin proteccion real una vez que el fill tardio finalmente
-    llega -- este es exactamente el mecanismo que dejo una posicion real
-    (MAMA, ver incidente de esta noche) sin ningun stop viviendola.
+    Usa broker.get_live_protective_stops (reqAllOpenOrdersAsync), no
+    has_live_protective_stop (self.ib.trades()): esta version sobrevive a un
+    reconnect() que vacia trades(), que era la causa raiz de los stops
+    duplicados y shorts fantasma AEHR/TAP (ver C1 del NUEVO_INFORME y
+    project_orphan_stop_short_bug en memoria).
 
-    Best-effort: cualquier error se loguea pero no interrumpe el flujo que
-    llama (un fallo aca no debe tirar abajo el arranque del backend ni la
-    reconciliacion de otros simbolos)."""
+    Best-effort: cualquier error se loguea pero no interrumpe al caller."""
     try:
-        if broker.has_live_protective_stop(symbol):
-            return
         fund = funds_store.get(fund_id)
         if fund is None:
             return
         qty = fund.owned_quantity(symbol)
-        if qty <= 0:
+        if qty == 0:
             return
-        new_stop_order_id = await broker.place_protective_stop(symbol, qty, stop_price)
+        # Posicion larga -> stop de venta; posicion corta -> stop de compra (A4)
+        side = "SELL" if qty > 0 else "BUY"
+        live_stops = await broker.get_live_protective_stops(symbol, side)
+        if live_stops:
+            # Ya hay stop(s): solo limpiar duplicados, no colocar otro.
+            pos = fund.positions.get(symbol)
+            keep = pos.stop_order_id if pos else None
+            cancelled = await broker.cancel_duplicate_protective_stops(symbol, side, keep_order_id=keep)
+            if cancelled:
+                surviving = next(oid for oid in live_stops if oid not in cancelled)
+                funds_store.set_stop_order_id(fund_id, symbol, surviving)
+                audit.record(
+                    "protective_stop_duplicates_cancelled",
+                    {"fund_id": fund_id, "symbol": symbol},
+                    {"cancelled_ids": cancelled, "kept_id": surviving},
+                )
+                logger.warning(
+                    "Stops duplicados cancelados para %s (fondo %s): %s eliminados, conservado %s",
+                    symbol, fund_id, cancelled, surviving,
+                )
+            return
+        new_stop_order_id = await broker.place_protective_stop(symbol, abs(qty), stop_price, side)
         if new_stop_order_id is not None:
             funds_store.set_stop_order_id(fund_id, symbol, new_stop_order_id)
             audit.record(
@@ -1760,8 +1773,10 @@ async def _ensure_missing_protective_stops() -> None:
     2. stop_loss_price nulo: calcula uno basado en ATR de la estrategia del fondo
        y lo coloca desde cero.
 
-    Idempotente: broker.has_live_protective_stop evita duplicados. Solo actúa
-    en modo paper con la cuenta conectada y sin halt."""
+    Usa get_live_protective_stops (reqAllOpenOrdersAsync) en vez de
+    has_live_protective_stop (trades()): sobrevive a un reconnect() que deja
+    trades() vacio (causa raiz de los shorts fantasma -- ver C1 del
+    NUEVO_INFORME). Solo actua en modo paper con la cuenta conectada y sin halt."""
     if state["mode"] != "paper" or state["halted"] or not state["connected"]:
         return
     for fund in funds_store.list():
@@ -1770,7 +1785,8 @@ async def _ensure_missing_protective_stops() -> None:
         for symbol, position in list(fund.positions.items()):
             if position.quantity <= 0:
                 continue
-            if broker.has_live_protective_stop(symbol):
+            side = "SELL" if position.quantity > 0 else "BUY"
+            if await broker.get_live_protective_stops(symbol, side):
                 continue
             stop_px = position.stop_loss_price
             if stop_px is None:
@@ -1798,6 +1814,55 @@ async def _ensure_missing_protective_stops() -> None:
                     symbol, stop_px, stop_mult,
                 )
             await _ensure_protective_stop(fund.id, symbol, stop_px)
+
+
+async def _reconcile_protective_stops_cycle() -> None:
+    """Cancela stops protectores duplicados que hayan quedado de sesiones
+    anteriores (ver C1 del NUEVO_INFORME): recorre todos los fondos con
+    auto-trading y llama a cancel_duplicate_protective_stops por cada posicion
+    con quantity != 0. Solo registra en el audit cuando efectivamente cancela.
+
+    Corre a 5 min de cadencia (no cada 5s como _ensure_missing): la limpieza
+    post-reconnect no requiere respuesta inmediata y este ciclo es mas costoso
+    (una llamada reqAllOpenOrdersAsync por posicion). El primer ciclo tras el
+    deploy limpia los duplicados ya acumulados en produccion."""
+    if state["mode"] != "paper" or not state["connected"]:
+        return
+    for fund in funds_store.list():
+        if not fund.auto_trading_enabled:
+            continue
+        for symbol, position in list(fund.positions.items()):
+            if position.quantity == 0:
+                continue
+            side = "SELL" if position.quantity > 0 else "BUY"
+            try:
+                cancelled = await broker.cancel_duplicate_protective_stops(
+                    symbol, side, keep_order_id=position.stop_order_id
+                )
+                if cancelled:
+                    live = await broker.get_live_protective_stops(symbol, side)
+                    surviving = live[0] if live else None
+                    if surviving is not None:
+                        funds_store.set_stop_order_id(fund.id, symbol, surviving)
+                    audit.record(
+                        "protective_stop_duplicates_cancelled",
+                        {"fund_id": fund.id, "symbol": symbol},
+                        {"cancelled_ids": cancelled, "kept_id": surviving},
+                    )
+                    logger.warning(
+                        "reconcile_stops: duplicados cancelados para %s (fondo %s): %s eliminados",
+                        symbol, fund.id, cancelled,
+                    )
+            except Exception:
+                logger.exception("reconcile_stops: error procesando %s (fondo %s)", symbol, fund.id)
+
+
+async def _reconcile_protective_stops_loop() -> None:
+    """Bucle de reconciliacion de stops duplicados. Ver _reconcile_protective_
+    stops_cycle para la logica de negocio."""
+    while True:
+        await asyncio.sleep(5 * 60)  # cada 5 minutos
+        await _reconcile_protective_stops_cycle()
 
 
 async def _run_auto_exit_monitor_cycle() -> None:
@@ -2245,11 +2310,13 @@ async def lifespan(app: FastAPI):
     session_cleanup_task = asyncio.create_task(_session_cleanup_loop())
     cache_eviction_task = asyncio.create_task(_cache_eviction_loop())
     health_alert_task = asyncio.create_task(_health_alert_loop())
+    reconcile_stops_task = asyncio.create_task(_reconcile_protective_stops_loop())
     yield
     background_tasks = [
         task, risk_task, score_recompute_task, data_refresh_task,
         exit_monitor_task, trailing_stop_task, hot_set_task, price_rotation_task,
         session_cleanup_task, cache_eviction_task, health_alert_task,
+        reconcile_stops_task,
     ]
     for background_task in background_tasks:
         background_task.cancel()

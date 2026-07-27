@@ -1565,12 +1565,19 @@ def test_ensure_protective_stop_places_new_stop_when_none_exists(monkeypatch):
     fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
     main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 10, 100)
 
-    monkeypatch.setattr(main_module.broker, "has_live_protective_stop", lambda symbol: False)
+    # get_live_protective_stops usa reqAllOpenOrdersAsync, no trades(): simular
+    # el escenario post-reconnect donde trades() estaria vacio pero queremos
+    # asegurarnos de que no hay stop vivo.
+    async def fake_get_live(symbol, side="SELL"):
+        return []
 
-    async def fake_place_protective_stop(symbol, quantity, stop_price):
+    monkeypatch.setattr(main_module.broker, "get_live_protective_stops", fake_get_live)
+
+    async def fake_place_protective_stop(symbol, quantity, stop_price, side="SELL"):
         assert symbol == "AAPL"
         assert quantity == 10
         assert stop_price == 95.0
+        assert side == "SELL"
         return 555
 
     monkeypatch.setattr(main_module.broker, "place_protective_stop", fake_place_protective_stop)
@@ -1585,9 +1592,17 @@ def test_ensure_protective_stop_does_nothing_when_stop_already_live(monkeypatch)
     fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
     main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 10, 100)
 
-    monkeypatch.setattr(main_module.broker, "has_live_protective_stop", lambda symbol: True)
+    async def fake_get_live(symbol, side="SELL"):
+        return [123]  # hay un stop vivo
 
-    async def fail_if_called(symbol, quantity, stop_price):
+    monkeypatch.setattr(main_module.broker, "get_live_protective_stops", fake_get_live)
+
+    async def fake_cancel_duplicates(symbol, side="SELL", keep_order_id=None):
+        return []  # un solo stop, nada que cancelar
+
+    monkeypatch.setattr(main_module.broker, "cancel_duplicate_protective_stops", fake_cancel_duplicates)
+
+    async def fail_if_called(symbol, quantity, stop_price, side="SELL"):
         raise AssertionError("no deberia colocar un stop si ya hay uno vivo")
 
     monkeypatch.setattr(main_module.broker, "place_protective_stop", fail_if_called)
@@ -1600,9 +1615,9 @@ def test_ensure_protective_stop_does_nothing_when_stop_already_live(monkeypatch)
 
 def test_ensure_protective_stop_noop_when_fund_has_no_position(monkeypatch):
     fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
-    monkeypatch.setattr(main_module.broker, "has_live_protective_stop", lambda symbol: False)
+    # Sin posicion, qty==0: retorna antes de consultar al broker.
 
-    async def fail_if_called(symbol, quantity, stop_price):
+    async def fail_if_called(symbol, quantity, stop_price, side="SELL"):
         raise AssertionError("no deberia colocar un stop sin posicion que proteger")
 
     monkeypatch.setattr(main_module.broker, "place_protective_stop", fail_if_called)
@@ -1631,12 +1646,16 @@ def test_reconcile_unfilled_on_startup_places_stop_after_reconciling(monkeypatch
         return [_FakePosition()]
 
     monkeypatch.setattr(main_module.broker, "get_positions", fake_get_positions)
-    monkeypatch.setattr(main_module.broker, "has_live_protective_stop", lambda symbol: False)
+
+    async def fake_get_live(symbol, side="SELL"):
+        return []  # sin stops vivos: corresponde colocar uno nuevo
+
+    monkeypatch.setattr(main_module.broker, "get_live_protective_stops", fake_get_live)
 
     stop_calls = []
 
-    async def fake_place_protective_stop(symbol, quantity, stop_price):
-        stop_calls.append((symbol, quantity, stop_price))
+    async def fake_place_protective_stop(symbol, quantity, stop_price, side="SELL"):
+        stop_calls.append((symbol, quantity, stop_price, side))
         return 999
 
     monkeypatch.setattr(main_module.broker, "place_protective_stop", fake_place_protective_stop)
@@ -1646,7 +1665,7 @@ def test_reconcile_unfilled_on_startup_places_stop_after_reconciling(monkeypatch
     fund = main_module.funds_store.get(fund.id)
     assert fund.owned_quantity("MAMA") == 27.0
     assert fund.positions["MAMA"].stop_order_id == 999
-    assert stop_calls == [("MAMA", 27.0, 16.91)]
+    assert stop_calls == [("MAMA", 27.0, 16.91, "SELL")]
 
 
 def test_reconcile_unfilled_on_startup_subscribes_to_late_fill_when_still_pending(monkeypatch):
@@ -1680,3 +1699,50 @@ def test_reconcile_unfilled_on_startup_subscribes_to_late_fill_when_still_pendin
     # de subscribe_fill dispare (simulado en otros tests de
     # _register_fund_fill_reconciliation).
     assert fund.owned_quantity("MAMA") == 0
+
+
+# ---------------------------------------------------------------------------
+# Test de regresion del incidente AEHR/TAP 2026-07-24: stops duplicados tras
+# reconnect. has_live_protective_stop usaba self.ib.trades() (vacio post-
+# reconnect), permitiendo a _ensure_protective_stop colocar un segundo stop
+# sobre uno que ya existia en IBKR. Al dispararse ambos se vendia el doble
+# -> short desnudo. (Ver C1 del NUEVO_INFORME y project_orphan_stop_short_bug)
+# ---------------------------------------------------------------------------
+
+def test_ensure_protective_stop_never_places_twice_when_ibkr_reports_live_stop(monkeypatch):
+    """Simula el escenario post-reconnect: self.ib.trades() esta vacio (como si
+    never hubiera ocurrido en esta sesion), pero reqAllOpenOrdersAsync (la fuente
+    real de verdad) reporta el stop como vivo. _ensure_protective_stop debe
+    detectarlo y NO colocar un segundo stop, incluso si se llama dos veces."""
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(fund.id, "AAPL", main_module.Side.BUY, 10, 100)
+    # Registrar el stop_order_id existente (como si ya se hubiera colocado antes
+    # del restart del backend).
+    main_module.funds_store.set_stop_order_id(fund.id, "AAPL", 777)
+
+    # reqAllOpenOrdersAsync dice que el stop 777 esta vivo (post-reconnect);
+    # trades() devolveria [] (no se mockea aqui -- el fix es que ya no se usa).
+    async def fake_get_live(symbol, side="SELL"):
+        return [777]
+
+    monkeypatch.setattr(main_module.broker, "get_live_protective_stops", fake_get_live)
+
+    async def fake_cancel_duplicates(symbol, side="SELL", keep_order_id=None):
+        return []  # un solo stop, nada que cancelar
+
+    monkeypatch.setattr(main_module.broker, "cancel_duplicate_protective_stops", fake_cancel_duplicates)
+
+    place_calls = []
+
+    async def fail_if_place_called(symbol, quantity, stop_price, side="SELL"):
+        place_calls.append((symbol, quantity, stop_price))
+        raise AssertionError("no debe colocar un stop si ya hay uno vivo en IBKR")
+
+    monkeypatch.setattr(main_module.broker, "place_protective_stop", fail_if_place_called)
+
+    # Llamar dos veces seguidas (simula el polling de _ensure_missing_protective_stops
+    # corriendo antes y despues del reconnect).
+    asyncio.run(main_module._ensure_protective_stop(fund.id, "AAPL", 95.0))
+    asyncio.run(main_module._ensure_protective_stop(fund.id, "AAPL", 95.0))
+
+    assert place_calls == [], "place_protective_stop no debia llamarse ni una vez"

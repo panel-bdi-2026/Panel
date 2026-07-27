@@ -347,6 +347,114 @@ def test_has_live_protective_stop_matches_class_share_symbol_despite_space(broke
     assert broker.has_live_protective_stop("BRK-B") is True
 
 
+# ---------------------------------------------------------------------------
+# get_live_protective_stops: fuente de verdad post-reconnect.
+# A diferencia de has_live_protective_stop (que usa trades(), vacio tras un
+# reconnect), este metodo usa reqAllOpenOrdersAsync y ve TODAS las ordenes
+# vivas del cliente. Es la clave del fix de C1 del NUEVO_INFORME.
+# ---------------------------------------------------------------------------
+
+class _LiveStopTrade:
+    """Trade con los campos que lee get_live_protective_stops."""
+    def __init__(self, symbol, order_id, action, order_type, status):
+        self.contract = _StopCheckContract(symbol)
+        self.order = type("Order", (), {
+            "orderId": order_id, "action": action, "orderType": order_type
+        })()
+        self.orderStatus = FakeOrderStatus(status)
+
+
+def test_get_live_protective_stops_finds_orders_invisible_to_trades(broker, monkeypatch):
+    # El escenario del incidente: trades() esta vacio tras un reconnect,
+    # pero el stop sigue vivo en IBKR y reqAllOpenOrdersAsync lo ve.
+    # ESTE TEST DEBIA FALLAR contra el codigo anterior (has_live_protective_stop).
+    monkeypatch.setattr(broker.ib, "trades", lambda: [])  # trades() vacio: post-reconnect
+
+    live_trade = _LiveStopTrade("AAPL", order_id=42, action="SELL", order_type="STP", status="Submitted")
+
+    async def fake_req_all():
+        return [live_trade]
+
+    monkeypatch.setattr(broker.ib, "reqAllOpenOrdersAsync", fake_req_all)
+
+    result = asyncio.run(broker.get_live_protective_stops("AAPL"))
+    assert result == [42], "debe encontrar el stop aunque trades() este vacio"
+
+
+def test_get_live_protective_stops_detects_buy_stop_for_short_position(broker, monkeypatch):
+    # Fix de A4: el stop protector de una posicion corta es una orden BUY.
+    buy_stop = _LiveStopTrade("TSLA", order_id=88, action="BUY", order_type="STP", status="Submitted")
+
+    async def fake_req_all():
+        return [buy_stop]
+
+    monkeypatch.setattr(broker.ib, "reqAllOpenOrdersAsync", fake_req_all)
+
+    # Con side="BUY" debe encontrarlo; con "SELL" no.
+    assert asyncio.run(broker.get_live_protective_stops("TSLA", side="BUY")) == [88]
+    assert asyncio.run(broker.get_live_protective_stops("TSLA", side="SELL")) == []
+
+
+def test_cancel_duplicate_protective_stops_leaves_exactly_one_and_cancels_rest(broker, monkeypatch):
+    # 3 stops duplicados para AAPL -> debe quedar 1 y cancelar 2.
+    stops = [
+        _LiveStopTrade("AAPL", order_id=10, action="SELL", order_type="STP", status="Submitted"),
+        _LiveStopTrade("AAPL", order_id=20, action="SELL", order_type="STP", status="Submitted"),
+        _LiveStopTrade("AAPL", order_id=30, action="SELL", order_type="STP", status="Submitted"),
+    ]
+
+    async def fake_req_all():
+        return stops
+
+    monkeypatch.setattr(broker.ib, "reqAllOpenOrdersAsync", fake_req_all)
+    cancelled = []
+    monkeypatch.setattr(broker.ib, "cancelOrder", lambda order: cancelled.append(order.orderId))
+
+    result = asyncio.run(broker.cancel_duplicate_protective_stops("AAPL"))
+
+    # Conserva el max orderId (30), cancela los otros dos.
+    assert 30 not in result, "el sobreviviente no debe aparecer en la lista de cancelados"
+    assert set(result) == {10, 20}
+    assert len(cancelled) == 2
+
+
+def test_cancel_duplicate_protective_stops_does_nothing_with_single_stop(broker, monkeypatch):
+    stop = _LiveStopTrade("AAPL", order_id=55, action="SELL", order_type="STP", status="Submitted")
+
+    async def fake_req_all():
+        return [stop]
+
+    monkeypatch.setattr(broker.ib, "reqAllOpenOrdersAsync", fake_req_all)
+
+    def fail_if_called(order):
+        raise AssertionError("no debe cancelar nada si solo hay un stop")
+
+    monkeypatch.setattr(broker.ib, "cancelOrder", fail_if_called)
+
+    result = asyncio.run(broker.cancel_duplicate_protective_stops("AAPL"))
+    assert result == []
+
+
+def test_cancel_duplicate_protective_stops_respects_keep_order_id(broker, monkeypatch):
+    # Si keep_order_id esta en la lista, debe conservarse ESE, aunque no sea el maximo.
+    stops = [
+        _LiveStopTrade("AAPL", order_id=100, action="SELL", order_type="STP", status="Submitted"),
+        _LiveStopTrade("AAPL", order_id=200, action="SELL", order_type="STP", status="Submitted"),
+    ]
+
+    async def fake_req_all():
+        return stops
+
+    monkeypatch.setattr(broker.ib, "reqAllOpenOrdersAsync", fake_req_all)
+    cancelled = []
+    monkeypatch.setattr(broker.ib, "cancelOrder", lambda order: cancelled.append(order.orderId))
+
+    # keep=100: debe conservarse 100 y cancelarse 200 (aunque 200 > 100).
+    result = asyncio.run(broker.cancel_duplicate_protective_stops("AAPL", keep_order_id=100))
+    assert result == [200]
+    assert cancelled == [200]
+
+
 async def _noop_qualify(*contracts, **kwargs):
     """Simula una calificacion exitosa: IBKR asigna un conId real a cada
     contrato (a diferencia de un contrato recien construido, que arranca con

@@ -367,17 +367,44 @@ class IBKRBroker:
                 return True
         return False
 
-    def has_live_protective_stop(self, symbol: str) -> bool:
-        """True si hay una orden STOP de venta viva (no en OrderStatus.
-        DoneStates) para `symbol` en self.ib.trades() de esta sesion.
+    async def get_live_protective_stops(self, symbol: str, side: str = "SELL") -> "list[int]":
+        """Ids de todas las ordenes STOP protectoras vivas para `symbol`,
+        consultando IBKR directamente via reqAllOpenOrdersAsync.
 
-        Usado por la reconciliacion de arranque (ver _reconcile_unfilled_on_
-        startup en main.py) antes de colocar un stop nuevo sobre una posicion
-        reconciliada: sin este chequeo, una posicion que en realidad SI tiene
-        un stop vivo (ej. el bracket original nunca se cancelo, solo parecia
-        "Cancelled" transitoriamente) terminaria con DOS ordenes de venta
-        simultaneas -- si ambas llegaran a dispararse, se venderia mas
-        cantidad de la que la posicion realmente tiene."""
+        A diferencia de has_live_protective_stop (que usa self.ib.trades() y
+        queda ciego tras un reconnect que hace self.ib = IB()), este metodo
+        consulta IBKR por el estado real de todas las ordenes vivas del cliente,
+        incluidas las de sesiones anteriores al restart (mismo razonamiento que
+        cancel_resting_order -- ver su docstring para la explicacion completa).
+
+        `side` es la accion de la orden protectora: "SELL" para cubrir una
+        posicion larga, "BUY" para cubrir una posicion corta (fix de A4 del
+        NUEVO_INFORME: el stop protector de un short es una orden de compra).
+
+        Devuelve lista de orderId; puede contener mas de 1 si hay stops
+        duplicados creados tras un reconnect (ver cancel_duplicate_protective_
+        stops para limpiarlos, y C1 del NUEVO_INFORME para la causa raiz)."""
+        ib_symbol = _to_ib_symbol(symbol)
+        result = []
+        for trade in await self.ib.reqAllOpenOrdersAsync():
+            if (
+                trade.contract.symbol == ib_symbol
+                and trade.order.action == side
+                # IBKR reporta StopOrder como "STP" en ib_insync, no "STOP"
+                and trade.order.orderType in ("STOP", "STP")
+                and trade.orderStatus.status not in OrderStatus.DoneStates
+            ):
+                result.append(trade.order.orderId)
+        return result
+
+    def has_live_protective_stop(self, symbol: str) -> bool:
+        """True si hay una orden STOP de venta viva para `symbol` en
+        self.ib.trades() de esta sesion.
+
+        OBSOLETO: usa self.ib.trades(), que queda vacio tras reconnect()
+        (self.ib = IB()). Usar get_live_protective_stops() en su lugar, que
+        consulta IBKR directamente y ve ordenes de sesiones anteriores.
+        Conservado porque los tests existentes lo mockean directamente."""
         ib_symbol = _to_ib_symbol(symbol)
         for trade in self.ib.trades():
             if (
@@ -390,13 +417,40 @@ class IBKRBroker:
                 return True
         return False
 
-    async def place_protective_stop(self, symbol: str, quantity: float, stop_price: float) -> "int | None":
-        """Coloca un stop-loss de venta STANDALONE (sin padre, sin bracket)
-        para proteger una posicion que ya existe pero no tiene ningun stop
-        vivo -- a diferencia del stop que arma place_order() como hijo de una
-        orden de compra nueva, este protege una posicion que la cuenta ya
-        tiene (ej. una reconciliada por _reconcile_unfilled_on_startup cuyo
-        stop original se cancelo por error, ver has_live_protective_stop).
+    async def cancel_duplicate_protective_stops(
+        self, symbol: str, side: str = "SELL", keep_order_id: "int | None" = None
+    ) -> "list[int]":
+        """Cancela stops protectores duplicados para `symbol`, conservando uno.
+
+        Invariante central: 1 posicion <-> 1 stop protector. Si hay mas de uno
+        (creados tras un reconnect que vacio self.ib.trades() y rompio el chequeo
+        de idempotencia de has_live_protective_stop), cancela todos menos uno.
+
+        keep_order_id: si esta en la lista de stops vivos, se conserva ese (para
+        preservar el que ya tiene registrado el ledger del fondo). Si no se
+        especifica o no esta en la lista viva, conserva el mas reciente (max
+        orderId). Devuelve los ids cancelados."""
+        live = await self.get_live_protective_stops(symbol, side)
+        if len(live) <= 1:
+            return []
+        if keep_order_id is not None and keep_order_id in live:
+            survivor = keep_order_id
+        else:
+            survivor = max(live)
+        to_cancel = [oid for oid in live if oid != survivor]
+        for order_id in to_cancel:
+            await self.cancel_resting_order(order_id)
+        return to_cancel
+
+    async def place_protective_stop(
+        self, symbol: str, quantity: float, stop_price: float, side: str = "SELL"
+    ) -> "int | None":
+        """Coloca un stop-loss STANDALONE (sin padre, sin bracket) para proteger
+        una posicion existente que no tiene ningun stop vivo.
+
+        `side` determina el tipo de orden: "SELL" para una posicion larga,
+        "BUY" para una posicion corta (fix de A4: el stop protector de un
+        short es una compra de cierre). quantity se pasa en valor absoluto.
 
         Devuelve el order_id de la nueva orden, o None si el contrato no
         califica en IBKR."""
@@ -404,7 +458,7 @@ class IBKRBroker:
         await self.ib.qualifyContractsAsync(contract)
         if not contract.conId:
             return None
-        stop = StopOrder("SELL", quantity, stop_price)
+        stop = StopOrder(side, abs(quantity), stop_price)
         self.ib.placeOrder(contract, stop)
         return stop.orderId
 
