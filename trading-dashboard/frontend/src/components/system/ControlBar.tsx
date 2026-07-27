@@ -1,21 +1,32 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchStatus, setHalt, reconnectIbkr } from '../../api/account'
+import { fetchStatus, setHalt, setMode, reconnectIbkr } from '../../api/account'
 import { fetchHealth } from '../../api/health'
+import { useRealtimeStore } from '../../store/realtime'
+import { useAuthStore } from '../../store/auth'
+import { Badge } from '../ui/Badge'
+import { fmtAge } from '../../lib/format'
 import { useToastStore } from '../ui/Toast'
-import { Play, Pause, Plug, Wifi, Plus, Loader2 } from 'lucide-react'
+import { Play, Pause, Plug, Wifi, Plus, Loader2, Settings, LogOut } from 'lucide-react'
 
 interface Props {
   onNewOrder: () => void
+  onConfig?: () => void
 }
 
 /**
- * Barra de controles críticos, siempre visible (también en móvil).
- * Patrón de "quick-action pills" del IBKR GlobalTrader, pero con nuestras
- * acciones de seguridad: pausar/reanudar, reconectar IBKR, nueva orden.
+ * Barra de controles críticos, siempre visible (también en móvil) — una
+ * sola fila con el modo (PAPER/LIVE), pausar/reanudar, IBKR y nueva orden a
+ * la izquierda, y config/logout a la derecha. Antes eran dos filas
+ * separadas (Header + ControlBar) que mostraban info parcialmente
+ * duplicada (IBKR/HALTED en el Header solo aparecían en pantallas grandes
+ * como refuerzo visual de lo que esta fila ya muestra en pills) — unificarlas
+ * ahorra una fila entera de alto en móvil sin perder información real.
  */
-export function ControlBar({ onNewOrder }: Props) {
+export function ControlBar({ onNewOrder, onConfig }: Props) {
   const qc = useQueryClient()
   const addToast = useToastStore((s) => s.add)
+  const wsConnected = useRealtimeStore((s) => s.connected)
+  const logout = useAuthStore((s) => s.logout)
 
   const { data: status } = useQuery({
     queryKey: ['status'],
@@ -52,6 +63,12 @@ export function ControlBar({ onNewOrder }: Props) {
     onError: (e: Error) => addToast(e.message || 'No se pudo reconectar IBKR', 'error'),
   })
 
+  const modeMutation = useMutation({
+    mutationFn: () => setMode(status?.mode === 'live' ? 'paper' : 'live'),
+    onSuccess: () => invalidate(),
+    onError: () => addToast('Error al cambiar modo', 'error'),
+  })
+
   if (!status) return null
 
   const dotColor =
@@ -68,6 +85,13 @@ export function ControlBar({ onNewOrder }: Props) {
     haltMutation.mutate(next)
   }
 
+  const handleModeToggle = () => {
+    if (status.mode !== 'live') {
+      if (!window.confirm('¿Activar modo LIVE? Las órdenes se ejecutarán con dinero real.')) return
+    }
+    modeMutation.mutate()
+  }
+
   const pill =
     'inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-xs font-medium ' +
     'border transition-colors disabled:opacity-50 shrink-0 whitespace-nowrap'
@@ -78,6 +102,18 @@ export function ControlBar({ onNewOrder }: Props) {
       <span className="flex items-center gap-1.5 shrink-0 mr-0.5">
         <span className={`w-2 h-2 rounded-full ${dotColor}`} />
       </span>
+
+      {/* Modo PAPER/LIVE */}
+      <button
+        onClick={handleModeToggle}
+        disabled={modeMutation.isPending}
+        title="Click para cambiar modo"
+        className="shrink-0 hover:opacity-80 transition-opacity"
+      >
+        <Badge variant={status.mode === 'live' ? 'red' : 'yellow'}>
+          {status.mode.toUpperCase()}
+        </Badge>
+      </button>
 
       {/* Pausar / Reanudar */}
       <button
@@ -119,6 +155,39 @@ export function ControlBar({ onNewOrder }: Props) {
       >
         <Plus size={13} /> Orden
       </button>
+
+      {status.last_scan_at && (
+        <span className="hidden md:flex items-center gap-1 text-xs text-gray-500 shrink-0">
+          Scan: {fmtAge(status.last_scan_at)}
+          {status.scan_stale && <span className="text-yellow-500">⚠</span>}
+        </span>
+      )}
+
+      {/* Derecha: WS, config, logout */}
+      <div className="flex items-center gap-1.5 shrink-0 ml-auto pl-1.5">
+        <span
+          className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-green-400' : 'bg-gray-600'}`}
+          title={wsConnected ? 'WebSocket conectado' : 'WebSocket desconectado'}
+        />
+
+        {onConfig && (
+          <button
+            onClick={onConfig}
+            className="p-1.5 text-gray-500 hover:text-gray-200 hover:bg-surface-2 rounded-lg transition-colors"
+            title="Configuración"
+          >
+            <Settings size={16} />
+          </button>
+        )}
+
+        <button
+          onClick={() => { if (window.confirm('¿Cerrar sesión?')) logout() }}
+          className="p-1.5 text-gray-600 hover:text-gray-300 hover:bg-surface-2 rounded-lg transition-colors"
+          title="Salir"
+        >
+          <LogOut size={15} />
+        </button>
+      </div>
     </div>
   )
 }

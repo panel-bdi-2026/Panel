@@ -2,7 +2,6 @@ import { useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { usePullToRefresh } from '../../hooks/usePullToRefresh'
-import { Header } from './Header'
 import { Sidebar, type Section } from './Sidebar'
 import { fetchPendingOrders } from '../../api/orders'
 import { useWebSocket } from '../../hooks/useWebSocket'
@@ -54,7 +53,7 @@ export function Shell() {
   )
 
   return (
-    <div className="flex h-screen overflow-hidden bg-gray-950">
+    <div className="flex h-dvh overflow-hidden bg-gray-950">
       <Sidebar
         active={section}
         onSelect={setSection}
@@ -64,11 +63,8 @@ export function Shell() {
       />
 
       <div className="flex flex-col flex-1 min-w-0">
-        <Header
-          onConfig={() => setShowConfig(true)}
-        />
         <HealthBanner />
-        <ControlBar onNewOrder={() => openOrder()} />
+        <ControlBar onNewOrder={() => openOrder()} onConfig={() => setShowConfig(true)} />
         <AccountSummaryPanel />
 
         {/* Indicador de pull-to-refresh (solo móvil, aparece al arrastrar) */}
