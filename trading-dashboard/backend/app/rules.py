@@ -231,7 +231,9 @@ class RulesEngine:
             return False
         start = _parse_hhmm(self.config.trading_hours_start)
         end = _parse_hhmm(self.config.trading_hours_end)
-        return start <= current.time() <= end
+        # Extremo inferior inclusivo, superior exclusivo: una orden a las 16:00:00
+        # exactas llegaria al broker fuera de sesion (cierre 16:00 ET).
+        return start <= current.time() < end
 
     def evaluate(
         self,

@@ -568,9 +568,12 @@ def test_within_trading_hours_false_on_holiday_observed_in_previous_calendar_yea
     assert not hours_engine._within_trading_hours(datetime(2021, 12, 31, 10, 0))
 
 
-def test_within_trading_hours_includes_start_and_end_boundary(hours_engine):
+def test_within_trading_hours_includes_start_excludes_end_boundary(hours_engine):
+    # Apertura a las 09:30 exactas: dentro de horario (inclusivo)
     assert hours_engine._within_trading_hours(datetime(2026, 6, 23, 9, 30))
-    assert hours_engine._within_trading_hours(datetime(2026, 6, 23, 16, 0))
+    # Cierre a las 16:00 exactas: fuera de horario (extremo superior exclusivo;
+    # una orden en ese instante llegaría al broker con la sesion ya cerrada)
+    assert not hours_engine._within_trading_hours(datetime(2026, 6, 23, 16, 0))
 
 
 def test_within_trading_hours_false_just_before_open_and_just_after_close(hours_engine):

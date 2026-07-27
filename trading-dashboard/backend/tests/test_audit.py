@@ -237,3 +237,28 @@ def test_find_latest_before_respects_since_days_cutoff(tmp_path):
         "f1", "AAPL", "signal_order_drafted", now.isoformat(), since_days=30,
     )
     assert entry is None
+
+
+def test_prune_deletes_old_entries_and_keeps_recent(tmp_path):
+    audit = make_audit(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_at(audit, "order_executed", now - timedelta(days=400))
+    _insert_at(audit, "order_executed", now - timedelta(days=200))
+    _insert_at(audit, "order_executed", now - timedelta(days=10))
+    deleted = audit.prune(older_than_days=365)
+    assert deleted == 1
+    remaining = audit._conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    assert remaining == 2
+
+
+def test_prune_returns_zero_when_nothing_to_delete(tmp_path):
+    audit = make_audit(tmp_path)
+    now = datetime.now(timezone.utc)
+    _insert_at(audit, "order_executed", now - timedelta(days=10))
+    deleted = audit.prune(older_than_days=365)
+    assert deleted == 0
+
+
+def test_close_does_not_raise_on_fresh_db(tmp_path):
+    audit = make_audit(tmp_path)
+    audit.close()  # no debe lanzar excepcion

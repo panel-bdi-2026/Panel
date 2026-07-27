@@ -355,6 +355,19 @@ async def _session_cleanup_loop() -> None:
     await _supervised_loop(_run_session_cleanup_cycle, "session_cleanup", lambda: 3600, initial_delay=3600)
 
 
+async def _run_audit_prune_cycle() -> None:
+    """Elimina entradas del audit_log de mas de 365 dias para evitar que
+    audit.db crezca indefinidamente. Se corre 1 vez al dia con initial_delay
+    de 24h: en un arranque normal no se borra nada sin razon."""
+    count = await asyncio.to_thread(audit.prune, older_than_days=365)
+    if count > 0:
+        logger.info("audit_prune: %d registros de mas de 365 dias eliminados", count)
+
+
+async def _audit_prune_loop() -> None:
+    await _supervised_loop(_run_audit_prune_cycle, "audit_prune", lambda: 86400, initial_delay=86400)
+
+
 async def _run_health_alert_cycle() -> None:
     """Un ciclo de deteccion de salud: envia alertas por email cuando aparecen
     o se resuelven problemas. Solo en transiciones para no inundar el correo.
@@ -440,7 +453,7 @@ async def _broadcast(payload: dict) -> None:
     dead = []
     for ws in list(clients):
         try:
-            await ws.send_json(payload)
+            await asyncio.wait_for(ws.send_json(payload), timeout=5)
         except Exception:
             dead.append(ws)
     for ws in dead:
@@ -778,6 +791,10 @@ async def _ensure_protective_stop(fund_id: str, symbol: str, stop_price: float) 
                     symbol, fund_id, cancelled, surviving,
                 )
             return
+        # Ventana TOCTOU entre get_live_protective_stops y place_protective_stop:
+        # otra corutina podria colocar un stop entre ambas llamadas. El
+        # _reconcile_protective_stops_loop limpia el duplicado en el ciclo
+        # siguiente (cada 5 min), manteniendo el invariante 1 posicion == 1 stop.
         new_stop_order_id = await broker.place_protective_stop(symbol, abs(qty), stop_price, side)
         if new_stop_order_id is not None:
             funds_store.set_stop_order_id(fund_id, symbol, new_stop_order_id)
@@ -2440,12 +2457,13 @@ async def lifespan(app: FastAPI):
     health_alert_task = asyncio.create_task(_health_alert_loop())
     reconcile_stops_task = asyncio.create_task(_reconcile_protective_stops_loop())
     watchdog_task = asyncio.create_task(_connection_watchdog_loop())
+    audit_prune_task = asyncio.create_task(_audit_prune_loop())
     yield
     background_tasks = [
         task, risk_task, score_recompute_task, data_refresh_task,
         exit_monitor_task, trailing_stop_task, hot_set_task, price_rotation_task,
         session_cleanup_task, cache_eviction_task, health_alert_task,
-        reconcile_stops_task, watchdog_task,
+        reconcile_stops_task, watchdog_task, audit_prune_task,
     ]
     for background_task in background_tasks:
         background_task.cancel()
@@ -2454,6 +2472,7 @@ async def lifespan(app: FastAPI):
     # de cada loop sin correr, y la CancelledError resultante nunca recuperada
     # -- asyncio la reporta como "exception was never retrieved").
     await asyncio.gather(*background_tasks, return_exceptions=True)
+    audit.close()
     broker.disconnect()
 
 

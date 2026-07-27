@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchPositions } from '../../api/account'
-import { useRealtimeStore } from '../../store/realtime'
 import { fmtUsd, fmtPct } from '../../lib/format'
 import { Skeleton } from '../ui/Skeleton'
 import { EmptyState } from '../ui/EmptyState'
@@ -75,7 +74,6 @@ export function PositionsTable() {
     queryFn: fetchPositions,
     refetchInterval: 10000,
   })
-  const priceMap = useRealtimeStore((s) => s.prices)
   const [sortKey, setSortKey] = useState<SortKey>('liveValue')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -83,7 +81,7 @@ export function PositionsTable() {
   if (!positions?.length) return <EmptyState icon="📊" title="Sin posiciones abiertas" subtitle="Cuando el sistema o vos abran una posición, aparecerá acá con su P&L en vivo." />
 
   const rows: Row[] = positions.map((p) => {
-    const live = priceMap[p.symbol]?.price ?? p.market_price ?? null
+    const live = p.market_price ?? null
     const liveValue = live !== null ? live * p.quantity : NaN
     const livePnl = live !== null ? (live - p.avg_cost) * p.quantity : (p.unrealized_pnl ?? NaN)
     const livePnlPct = live !== null && p.avg_cost !== 0 ? ((live - p.avg_cost) / p.avg_cost) * 100 : NaN

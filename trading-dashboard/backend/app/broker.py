@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 from ib_async import IB, LimitOrder, MarketOrder, Stock, StopOrder, Ticker
 from ib_async.order import OrderStatus
@@ -535,7 +536,7 @@ class IBKRBroker:
         terminal, devuelve el ultimo estado visto (puede ser parcial o
         todavia en curso) en vez de bloquear indefinidamente.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         result = None
         while True:

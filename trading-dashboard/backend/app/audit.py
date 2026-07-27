@@ -48,6 +48,17 @@ class AuditLog:
         )
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts)")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)")
+        # Indice en action+ts: acelera count_trades_today que filtra por action IN (...) AND ts
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action_ts ON audit_log(action, ts)")
+        # Indice en el simbolo del payload: acelera was_submitted_by_system y get_last_stop_price
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_symbol "
+            "ON audit_log(json_extract(payload,'$.symbol'))"
+        )
+        # wal_autocheckpoint=1000: en WAL el checkpoint automatico corre cada N paginas
+        # escritas (default: 1000 -- se confirma aqui explicitamente para que quede
+        # documentado y no cambie si sqlite sube el default en el futuro).
+        self._conn.execute("PRAGMA wal_autocheckpoint=1000")
         self._conn.commit()
 
     def record(self, action: str, payload: dict, result: dict) -> None:
@@ -271,6 +282,34 @@ class AuditLog:
             "id": row[0], "ts": row[1], "action": row[2],
             "payload": json.loads(row[3]), "result": json.loads(row[4]),
         }
+
+    def prune(self, older_than_days: int = 365) -> int:
+        """Elimina entradas con ts anterior a `older_than_days` dias. Devuelve
+        el numero de filas eliminadas. Llamar 1×/dia desde _supervised_loop
+        (ver main.py) para evitar que audit.db crezca indefinidamente; no
+        es destructivo para auditorias operativas: las posiciones y PnL del
+        ledger (funds.py) son la fuente de verdad, el audit_log es bitacora
+        de decisiones, no de estado -- raramente se necesitan registros de
+        mas de un año."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM audit_log WHERE ts < ?", (cutoff,))
+            self._conn.commit()
+        return cur.rowcount
+
+    def close(self) -> None:
+        """Fuerza un WAL checkpoint completo. Llamar desde lifespan shutdown
+        para que el archivo .db quede consolidado (sin el fragmento .wal
+        pendiente) antes de que el proceso termine -- los backups que copian
+        solo el .db obtendran un snapshot consistente. No cierra la conexion:
+        el proceso la cierra al salir, y en tests el singleton de modulo sigue
+        siendo valido para el siguiente test."""
+        with self._lock:
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self._conn.commit()
+            except Exception:
+                pass
 
     def was_stopped_out_after(self, fund_id: str, symbol: str, since_ts: str) -> bool:
         """True si hay una entrada auto_trade_stop_loss_reconciled para
