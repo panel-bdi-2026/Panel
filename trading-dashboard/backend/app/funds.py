@@ -290,17 +290,13 @@ class Fund(BaseModel):
         if pos is not None and pos.quantity > 0:
             pos.stop_loss_price = new_stop_price
 
-    def set_stop_order_id(self, symbol: str, stop_order_id: int) -> None:
-        """Registra el stop_order_id de un stop-loss recien colocado sobre
-        una posicion ya abierta, sin tocar price/cash/quantity. Usado por la
-        reconciliacion de arranque (ver _reconcile_unfilled_on_startup en
-        main.py) DESPUES de llamar a broker.place_protective_stop() para una
-        posicion reconciliada que no tenia ningun stop vivo protegiendola
-        (ver broker.has_live_protective_stop) -- el stop original de esa
-        posicion probablemente se cancelo por error cuando la orden padre
-        parecia "Cancelled" transitoriamente en IBKR."""
+    def set_stop_order_id(self, symbol: str, stop_order_id: Optional[int]) -> None:
+        """Registra (o borra, si None) el stop_order_id de un stop-loss para
+        una posicion ya abierta. None se usa cuando el stop desaparecio de IBKR
+        (ejecuto o fue cancelado externamente) para que _ensure_missing lo
+        recoloque en el siguiente ciclo de 5s en vez de acumular duplicados."""
         pos = self.positions.get(symbol)
-        if pos is not None and pos.quantity > 0:
+        if pos is not None and pos.quantity != 0:
             pos.stop_order_id = stop_order_id
 
     def mark_scaled_out(self, symbol: str) -> None:
@@ -516,7 +512,7 @@ class FundsStore:
             self.save()
             return fund
 
-    def set_stop_order_id(self, fund_id: str, symbol: str, stop_order_id: int) -> Fund | None:
+    def set_stop_order_id(self, fund_id: str, symbol: str, stop_order_id: Optional[int]) -> Fund | None:
         with self._lock:
             fund = self.funds.get(fund_id)
             if fund is None:

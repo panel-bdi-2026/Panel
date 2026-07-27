@@ -37,6 +37,7 @@ from .funds import FundsStore, FundValidationError
 from .indicators import atr, market_regime_ok, rate_of_change, sma
 from .market_data import (
     MarketDataError,
+    evict_stale_cache,
     get_bars_failure_stats,
     get_company_name,
     get_daily_bars,
@@ -337,7 +338,7 @@ async def _supervised_loop(cycle_fn, name: str, interval_fn, initial_delay: floa
 
 
 async def _run_cache_eviction_cycle() -> None:
-    await asyncio.to_thread(market_data.evict_stale_cache)
+    await asyncio.to_thread(evict_stale_cache)
 
 
 async def _cache_eviction_loop() -> None:
@@ -1873,6 +1874,17 @@ async def _ensure_missing_protective_stops() -> None:
         for symbol, position in list(fund.positions.items()):
             if position.quantity <= 0:
                 continue
+            # Si ya hay un stop_order_id registrado, confiamos en que el stop
+            # sigue activo y no llamamos reqAllOpenOrdersAsync cada 5s: esta
+            # llamada es la raiz de los stops duplicados (cuando IBKR responde
+            # vacio por lag post-reconnect o stop de sesion anterior que expiro,
+            # el sistema coloca un nuevo stop, y al repetirse cada 5s acumula
+            # decenas de stops que al ejecutar todos dejan una posicion corta).
+            # El _reconcile_protective_stops_cycle (cada 5min) detecta si el
+            # stop realmente desaparecio y limpia stop_order_id para que este
+            # ciclo lo reponga en la siguiente iteracion.
+            if position.stop_order_id is not None:
+                continue
             side = "SELL" if position.quantity > 0 else "BUY"
             if await broker.get_live_protective_stops(symbol, side):
                 continue
@@ -1924,12 +1936,28 @@ async def _reconcile_protective_stops_cycle() -> None:
                 continue
             side = "SELL" if position.quantity > 0 else "BUY"
             try:
+                live = await broker.get_live_protective_stops(symbol, side)
+                if not live:
+                    # No hay ningun stop vivo para esta posicion.
+                    # Si el fondo cree que hay uno (stop_order_id != None), el stop
+                    # desaparecio de IBKR (ejecuto o fue cancelado externamente):
+                    # limpiar stop_order_id para que _ensure_missing_protective_stops
+                    # coloque exactamente uno nuevo en el siguiente ciclo de 5s,
+                    # en vez de acumular decenas de stops como antes (ver C1 bis).
+                    if position.stop_order_id is not None:
+                        funds_store.set_stop_order_id(fund.id, symbol, None)
+                        logger.warning(
+                            "reconcile_stops: stop_order_id=%s ya no existe en IBKR para %s "
+                            "(fondo %s) -- limpiado para que _ensure_missing lo reponga",
+                            position.stop_order_id, symbol, fund.id,
+                        )
+                    continue
                 cancelled = await broker.cancel_duplicate_protective_stops(
                     symbol, side, keep_order_id=position.stop_order_id
                 )
                 if cancelled:
-                    live = await broker.get_live_protective_stops(symbol, side)
-                    surviving = live[0] if live else None
+                    live_after = await broker.get_live_protective_stops(symbol, side)
+                    surviving = live_after[0] if live_after else None
                     if surviving is not None:
                         funds_store.set_stop_order_id(fund.id, symbol, surviving)
                     audit.record(
