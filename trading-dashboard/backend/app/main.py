@@ -1936,6 +1936,47 @@ async def _reconcile_protective_stops_loop() -> None:
     )
 
 
+async def _connection_watchdog_cycle() -> None:
+    """Intenta reconectar a IBKR si la conexion esta caida.
+
+    El backoff lo maneja _supervised_loop (base=30s, exponencial hasta 300s):
+    lanzar la excepcion de IBKRConnectionError permite que el supervisor aplique
+    el backoff correctamente entre intentos fallidos. No desactiva `halted`
+    automaticamente: si el kill switch se disparo, reconectar no lo cancela.
+    No reconecta en modo live sin live_confirm (igual que /api/mode)."""
+    if state["connected"]:
+        return
+    if state["mode"] == "live" and not settings.live_confirm:
+        logger.warning("watchdog: en modo live sin live_confirm, reconexion automatica deshabilitada")
+        return
+    target_port = settings.ib_port_live if state["mode"] == "live" else settings.ib_port_paper
+    try:
+        await broker.reconnect(settings.ib_host, target_port, settings.ib_client_id)
+        state["connected"] = True
+        _persist_state()
+        audit.record("ibkr_auto_reconnect", {"mode": state["mode"]}, {"port": target_port})
+        logger.warning("watchdog: reconexion a IBKR exitosa (puerto %s)", target_port)
+        # Tras reconectar puede haber fills ocurridos mientras estuvimos caidos.
+        await _reconcile_unfilled_on_startup()
+    except IBKRConnectionError as exc:
+        state["connected"] = False
+        # Propagar para que _supervised_loop aplique el backoff exponencial.
+        raise
+
+
+async def _connection_watchdog_loop() -> None:
+    """Watchdog de reconexion automatica a IBKR. Sin este loop, la unica
+    forma de reconectar era manual (/api/reconnect o el cron de las 8am).
+    Corre con base de 30s para responder rapido al reset nocturno del Gateway
+    (~23:45 ET); el backoff sube a 300s si IBKR sigue sin responder."""
+    await _supervised_loop(
+        _connection_watchdog_cycle,
+        "connection_watchdog",
+        lambda: 30,
+        initial_delay=30,
+    )
+
+
 async def _run_auto_exit_monitor_cycle() -> None:
     """Revisa, para cada fondo con auto-trading activado, sus posiciones
     abiertas, y evalua si corresponde cerrarlas (ver _check_fund_exit). El
@@ -2395,12 +2436,13 @@ async def lifespan(app: FastAPI):
     cache_eviction_task = asyncio.create_task(_cache_eviction_loop())
     health_alert_task = asyncio.create_task(_health_alert_loop())
     reconcile_stops_task = asyncio.create_task(_reconcile_protective_stops_loop())
+    watchdog_task = asyncio.create_task(_connection_watchdog_loop())
     yield
     background_tasks = [
         task, risk_task, score_recompute_task, data_refresh_task,
         exit_monitor_task, trailing_stop_task, hot_set_task, price_rotation_task,
         session_cleanup_task, cache_eviction_task, health_alert_task,
-        reconcile_stops_task,
+        reconcile_stops_task, watchdog_task,
     ]
     for background_task in background_tasks:
         background_task.cancel()

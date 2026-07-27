@@ -1406,7 +1406,7 @@ def test_lifespan_shutdown_awaits_background_tasks_cancellation(monkeypatch):
 
     asyncio.run(scenario())
 
-    assert len(created_tasks) == 12  # 11 previas + reconcile_protective_stops_loop (Fase 1)
+    assert len(created_tasks) == 13  # 11 previas + reconcile (Fase 1) + watchdog (Fase 3)
     assert all(t.done() for t in created_tasks)
 
 
@@ -1680,3 +1680,84 @@ def test_health_check_reports_background_loop_failing(monkeypatch):
         assert body["loops"]["test_loop"]["consecutive_failures"] == 3
     finally:
         del main_module._loop_health["test_loop"]
+
+
+# ---------------------------------------------------------------------------
+# _connection_watchdog_cycle: C3 del NUEVO_INFORME.
+# Sin reconexion automatica, la unica forma de volver era el cron de las 8am
+# o una intervencion manual. El watchdog reconecta solo cuando detecta que
+# state["connected"] es False.
+# ---------------------------------------------------------------------------
+
+def test_connection_watchdog_reconnects_when_disconnected(monkeypatch):
+    """Si state["connected"] es False, el watchdog debe llamar a broker.reconnect
+    y setear connected=True en caso de exito."""
+    main_module.state["connected"] = False
+    main_module.state["mode"] = "paper"
+
+    reconnect_calls = []
+
+    async def fake_reconnect(host, port, client_id):
+        reconnect_calls.append((host, port, client_id))
+
+    monkeypatch.setattr(main_module.broker, "reconnect", fake_reconnect)
+
+    # _reconcile_unfilled_on_startup se invoca tras reconectar; mockearlo.
+    async def noop_reconcile():
+        pass
+
+    monkeypatch.setattr(main_module, "_reconcile_unfilled_on_startup", noop_reconcile)
+
+    asyncio.run(main_module._connection_watchdog_cycle())
+
+    assert main_module.state["connected"] is True
+    assert len(reconnect_calls) == 1
+
+
+def test_connection_watchdog_does_nothing_when_connected(monkeypatch):
+    """Si ya esta conectado, el watchdog no debe llamar a reconnect."""
+    main_module.state["connected"] = True
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("no debe intentar reconectar si ya esta conectado")
+
+    monkeypatch.setattr(main_module.broker, "reconnect", fail_if_called)
+    asyncio.run(main_module._connection_watchdog_cycle())  # no debe explotar
+
+
+def test_connection_watchdog_does_not_reconnect_in_live_mode_without_confirm(monkeypatch):
+    """En modo live sin live_confirm, el watchdog NO debe reconectar (igual que
+    /api/mode): una reconexion automatica en live podria generar ordenes reales
+    inesperadas."""
+    main_module.state["connected"] = False
+    main_module.state["mode"] = "live"
+    monkeypatch.setattr(main_module.settings, "live_confirm", False)
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("no debe reconectar en live sin confirmacion")
+
+    monkeypatch.setattr(main_module.broker, "reconnect", fail_if_called)
+    asyncio.run(main_module._connection_watchdog_cycle())  # no debe explotar
+
+
+def test_connection_watchdog_triggers_reconcile_after_reconnect(monkeypatch):
+    """Tras una reconexion exitosa, debe invocar _reconcile_unfilled_on_startup:
+    pueden haberse llenado ordenes mientras estuvimos desconectados."""
+    main_module.state["connected"] = False
+    main_module.state["mode"] = "paper"
+
+    async def fake_reconnect(host, port, client_id):
+        pass
+
+    monkeypatch.setattr(main_module.broker, "reconnect", fake_reconnect)
+
+    reconcile_called = []
+
+    async def fake_reconcile():
+        reconcile_called.append(True)
+
+    monkeypatch.setattr(main_module, "_reconcile_unfilled_on_startup", fake_reconcile)
+
+    asyncio.run(main_module._connection_watchdog_cycle())
+
+    assert reconcile_called == [True], "reconcile_unfilled_on_startup debe llamarse tras reconectar"
