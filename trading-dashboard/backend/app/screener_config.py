@@ -70,47 +70,75 @@ _SP500_TICKERS = [
     "ZBH", "ZBRA", "ZTS",
 ]
 
-# Complemento al S&P 500: empresas mas chicas, mas jovenes y de mayor
-# potencial de crecimiento (small/mid-cap) que el indice de las 500 mas
-# grandes deja afuera por definicion. No es la replica mecanica de un indice
-# (S&P 400/600 o Russell 2000): no hubo forma de descargar esos constituyentes
-# completos de forma verificable desde este entorno (Wikipedia, iShares/SPDR y
-# similares devuelven error al intentar leerlos). En su lugar, cada ticker de
-# esta lista fue confirmado individualmente via busqueda web contra al menos
-# una fuente financiera real (Yahoo Finance, Nasdaq, stockanalysis.com, etc.)
-# para minimizar el riesgo de incluir un simbolo inventado, deslistado o mal
-# escrito. Cubre sectores de alto crecimiento (IA/software, biotech,
-# fintech, ciberseguridad, semiconductores, espacio/defensa, robotica,
-# vehiculos electricos/baterias, computacion cuantica, nuclear/SMR, minerales
-# criticos) para diversificar la oportunidad mas alla de las mismas 500
-# empresas grandes de siempre. Lista a revisar periodicamente: estas
-# compañias son mas volatiles y menos liquidas que el S&P 500, por lo que el
-# filtro de min_avg_dollar_volume es el que las saca del scan si se vuelven
-# demasiado ilíquidas.
-#
-# Sesgo de look-ahead de INCLUSION: cada nombre se busco hoy a mano, lo que
-# en la practica selecciona simbolos que YA se sabe que tuvieron una corrida
-# fuerte reciente (IONQ, RGTI, OKLO, CRCL, SMCI, etc). Un backtest historico
-# sobre este universo "encontraria" ganadores que estan en la lista PORQUE ya
-# se sabe que ganaron -- algo que ningun scan corrido en tiempo real en el
-# pasado podria haber replicado. Por eso backtest.py excluye estos tickers
-# del universo que realmente simula (ver GROWTH_TICKERS/_backtest_universe
-# ahi); el scan en vivo (screener.py y strategies/*.py) si los incluye sin
-# ese problema, porque ahi se evaluan con datos de HOY para decidir una
-# entrada HOY, no para medir un resultado historico ya conocido.
+# S&P MidCap 400 completo (fuente: Wikipedia, descargado 2026-07-29).
+# Membresía oficial del índice S&P Dow Jones — sin sesgo de look-ahead de
+# inclusión, a diferencia de GROWTH_TICKERS. El backtest sí puede usar estos
+# tickers (a diferencia de GROWTH_TICKERS que se excluyen en _backtest_universe)
+# porque la membresía no fue elegida a mano mirando qué corrió recientemente.
+# Sesgo de supervivencia (miembros de HOY vs historia) persiste igual que en
+# _SP500_TICKERS, pero es el mejor proxy disponible sin un feed punto-a-punto
+# de membresía histórica. MOG.A se normaliza a MOG-A (convención de Tiingo).
+_SP400_TICKERS = [
+    "AA", "AAL", "AAON", "ACI", "ACM", "ADC", "AEIS", "AFG", "AGCO", "AHR",
+    "AIT", "ALGM", "ALK", "ALLY", "ALSN", "ALV", "AM", "AMG", "AMH", "AMKR",
+    "AN", "ANF", "APG", "APPF", "AR", "ARMK", "ARW", "ARWR", "ASB", "ASH",
+    "ATI", "ATR", "AVAV", "AVNT", "AVT", "AVTR", "AXTA", "AYI", "BAH", "BBWI",
+    "BC", "BCO", "BDC", "BHF", "BILL", "BIO", "BJ", "BKH", "BMRN", "BRKR",
+    "BROS", "BRX", "BSY", "BTSG", "BURL", "BWA", "BWXT", "BYD", "CACI", "CAR",
+    "CART", "CAVA", "CBSH", "CBT", "CCK", "CDE", "CDP", "CELH", "CFR", "CG",
+    "CGNX", "CHDN", "CHE", "CHH", "CHRD", "CHWY", "CLF", "CLH", "CMC", "CNH",
+    "CNM", "CNO", "CNX", "COKE", "COLB", "COLM", "CPRI", "CR", "CRBG", "CROX",
+    "CRS", "CRUS", "CSL", "CTRE", "CUBE", "CUZ", "CVLT", "CW", "CXT", "CYTK",
+    "DAR", "DBX", "DCI", "DINO", "DKS", "DLB", "DOCN", "DOCS", "DOCU", "DT",
+    "DTM", "DUOL", "DY", "EEFT", "EGP", "EHC", "ELAN", "ELF", "ELS", "ENS",
+    "ENSG", "ENTG", "EPR", "EQH", "ESAB", "ESNT", "EVR", "EWBC", "EXEL", "EXLS",
+    "EXP", "EXPO", "FAF", "FBIN", "FCFS", "FCN", "FFIN", "FHI", "FHN", "FIVE",
+    "FLG", "FLR", "FLS", "FN", "FNB", "FND", "FNF", "FOUR", "FR", "FTI",
+    "G", "GAP", "GATX", "GBCI", "GEF", "GGG", "GHC", "GLPI", "GME", "GMED",
+    "GNTX", "GPK", "GWRE", "GXO", "H", "HAE", "HALO", "HGV", "HIMS", "HL",
+    "HLI", "HLNE", "HOG", "HOMB", "HQY", "HR", "HRB", "HWC", "HXL", "IBOC",
+    "IDA", "IDCC", "IESC", "ILMN", "INGR", "IPGP", "IRT", "ITT", "JAZZ", "JEF",
+    "JLL", "KBH", "KBR", "KD", "KEX", "KNF", "KNSL", "KNX", "KRC", "KRG",
+    "KRYS", "KTOS", "LAD", "LAMR", "LEA", "LECO", "LFUS", "LIVN", "LNTH", "LOPE",
+    "LPX", "LSCC", "LSTR", "M", "MANH", "MAT", "MEDP", "MIDD", "MKSI", "MLI",
+    "MMS", "MOG-A", "MOH", "MORN", "MP", "MSA", "MSM", "MTDR", "MTG", "MTN",
+    "MTSI", "MTZ", "MUR", "MUSA", "MZTI", "NBIX", "NEU", "NFG", "NJR", "NLY",
+    "NNN", "NOV", "NOVT", "NTNX", "NVST", "NVT", "NWE", "NXST", "NXT", "NYT",
+    "OC", "OGE", "OGS", "OHI", "OKTA", "OLED", "OLLI", "OLN", "ONB", "ONTO",
+    "OPCH", "ORA", "ORI", "OSK", "OVV", "OZK", "P", "PAG", "PATH", "PB",
+    "PBF", "PCTY", "PEGA", "PEN", "PFGC", "PII", "PINS", "PK", "PLNT", "PNFP",
+    "POR", "POST", "PPC", "PR", "PRI", "PSN", "PVH", "QLYS", "R", "RBA",
+    "RBC", "REXR", "RGA", "RGEN", "RGLD", "RH", "RLI", "RMBS", "RNR", "ROIV",
+    "ROKU", "RPM", "RRC", "RRX", "RS", "RYAN", "RYN", "SAIA", "SAIC", "SAM",
+    "SANM", "SARO", "SBRA", "SCI", "SEIC", "SF", "SFM", "SGI", "SHC", "SIGI",
+    "SIRI", "SITM", "SLAB", "SLGN", "SLM", "SMG", "SMTC", "SN", "SNX", "SOLS",
+    "SON", "SPXC", "SR", "SSB", "SSD", "ST", "STAG", "STRL", "STWD", "SWX",
+    "SYNA", "TCBI", "TEX", "THC", "THG", "THO", "TKR", "TLN", "TNL", "TOL",
+    "TOST", "TREX", "TRU", "TTC", "TTEK", "TTMI", "TWLO", "TXNM", "TXRH", "UBSI",
+    "UFPI", "UGI", "ULS", "UMBF", "UNM", "USFD", "UTHR", "VAL", "VC", "VFC",
+    "VIAV", "VICR", "VLY", "VMI", "VNO", "VNOM", "VNT", "VOYA", "VVV", "WAL",
+    "WBS", "WCC", "WEX", "WFRD", "WH", "WHR", "WING", "WLK", "WMG", "WMS",
+    "WPC", "WSO", "WTFC", "WTRG", "WTS", "WWD", "XPO", "XRAY", "YETI", "ZION",
+]
+
+# Complemento de crecimiento: empresas de alta volatilidad/crecimiento elegidas
+# a mano. IMPORTANTE: sesgo de look-ahead de INCLUSION — cada nombre fue elegido
+# sabiendo que ya corrió fuerte (IONQ, RGTI, OKLO, etc). Por eso backtest.py
+# excluye estos tickers (_backtest_universe); el scan en vivo sí los usa porque
+# ahí se evalúan con datos de HOY para decidir una entrada HOY.
 GROWTH_TICKERS = [
     "ABAT", "ACHR", "ACMR", "ADMA", "AEHR", "ALRM", "AMBA", "AMPX", "AMRC", "AOSL",
-    "ASYS", "ATLX", "AVAV", "BB", "BKSY", "CAMT", "CEVA", "CHYM", "COHU", "CRBU",
+    "ASYS", "ATLX", "BB", "BKSY", "CAMT", "CEVA", "CHYM", "COHU", "CRBU",
     "CRCL", "CRML", "CRNX", "CRWV", "CURO", "ELVA", "EOSE", "FIVN", "FLNC", "GDOT",
-    "GRC", "GWH", "ICHR", "INO", "INOD", "IONQ", "JOBY", "KLIC", "KRMD", "KTOS",
-    "LC", "LUNR", "MAMA", "MDXH", "MP", "MUX", "MWA", "NAK", "NG", "OKLO",
-    "OMCL", "ONDS", "OTLY", "OUST", "PATH", "PVLA", "QBTS", "QFIN", "QLYS", "QS",
+    "GRC", "GWH", "ICHR", "INO", "INOD", "IONQ", "JOBY", "KLIC", "KRMD",
+    "LC", "LUNR", "MAMA", "MDXH", "MUX", "MWA", "NAK", "NG", "OKLO",
+    "OMCL", "ONDS", "OTLY", "OUST", "PVLA", "QBTS", "QFIN", "QS",
     "QUBT", "RDW", "RDWR", "RGTI", "RKLB", "RPAY", "RR", "RUN", "S", "SCWX",
     "SERV", "SEZL", "SGMO", "SIDU", "SLDP", "SOFI", "SOUN", "STEM", "TDC", "TERN",
     "TMC", "USAR", "VKTX", "VRNS", "WTTR", "ZS",
 ]
 
-DEFAULT_UNIVERSE = _SP500_TICKERS + GROWTH_TICKERS
+DEFAULT_UNIVERSE = _SP500_TICKERS + _SP400_TICKERS + GROWTH_TICKERS
 
 STRATEGY_IDS = ("momentum", "opportunistic", "long_term", "dividend")
 
