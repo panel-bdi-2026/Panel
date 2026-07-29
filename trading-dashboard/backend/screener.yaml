@@ -668,6 +668,7 @@ opportunistic:
   sector_exit_roc_days: 5
   sector_exit_roc_threshold: -3.0
   take_profit_pct: 0.0
+  score_exit_threshold: 0.0
   score_weight_momentum: 0.1538
   score_weight_volatility: 0.1538
   score_weight_rsi_recovery: 0.1538

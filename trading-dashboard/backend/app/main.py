@@ -851,6 +851,12 @@ def _register_fund_fill_reconciliation(
 
     _already_qty = already_filled_qty
     _already_cost = already_filled_qty * already_avg_price
+    # Capturamos el momento de la orden, no el del fill tardío: opened_at debe
+    # reflejar cuándo se envió la compra, no cuándo llegó el fill. Sin esto,
+    # held_days en _check_fund_exit se calcula desde el fill tardío y
+    # max_holding_days nunca se cumple en posiciones que llenaron fuera de los
+    # 5s de _wait_for_fill (ej. posiciones con auto_trade_fill_late).
+    _order_submitted_at = datetime.now(timezone.utc)
 
     def _on_late_fill(total_filled: float, avg_price: float) -> None:
         incremental_qty = total_filled - _already_qty
@@ -863,6 +869,7 @@ def _register_fund_fill_reconciliation(
             stop_loss_price=stop_loss_price,
             stop_order_id=stop_order_id,
             commission=screener_config.commission_per_trade_usd,
+            opened_at=_order_submitted_at if side == Side.BUY else None,
         )
         audit.record(
             audit_action,
@@ -1131,6 +1138,7 @@ class _ExitParams(NamedTuple):
     sector_exit_roc_days: int
     sector_exit_roc_threshold: float
     take_profit_pct: float  # 0 = deshabilitado
+    score_exit_threshold: float  # 0 = deshabilitado
 
 
 def _strategy_exit_params(strategy_id: str) -> _ExitParams:
@@ -1155,12 +1163,12 @@ def _strategy_exit_params(strategy_id: str) -> _ExitParams:
     """
     cfg = screener_config
     if strategy_id == "momentum":
-        return _ExitParams(cfg.max_holding_days, True, cfg.sma_fast, 0, 0.0, 0.0)
+        return _ExitParams(cfg.max_holding_days, True, cfg.sma_fast, 0, 0.0, 0.0, 0.0)
     if strategy_id == "opportunistic":
         opp = cfg.opportunistic
-        return _ExitParams(opp.max_holding_days, False, None, opp.sector_exit_roc_days, opp.sector_exit_roc_threshold, opp.take_profit_pct)
+        return _ExitParams(opp.max_holding_days, False, None, opp.sector_exit_roc_days, opp.sector_exit_roc_threshold, opp.take_profit_pct, opp.score_exit_threshold)
     if strategy_id in ("long_term", "dividend"):
-        return _ExitParams(None, False, None, 0, 0.0, 0.0)
+        return _ExitParams(None, False, None, 0, 0.0, 0.0, 0.0)
     raise ValueError(f"strategy_id desconocido: {strategy_id!r}")
 
 
@@ -1725,6 +1733,23 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                     except MarketDataError:
                         pass
 
+        # Salida por score: re-evalúa el símbolo con datos cacheados y sale si
+        # el score cayó por debajo del umbral configurado. Solo se ejecuta si
+        # hay datos en cache (cache_only=True); sin cache, se omite para no
+        # bloquear el ciclo ni hacer requests de red fuera de los scans normales.
+        score_exit = False
+        if exit_params.score_exit_threshold > 0:
+            try:
+                from .strategies.opportunistic import OpportunisticStrategy as _OppStrat
+                _result = await asyncio.to_thread(
+                    _OppStrat(screener_config).evaluate_symbol,
+                    symbol, True, False, True,  # regime_ok=True, force=False, cache_only=True
+                )
+                if _result is not None:
+                    score_exit = _result.score < exit_params.score_exit_threshold
+            except Exception:
+                pass  # sin cache o error: no salir
+
         # Precio de referencia: se pide una sola vez cuando hay al menos un
         # trigger activo o cuando take-profit está habilitado. Así se evita
         # llamar al broker en cada ciclo (sin exit triggers y sin TP) y
@@ -1732,12 +1757,12 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
         # sirvió para el check de take-profit.
         hit_target = False
         reference_price: "float | None" = None
-        if timed_out or trend_broke or sector_broke or exit_params.take_profit_pct > 0:
+        if timed_out or trend_broke or sector_broke or score_exit or exit_params.take_profit_pct > 0:
             reference_price = await broker.get_reference_price(symbol)
             if reference_price and exit_params.take_profit_pct > 0 and position.avg_cost > 0:
                 hit_target = reference_price >= position.avg_cost * (1 + exit_params.take_profit_pct / 100)
 
-        if not (timed_out or trend_broke or sector_broke or hit_target):
+        if not (timed_out or trend_broke or sector_broke or score_exit or hit_target):
             return
 
         if not reference_price:
@@ -1781,7 +1806,13 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                         "No se pudo cancelar el stop-loss huerfano %s de %s tras el exit",
                         stop_order_id, symbol,
                     )
-        reason = ("take_profit" if hit_target else ("max_holding_days" if timed_out else ("trend_break" if trend_broke else "sector_exit")))
+        reason = (
+            "take_profit" if hit_target
+            else "max_holding_days" if timed_out
+            else "trend_break" if trend_broke
+            else "score_exit" if score_exit
+            else "sector_exit"
+        )
         audit.record(
             "auto_trade_exit" if filled_qty > 0 else "auto_trade_exit_unfilled",
             order.model_dump(),

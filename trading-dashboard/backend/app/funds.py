@@ -189,6 +189,7 @@ class Fund(BaseModel):
         stop_loss_price: Optional[float] = None,
         stop_order_id: Optional[int] = None,
         commission: float = 0.0,
+        opened_at: Optional[datetime] = None,
     ) -> FundTrade:
         """Aplica una compra/venta ya ejecutada en el broker a la contabilidad
         del fondo: mueve cash_usd, actualiza la posicion (costo promedio en
@@ -237,7 +238,7 @@ class Fund(BaseModel):
                 self.cash_usd -= price * qty_covered + commission
             else:
                 if pos.quantity == 0:
-                    pos.opened_at = datetime.now(timezone.utc)
+                    pos.opened_at = opened_at if opened_at is not None else datetime.now(timezone.utc)
                     pos.stop_loss_price = stop_loss_price
                     pos.stop_order_id = stop_order_id
                     pos.initial_stop_loss_price = stop_loss_price

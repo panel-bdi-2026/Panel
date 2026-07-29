@@ -681,7 +681,18 @@ def _simulate_symbol_opportunistic(
                     sr = sector_roc_s.iloc[i]
                     if not pd.isna(sr):
                         sector_broke = float(sr) < opp.sector_exit_roc_threshold
-            if hit_stop or hit_target or timed_out or sector_broke:
+            # Salida por score: el mismo score cross-seccional que decide la
+            # entrada (score_series se calculó diariamente sobre el universo
+            # completo). Si está disponible y cae por debajo del umbral,
+            # cerramos la posición — permite capturar rotación: cuando la tesis
+            # original se debilita, se libera capital para nuevas señales.
+            # score_exit_threshold=0 desactiva este check (default).
+            score_exit = False
+            if opp.score_exit_threshold > 0:
+                score_today_exit = score_series.get(date)
+                if score_today_exit is not None and not pd.isna(score_today_exit):
+                    score_exit = float(score_today_exit) < opp.score_exit_threshold
+            if hit_stop or hit_target or timed_out or sector_broke or score_exit:
                 if hit_stop and not hit_target:
                     exit_reason = "stop_loss"
                     raw_exit_price = min(open_price, stop_price)
@@ -691,6 +702,9 @@ def _simulate_symbol_opportunistic(
                     raw_exit_price = max(open_price, take_profit_price)
                 elif timed_out:
                     exit_reason = "max_holding_days"
+                    raw_exit_price = price
+                elif score_exit:
+                    exit_reason = "score_exit"
                     raw_exit_price = price
                 else:
                     exit_reason = "sector_exit"

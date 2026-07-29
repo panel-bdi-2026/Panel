@@ -178,6 +178,12 @@ class OpportunisticConfig(BaseModel):
     # Take-profit: cierra la posición completa cuando el retorno desde la
     # entrada supera este umbral. 0 = deshabilitado.
     take_profit_pct: float = 0.0
+    # Salida por deterioro de señal: cierra la posición cuando el score actual
+    # del símbolo (recalculado con datos del día) cae por debajo de este umbral.
+    # Habilita rotación: libera capital cuando la tesis original se debilita,
+    # sin esperar al stop-loss ni al timeout de max_holding_days.
+    # 0 = deshabilitado. Calibrar con backtest (ver scripts/sweep_exit_params.py).
+    score_exit_threshold: float = 0.0
 
     # Pesos normalizados a suma 1.0 (percentiles 0-100 por componente).
     score_weight_momentum: float = 0.3077
