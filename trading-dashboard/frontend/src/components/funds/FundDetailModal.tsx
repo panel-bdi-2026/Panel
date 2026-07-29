@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { BarChart2 } from 'lucide-react'
 import type { Fund } from '../../api/types'
 import { addCapitalFlow, setAutoTrading } from '../../api/funds'
 import { fetchPositions } from '../../api/account'
@@ -9,6 +10,9 @@ import { Button } from '../ui/Button'
 import { Badge } from '../ui/Badge'
 import { EquityChart } from './EquityChart'
 import { SectorExposureChart } from './SectorExposureChart'
+import { TradeStatsPanel } from './TradeStatsPanel'
+import { PnlBySymbolChart } from './PnlBySymbolChart'
+import { TradingViewChart } from './TradingViewChart'
 import { TradeContextModal } from './TradeContextModal'
 import { fmtUsd, fmtPct, fmtAge } from '../../lib/format'
 import { useToastStore } from '../ui/Toast'
@@ -37,7 +41,8 @@ export function FundDetailModal({ fund, onClose }: Props) {
   const [flowNote, setFlowNote] = useState('')
   const [showFlow, setShowFlow] = useState(false)
   const [contextTradeId, setContextTradeId] = useState<string | null>(null)
-  const [chartView, setChartView] = useState<'equity' | 'sectors'>('equity')
+  const [chartView, setChartView] = useState<'equity' | 'sectors' | 'stats' | 'pnl'>('equity')
+  const [expandedChart, setExpandedChart] = useState<string | null>(null)
   const qc = useQueryClient()
   const addToast = useToastStore((s) => s.add)
 
@@ -151,29 +156,35 @@ export function FundDetailModal({ fund, onClose }: Props) {
         </div>
       )}
 
-      {/* Equity chart / exposición por sector */}
+      {/* Equity chart / exposición por sector / stats / pnl */}
       <div className="mb-4">
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-xs text-gray-500 uppercase">
-            {chartView === 'equity' ? 'Curva de equity' : 'Exposición por sector'}
+        <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+          <p className="text-xs text-gray-500 uppercase shrink-0">
+            {{ equity: 'Curva de equity', sectors: 'Exposición por sector', stats: 'Estadísticas', pnl: 'P&L por símbolo' }[chartView]}
           </p>
-          <div className="flex gap-0.5 bg-surface-2 rounded-md p-0.5">
-            {(['equity', 'sectors'] as const).map((v) => (
+          <div className="flex gap-0.5 bg-surface-2 rounded-md p-0.5 overflow-x-auto scrollbar-none">
+            {([
+              ['equity', 'Equity'],
+              ['sectors', 'Sectores'],
+              ['stats', 'Stats'],
+              ['pnl', 'P&L'],
+            ] as const).map(([v, label]) => (
               <button
                 key={v}
                 onClick={() => setChartView(v)}
-                className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+                className={`px-2 py-0.5 rounded text-xs font-medium transition-colors shrink-0 ${
                   chartView === v ? 'bg-surface-3 text-gray-100' : 'text-gray-500 hover:text-gray-300'
                 }`}
               >
-                {v === 'equity' ? 'Rendimiento' : 'Sectores'}
+                {label}
               </button>
             ))}
           </div>
         </div>
-        {chartView === 'equity'
-          ? <EquityChart fundId={fund.id} />
-          : <SectorExposureChart fund={fund} priceBySymbol={priceBySymbol} />}
+        {chartView === 'equity' && <EquityChart fundId={fund.id} />}
+        {chartView === 'sectors' && <SectorExposureChart fund={fund} priceBySymbol={priceBySymbol} />}
+        {chartView === 'stats' && <TradeStatsPanel trades={fund.trades} />}
+        {chartView === 'pnl' && <PnlBySymbolChart trades={fund.trades} />}
       </div>
 
       {/* Positions — solo las que tienen acciones; el ledger conserva registros
@@ -192,58 +203,77 @@ export function FundDetailModal({ fund, onClose }: Props) {
                 : null
               const openingTradeId = findOpeningTradeId(fund, sym, pos.opened_at)
               return (
-                <div
-                  key={sym}
-                  className={`bg-gray-800 rounded-lg px-3 py-2.5 ${openingTradeId ? 'cursor-pointer hover:bg-gray-700 transition-colors' : ''}`}
-                  role={openingTradeId ? 'button' : undefined}
-                  tabIndex={openingTradeId ? 0 : undefined}
-                  onClick={openingTradeId ? () => setContextTradeId(openingTradeId) : undefined}
-                  onKeyDown={openingTradeId ? (e) => { if (e.key === 'Enter') setContextTradeId(openingTradeId) } : undefined}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-baseline gap-1.5 min-w-0">
-                      <span className="font-semibold text-gray-100 shrink-0">{sym}</span>
-                      {companyNames?.[sym] && (
-                        <span className="text-gray-500 text-xs truncate">{companyNames[sym]}</span>
-                      )}
+                <div key={sym} className="bg-gray-800 rounded-lg overflow-hidden">
+                  {/* Fila principal — click abre contexto de trade */}
+                  <div
+                    className={`px-3 py-2.5 ${openingTradeId ? 'cursor-pointer hover:bg-gray-700 transition-colors' : ''}`}
+                    role={openingTradeId ? 'button' : undefined}
+                    tabIndex={openingTradeId ? 0 : undefined}
+                    onClick={openingTradeId ? () => setContextTradeId(openingTradeId) : undefined}
+                    onKeyDown={openingTradeId ? (e) => { if (e.key === 'Enter') setContextTradeId(openingTradeId) } : undefined}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-baseline gap-1.5 min-w-0">
+                        <span className="font-semibold text-gray-100 shrink-0">{sym}</span>
+                        {companyNames?.[sym] && (
+                          <span className="text-gray-500 text-xs truncate">{companyNames[sym]}</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {pos.stop_loss_price && (
+                          <span className="text-red-400 text-xs font-medium">SL {fmtUsd(pos.stop_loss_price)}</span>
+                        )}
+                        {pos.opened_at && (
+                          <span className="text-gray-500 text-xs">{fmtAge(pos.opened_at)}</span>
+                        )}
+                        {/* Botón TradingView — stopPropagation evita abrir el modal de contexto */}
+                        <button
+                          className={`p-1 rounded transition-colors ${expandedChart === sym ? 'text-blue-400 bg-blue-400/10' : 'text-gray-600 hover:text-gray-300'}`}
+                          title="Ver chart en TradingView"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setExpandedChart(expandedChart === sym ? null : sym)
+                          }}
+                        >
+                          <BarChart2 size={14} />
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {pos.stop_loss_price && (
-                        <span className="text-red-400 text-xs font-medium">SL {fmtUsd(pos.stop_loss_price)}</span>
-                      )}
-                      {pos.opened_at && (
-                        <span className="text-gray-500 text-xs">{fmtAge(pos.opened_at)}</span>
-                      )}
+                    <div className="grid grid-cols-3 sm:grid-cols-6 gap-x-3 gap-y-1.5 mt-2 text-xs">
+                      <div>
+                        <p className="text-gray-500">Cantidad</p>
+                        <p className="text-gray-200 font-medium nums">{pos.quantity}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Precio compra</p>
+                        <p className="text-gray-200 font-medium nums">{fmtUsd(pos.avg_cost)}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Costo total</p>
+                        <p className="text-gray-200 font-medium nums">{fmtUsd(costTotal)}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Precio actual</p>
+                        <p className="text-gray-200 font-medium nums">{fmtUsd(marketPrice)}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Valor mercado</p>
+                        <p className="text-gray-200 font-medium nums">{fmtUsd(marketValue)}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">P&L no realizado</p>
+                        <p className={`font-medium nums ${unrealizedPnl == null ? 'text-gray-200' : unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {fmtUsd(unrealizedPnl)}{unrealizedPnlPct != null && <span className="ml-1">({fmtPct(unrealizedPnlPct)})</span>}
+                        </p>
+                      </div>
                     </div>
                   </div>
-                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-x-3 gap-y-1.5 mt-2 text-xs">
-                    <div>
-                      <p className="text-gray-500">Cantidad</p>
-                      <p className="text-gray-200 font-medium nums">{pos.quantity}</p>
+                  {/* TradingView chart expandible */}
+                  {expandedChart === sym && (
+                    <div className="border-t border-gray-700">
+                      <TradingViewChart symbol={sym} height={360} />
                     </div>
-                    <div>
-                      <p className="text-gray-500">Precio compra</p>
-                      <p className="text-gray-200 font-medium nums">{fmtUsd(pos.avg_cost)}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-500">Costo total</p>
-                      <p className="text-gray-200 font-medium nums">{fmtUsd(costTotal)}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-500">Precio actual</p>
-                      <p className="text-gray-200 font-medium nums">{fmtUsd(marketPrice)}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-500">Valor mercado</p>
-                      <p className="text-gray-200 font-medium nums">{fmtUsd(marketValue)}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-500">P&L no realizado</p>
-                      <p className={`font-medium nums ${unrealizedPnl == null ? 'text-gray-200' : unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {fmtUsd(unrealizedPnl)}{unrealizedPnlPct != null && <span className="ml-1">({fmtPct(unrealizedPnlPct)})</span>}
-                      </p>
-                    </div>
-                  </div>
+                  )}
                 </div>
               )
             })}
