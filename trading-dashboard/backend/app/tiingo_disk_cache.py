@@ -78,11 +78,59 @@ def is_sufficient(symbol: str, needed_start: date) -> bool:
     return first <= needed_start and last >= yesterday
 
 
+# Hueco (en dias corridos) a partir del cual se asume que las barras anteriores
+# pertenecen a OTRO valor y no al que cotiza hoy con ese ticker.
+_MAX_CONTINUITY_GAP_DAYS = 180
+
+
+def truncate_at_discontinuity(df: pd.DataFrame, symbol: str = "") -> pd.DataFrame:
+    """Recorta `df` al ultimo tramo contiguo, descartando lo anterior a un hueco
+    de mas de _MAX_CONTINUITY_GAP_DAYS dias.
+
+    Una accion listada cotiza todos los dias habiles: el cierre mas largo de la
+    historia recinte del NYSE fueron 4 dias (11-S) y 2 dias (huracan Sandy). Un
+    agujero de meses en una serie EOD significa que el papel dejo de cotizar --
+    deslistado, adquirido o en quiebra -- y que lo que reaparece despues con el
+    mismo ticker es, en la practica, un valor distinto:
+
+    - VAL: Valspar (pinturas, Materials) hasta que Sherwin-Williams la compro en
+      2017-07; el ticker reaparece en 2021-05 como Valaris (perforacion offshore,
+      Energy) al salir del Capitulo 11. Pegar ambas series da un salto de -79% en
+      un dia y ~7 años de barras atribuidas a la empresa equivocada.
+    - CURO: quiebra de 2024, 562 dias sin cotizar. La accion post-reorganizacion
+      no es la misma que la de antes: los tenedores viejos quedaron diluidos o
+      barridos.
+
+    Sin este recorte los indicadores (ROC, RSI, ATR, medias moviles) se calculan
+    A TRAVES del hueco como si fueran dias consecutivos, y el backtest opera una
+    serie quimera. Quedarse solo con el tramo mas reciente es la opcion
+    conservadora: se pierde historia, no se inventa.
+
+    A proposito NO se aplica en load()/coverage()/is_sufficient(): esas deciden
+    si hay que bajar mas historia de Tiingo. Si vieran la serie recortada
+    concluirian que falta cobertura y volverian a descargar el tramo viejo en
+    cada corrida, para recortarlo de nuevo. El recorte es para el CONSUMIDOR de
+    las barras, no para la contabilidad del cache.
+    """
+    if df is None or len(df) < 2:
+        return df
+    gaps = df.index.to_series().diff().dt.days
+    big = gaps[gaps > _MAX_CONTINUITY_GAP_DAYS]
+    if big.empty:
+        return df
+    return df[df.index >= big.index[-1]]
+
+
 def slice_from(symbol: str, needed_start: date) -> pd.DataFrame | None:
-    """Carga el caché y devuelve solo las filas desde needed_start en adelante."""
+    """Carga el caché y devuelve solo las filas desde needed_start en adelante.
+
+    Aplica truncate_at_discontinuity: si el ticker fue reusado por otra empresa
+    (ver ahi), solo se devuelven las barras del valor que cotiza hoy.
+    """
     df = load(symbol)
     if df is None or df.empty:
         return None
+    df = truncate_at_discontinuity(df, symbol)
     cutoff = pd.Timestamp(needed_start, tz="UTC")
     sliced = df[df.index >= cutoff]
     return sliced if not sliced.empty else None

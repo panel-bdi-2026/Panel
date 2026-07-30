@@ -40,7 +40,14 @@ from app.backtest import (  # noqa: E402
     _collect_opportunistic_trades,
     _compute_summary_stats,
 )
-from app.screener_config import ScreenerConfig  # noqa: E402
+from app.screener_config import (  # noqa: E402
+    _SP400_TICKERS,
+    _SP500_TICKERS,
+    ScreenerConfig,
+)
+
+_SP400_SET = frozenset(_SP400_TICKERS)
+_SP500_SET = frozenset(_SP500_TICKERS)
 
 
 # take_profit_pct quedó fijo en 0: el sweep anterior (6 valores × 4 de
@@ -145,8 +152,31 @@ def _run_combo(
     held = sorted((t.exit_date - t.entry_date).days for t in all_trades)
     n = len(held)
 
+    # Composicion por segmento del universo. Responde la pregunta que un cambio
+    # de universo NO contesta solo con el retorno: los simbolos nuevos, ¿SUMAN
+    # oportunidades o DESPLAZAN a los viejos del top_n? El score es un percentil
+    # transversal y la estrategia Oportunista premia volatilidad, que favorece
+    # estructuralmente a las midcaps -- si copan el top_n, lo que cambio no es
+    # "cuan bien rinde" sino QUE se opera, y hay que leer el resultado asi.
+    seg_ret: dict[str, list[float]] = {}
+    for t in all_trades:
+        s = ("SP400" if t.symbol in _SP400_SET
+             else "SP500" if t.symbol in _SP500_SET
+             else "GROWTH")
+        seg_ret.setdefault(s, []).append(t.return_pct)
+    composition = {
+        s: {
+            "n": len(rs),
+            "pct_de_trades": round(100 * len(rs) / n, 1) if n else 0.0,
+            "avg_ret_pct": round(sum(rs) / len(rs), 2),
+            "win_pct": round(100 * sum(1 for r in rs if r > 0) / len(rs), 1),
+        }
+        for s, rs in sorted(seg_ret.items())
+    }
+
     return {
         **overrides,
+        "composition": composition,
         "hold_avg_days": round(sum(held) / n, 1) if n else None,
         "hold_median_days": held[n // 2] if n else None,
         "hold_p90_days": held[int(n * 0.9)] if n else None,
@@ -216,6 +246,11 @@ def main() -> None:
                 f"full_ret={row['full_ret_pct']}%  DSR={row['full_dsr_pct']}%  "
                 f"n={row['n_trades']}  hold={row['hold_median_days']}d (p90 {row['hold_p90_days']}d)"
             )
+            comp = " | ".join(
+                f"{s} {c['pct_de_trades']}% ret{c['avg_ret_pct']:+.2f} win{c['win_pct']}%"
+                for s, c in row["composition"].items()
+            )
+            print(f"{'':>9} composicion: {comp}")
         except Exception as exc:
             print(f"ERROR: {exc}")
             results.append({**overrides, "error": str(exc)})

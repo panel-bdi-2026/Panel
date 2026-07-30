@@ -332,6 +332,12 @@ def get_daily_bars(
             raise MarketDataError(message)
 
         _disk.upsert(symbol.upper(), df)  # guardar descarga completa en disco
+        # El disco guarda la descarga entera (es la contabilidad de cobertura,
+        # ver truncate_at_discontinuity), pero al consumidor se le entrega solo
+        # el tramo del valor que cotiza hoy, igual que por el camino de
+        # _disk.slice_from -- si no, la primera corrida tras un fetch fresco
+        # veria la serie quimera y las siguientes no.
+        df = _disk.truncate_at_discontinuity(df, symbol.upper())
         _cache[key] = (now, df)
         _bars_failure_cache.pop(key, None)
         return df
