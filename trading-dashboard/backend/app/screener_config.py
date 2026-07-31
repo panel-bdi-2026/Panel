@@ -126,19 +126,47 @@ _SP400_TICKERS = [
 # sabiendo que ya corrió fuerte (IONQ, RGTI, OKLO, etc). Por eso backtest.py
 # excluye estos tickers (_backtest_universe); el scan en vivo sí los usa porque
 # ahí se evalúan con datos de HOY para decidir una entrada HOY.
+#
+# CURO y SCWX se sacaron el 2026-07-31: los dos dejaron de cotizar (CURO por la
+# quiebra de 2024, SCWX porque Sophos completo la adquisicion en 2025-02) y ya
+# estaban purgados a mano del screener.yaml operativo. Estaban igual en esta
+# lista, asi que regenerar el yaml desde DEFAULT_UNIVERSE los resucitaba. Si se
+# regenera de nuevo, revisar antes que no haya nombres muertos aca.
 GROWTH_TICKERS = [
     "ABAT", "ACHR", "ACMR", "ADMA", "AEHR", "ALRM", "AMBA", "AMPX", "AMRC", "AOSL",
-    "ASYS", "ATLX", "BB", "BKSY", "CAMT", "CEVA", "CHYM", "COHU", "CRBU",
-    "CRCL", "CRML", "CRNX", "CRWV", "CURO", "ELVA", "EOSE", "FIVN", "FLNC", "GDOT",
-    "GRC", "GWH", "ICHR", "INO", "INOD", "IONQ", "JOBY", "KLIC", "KRMD",
-    "LC", "LUNR", "MAMA", "MDXH", "MUX", "MWA", "NAK", "NG", "OKLO",
-    "OMCL", "ONDS", "OTLY", "OUST", "PVLA", "QBTS", "QFIN", "QS",
-    "QUBT", "RDW", "RDWR", "RGTI", "RKLB", "RPAY", "RR", "RUN", "S", "SCWX",
+    "ASYS", "ATLX", "AVAV", "BB", "BKSY", "CAMT", "CEVA", "CHYM", "COHU", "CRBU",
+    "CRCL", "CRML", "CRNX", "CRWV", "ELVA", "EOSE", "FIVN", "FLNC", "GDOT",
+    "GRC", "GWH", "ICHR", "INO", "INOD", "IONQ", "JOBY", "KLIC", "KRMD", "KTOS",
+    "LC", "LUNR", "MAMA", "MDXH", "MP", "MUX", "MWA", "NAK", "NG", "OKLO",
+    "OMCL", "ONDS", "OTLY", "OUST", "PATH", "PVLA", "QBTS", "QFIN", "QLYS", "QS",
+    "QUBT", "RDW", "RDWR", "RGTI", "RKLB", "RPAY", "RR", "RUN", "S",
     "SERV", "SEZL", "SGMO", "SIDU", "SLDP", "SOFI", "SOUN", "STEM", "TDC", "TERN",
     "TMC", "USAR", "VKTX", "VRNS", "WTTR", "ZS",
 ]
 
-DEFAULT_UNIVERSE = _SP500_TICKERS + _SP400_TICKERS + GROWTH_TICKERS
+# _SP400_TICKERS queda definido y con sus sectores cargados (ver sectors.py) pero
+# NO entra al universo por defecto. Se probo agregarlo (backtest de 14.5 años, 6
+# folds, 12 combos) y degrada la estrategia de forma consistente:
+#
+#            587 tickers      984 tickers (con sectores y VAL ya arreglados)
+#   ret          929%              633%
+#   DSR         96.8%             85.4%   (<95% = no demostrado)
+#   Sharpe wf    0.93              0.69
+#   peor fold    0.40              0.30
+#
+# La causa NO es que las midcaps sean malas: es que compiten mal en ESTE ranking.
+# El score es un percentil transversal y la Oportunista premia volatilidad
+# (min_volatility_pct, band_score), asi que las midcaps puntuan alto POR SER
+# midcaps. Se llevaron el 48.8% de las operaciones siendo el 40.7% del universo
+# -- sobre-seleccionadas -- y rindieron peor por trade (+0.71% vs +0.89%, win
+# 43.6% vs 44.4%). O sea que no sumaron oportunidades: DESPLAZARON del top_n a
+# los simbolos del S&P 500.
+#
+# Para reactivarlo habria que cambiar el diseño del score, no solo el universo:
+# normalizar el percentil DENTRO de cada segmento (que compitan contra sus pares)
+# o poner un cupo maximo de posiciones midcap. Mientras eso no exista, sumar el
+# indice entero es estrictamente peor.
+DEFAULT_UNIVERSE = _SP500_TICKERS + GROWTH_TICKERS
 
 STRATEGY_IDS = ("momentum", "opportunistic", "long_term", "dividend")
 
