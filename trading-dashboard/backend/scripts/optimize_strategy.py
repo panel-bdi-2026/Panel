@@ -33,6 +33,8 @@ from datetime import date
 from itertools import product
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
@@ -100,16 +102,41 @@ INNER_GRID = {
 ASSUMED_CAPITAL = 100_000.0
 
 
-def _build_cfg_opp(macd_days: int, opp_rsi_max: float) -> ScreenerConfig:
-    cfg = ScreenerConfig()
+def _live_cfg() -> ScreenerConfig:
+    """Config base = screener.yaml, es decir lo que REALMENTE corre en produccion.
+
+    Antes esto era `ScreenerConfig()` (defaults del codigo) con un comentario que
+    decia "deben coincidir con live". No coincidian, y la diferencia no era
+    cosmetica: al 2026-07-31 los defaults tenian score_weight_momentum=0.3077 /
+    score_weight_room_to_grow=0.1538 y el yaml los tiene INTERCAMBIADOS. Ese es
+    el peso mas grande del score, o sea el criterio principal de ranking. La
+    optimizacion v5b (2026-07-07), que fijo el rsi_max=60 vivo, corrio entonces
+    con un ordenamiento distinto del de produccion -- ademas de forzar los gates
+    cross-seccionales que produccion no usa (ver --cross-sectional-gates abajo).
+
+    Leer el yaml evita que un parametro se "optimice" contra una configuracion
+    que no existe en ningun lado.
+    """
+    path = Path(__file__).resolve().parent.parent / "screener.yaml"
+    return ScreenerConfig(**yaml.safe_load(path.read_text()))
+
+
+def _build_cfg_opp(
+    macd_days: int, opp_rsi_max: float, cross_sectional_gates: bool = False
+) -> ScreenerConfig:
+    cfg = _live_cfg()
     cfg.backtest_years = BACKTEST_YEARS
     cfg.top_n = CONCURRENT_CAP
-    # Parámetros específicos de Oportunista — deben coincidir con live
+    # Parámetros específicos de Oportunista — el resto sale del yaml
     cfg.opportunistic.macd_crossover_lookback_days = macd_days
     cfg.opportunistic.rsi_max = opp_rsi_max
-    # v5: gates cross-seccionales (percentil de universo, no umbral absoluto)
-    cfg.opportunistic.backtest_cross_sectional_gates = True
-    # stop_loss_atr_multiplier, rsi_min, holding usan defaults del live (2.5, 35, 20)
+    # Regimen de gates: por defecto el de produccion (absoluto). v5 los forzaba a
+    # cross-seccionales sin dejar registro en el resultado, lo que hacia que sus
+    # numeros no fueran comparables con los de ningun otro sweep. Comparados cara
+    # a cara sobre 14.5 años (scripts/sweep_gates.py, 2026-07-31) empatan en
+    # retorno y Sharpe, pero el absoluto tiene mejor peor-fold (0.50 vs 0.26) y
+    # 6pp menos de drawdown, asi que el default correcto es el de produccion.
+    cfg.opportunistic.backtest_cross_sectional_gates = cross_sectional_gates
     return cfg
 
 
@@ -189,11 +216,11 @@ def _stat(s, key, default=None):
 def _run_outer_opp(outer_vals, rules_cfg, n_total, n_done):
     """Recolecta trades de Oportunista una vez con parámetros outer, evalúa inner."""
     macd_days, opp_rsi_max = outer_vals
-    tag = f"macd={macd_days}d rsi_max={opp_rsi_max:.0f} [cross-seccional]"
+    cfg = _build_cfg_opp(macd_days, opp_rsi_max)
+    gates = "cross-seccional" if cfg.opportunistic.backtest_cross_sectional_gates else "absoluto"
+    tag = f"macd={macd_days}d rsi_max={opp_rsi_max:.0f} [gates {gates}]"
     print(f"\n  [{n_done+1}/{n_total}] {tag} — recolectando trades...", end=" ", flush=True)
     t0 = time.time()
-
-    cfg = _build_cfg_opp(macd_days, opp_rsi_max)
     try:
         all_trades, marks, bench_bars = _collect_opportunistic_trades(cfg, rules_cfg, cache_only=True)
     except Exception as exc:
@@ -235,7 +262,16 @@ def _run_outer_opp(outer_vals, rules_cfg, n_total, n_done):
             "strategy": "opportunistic",
             "macd_days": macd_days,
             "opp_rsi_max": opp_rsi_max,
-            "cross_sectional_gates": True,
+            # Se registra el valor REAL usado, no una constante: antes estaba
+            # hardcodeado en True mientras el codigo podia cambiarlo, asi que el
+            # JSON de resultados afirmaba un regimen que no necesariamente era el
+            # que habia corrido. Igual con los pesos del score, que son el
+            # criterio principal de ranking y no quedaban registrados en ningun
+            # lado -- por eso nadie noto que v5b corrio con momentum dominante y
+            # produccion con room_to_grow dominante.
+            "cross_sectional_gates": cfg.opportunistic.backtest_cross_sectional_gates,
+            "score_weight_momentum": cfg.opportunistic.score_weight_momentum,
+            "score_weight_room_to_grow": cfg.opportunistic.score_weight_room_to_grow,
             "invest_idle": invest_idle,
             "risk_per_trade_pct": risk_per_trade,
             "max_position_pct": max_pos_pct,
