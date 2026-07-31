@@ -43,6 +43,57 @@ def _clean_price(price: float) -> float | None:
     return price if price == price and price > 0 else None
 
 
+# IBKR manda avisos meramente informativos por el mismo canal que los rechazos
+# reales, y ib_async solo reconoce como benignos los codigos de su lista
+# `warningCodes` (105, 110, 165, 321, 329, 399, 404, 434, 492, 10167 -- ver
+# ib_async/wrapper.py:1608). Cualquier otro codigo cae en la rama de error, que
+# marca la orden como Cancelled y emite cancelledEvent AUNQUE la orden siga
+# viva en el broker: ~300ms despues IBKR manda el status real y la orden vuelve
+# a PreSubmitted/Submitted.
+#
+# 10349 ("Order TIF was set to DAY based on order preset") es exactamente eso:
+# un aviso, no un rechazo. Esa ventana de ~300ms rompia el flujo entero de
+# auto-trading (incidente del 2026-07-29/30: 62 ordenes en dos dias, ninguna
+# contabilizada). Secuencia real de la orden 2477436 (CCL) del 30/07:
+#
+#   18:48:06.832  PendingSubmit
+#   18:48:06.850  Cancelled   <- ib_async, por el aviso 10349
+#   18:48:07.126  PreSubmitted
+#   18:48:07.135  Submitted   <- estado real: la orden estaba viva todo el tiempo
+#
+# Dentro de esa ventana, _register_stop_reconciliation veia el Cancelled falso
+# y cancelaba nuestro propio stop-loss, _wait_for_fill volvia al instante con
+# filled_qty=0, y place_order lanzaba StopLossRejectedError -- con lo cual la
+# compra quedaba viva en IBKR, sin proteccion y sin registrar en el fondo, y el
+# scanner la reintentaba en cada ciclo (CSGP se intento 9 veces en dos dias).
+_SPURIOUS_CANCEL_CODES = frozenset({10349})
+
+# Time-in-force explicito en toda orden que colocamos. Si se deja vacio, IBKR
+# aplica el preset de la cuenta y lo AVISA con el codigo 10349 -- que es
+# justamente el que dispara el cancel espurio de arriba. Poner "DAY" a mano no
+# cambia el comportamiento (es lo que el preset ya venia aplicando), solo
+# elimina el aviso en el origen. El guard de _is_spurious_cancel se mantiene
+# igual: es la defensa contra CUALQUIER otro codigo informativo que ib_async
+# clasifique mal, no solo el 10349.
+_DEFAULT_TIF = "DAY"
+
+
+def _is_spurious_cancel(trade) -> bool:
+    """True si el 'Cancelled' actual de `trade` lo escribio ib_async al
+    malinterpretar un aviso informativo de IBKR (ver _SPURIOUS_CANCEL_CODES).
+    La orden sigue viva en el broker y su status real llega poco despues.
+
+    Se mira la ULTIMA entrada de cancelacion del log, no cualquiera: una orden
+    puede acumular un cancel espurio temprano y despues ser cancelada de
+    verdad, y en ese caso hay que respetar la cancelacion real."""
+    if trade.orderStatus.status not in (OrderStatus.Cancelled, OrderStatus.ApiCancelled):
+        return False
+    for entry in reversed(trade.log):
+        if entry.status in (OrderStatus.Cancelled, OrderStatus.ApiCancelled):
+            return entry.errorCode in _SPURIOUS_CANCEL_CODES
+    return False
+
+
 class IBKRConnectionError(RuntimeError):
     pass
 
@@ -460,6 +511,7 @@ class IBKRBroker:
         if not contract.conId:
             return None
         stop = StopOrder(side, abs(quantity), stop_price)
+        stop.tif = _DEFAULT_TIF
         self.ib.placeOrder(contract, stop)
         return stop.orderId
 
@@ -515,8 +567,15 @@ class IBKRBroker:
         for trade in self.ib.trades():
             if trade.order.orderId == order_id:
                 avg_price = trade.orderStatus.avgFillPrice
+                status = trade.orderStatus.status
+                if _is_spurious_cancel(trade):
+                    # No es un estado terminal: se reporta como activo para que
+                    # _wait_for_fill (y _check_fund_exit en main.py) sigan
+                    # esperando el status real en vez de dar la orden por
+                    # cancelada. Ver _is_spurious_cancel.
+                    status = OrderStatus.PendingSubmit
                 return (
-                    trade.orderStatus.status,
+                    status,
                     trade.orderStatus.filled,
                     avg_price if avg_price else None,
                     trade.orderStatus.remaining,
@@ -584,6 +643,11 @@ class IBKRBroker:
         def _handler(t=parent_trade):
             if _done[0]:
                 return
+            if _is_spurious_cancel(t):
+                # cancelledEvent tambien se emite en el cancel falso (ib_async/
+                # wrapper.py:1668). Salir SIN consumir el guard: la orden sigue
+                # viva y su evento terminal real todavia va a llegar.
+                return
             _done[0] = True
             filled = t.orderStatus.filled
             if stop_trade.orderStatus.status in OrderStatus.DoneStates:
@@ -594,7 +658,10 @@ class IBKRBroker:
                 stop_trade.order.totalQuantity = filled
                 self.ib.placeOrder(contract, stop_trade.order)
 
-        if parent_trade.orderStatus.status in OrderStatus.DoneStates:
+        if (
+            parent_trade.orderStatus.status in OrderStatus.DoneStates
+            and not _is_spurious_cancel(parent_trade)
+        ):
             _handler()
             return
         parent_trade.filledEvent += _handler
@@ -608,6 +675,7 @@ class IBKRBroker:
             parent = LimitOrder(order.side.value, order.quantity, order.limit_price)
         else:
             parent = MarketOrder(order.side.value, order.quantity)
+        parent.tif = _DEFAULT_TIF
 
         if order.stop_loss_price:
             # Orden padre + stop-loss encadenado: el padre no se transmite hasta
@@ -619,6 +687,7 @@ class IBKRBroker:
 
             protective_side = Side.SELL if order.side == Side.BUY else Side.BUY
             stop = StopOrder(protective_side.value, order.quantity, order.stop_loss_price)
+            stop.tif = _DEFAULT_TIF
             stop.parentId = parent.orderId
             stop.transmit = True
             stop_trade = self.ib.placeOrder(contract, stop)

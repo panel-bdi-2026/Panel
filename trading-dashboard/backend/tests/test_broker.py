@@ -2,8 +2,16 @@ import asyncio
 
 import pytest
 
-from app.broker import IBKRBroker, StopLossRejectedError, _from_ib_symbol, _to_ib_symbol
-from app.models import OrderRequest, Side
+from ib_async.order import OrderStatus
+
+from app.broker import (
+    IBKRBroker,
+    StopLossRejectedError,
+    _from_ib_symbol,
+    _is_spurious_cancel,
+    _to_ib_symbol,
+)
+from app.models import OrderRequest, OrderType, Side
 
 
 class FakeContract:
@@ -163,6 +171,15 @@ class FakeOrderStatus:
         self.avgFillPrice = avg_fill_price
 
 
+class _LogEntry:
+    """Como TradeLogEntry de ib_async: solo los dos campos que mira
+    _is_spurious_cancel."""
+
+    def __init__(self, status, error_code=0):
+        self.status = status
+        self.errorCode = error_code
+
+
 class FakeTrade:
     def __init__(
         self,
@@ -174,10 +191,12 @@ class FakeTrade:
         remaining=0.0,
         avg_fill_price=0.0,
         total_quantity=0.0,
+        log=None,
     ):
         self.order = FakeOrder(order_id, aux_price, total_quantity)
         self.orderStatus = FakeOrderStatus(status, filled, remaining, avg_fill_price)
         self.contract = contract
+        self.log = log if log is not None else []
 
 
 def test_modify_stop_price_resubmits_same_order_id_with_new_aux_price(broker, monkeypatch):
@@ -796,9 +815,10 @@ class _StubOrderStatus:
 
 
 class _StubTrade:
-    def __init__(self, order, status):
+    def __init__(self, order, status, log=None):
         self.order = order
         self.orderStatus = status
+        self.log = log if log is not None else []
 
 
 class _StubIB:
@@ -945,9 +965,10 @@ class _EventTrade:
     para simular un fill tardio que llega DESPUES de _register_stop_reconciliation,
     no resuelto de antemano como en _StubTrade."""
 
-    def __init__(self, order, status):
+    def __init__(self, order, status, log=None):
         self.order = order
         self.orderStatus = status
+        self.log = log if log is not None else []
         self.filledEvent = _FakeEvent()
         self.cancelledEvent = _FakeEvent()
 
@@ -1013,3 +1034,183 @@ def test_register_stop_reconciliation_cancels_stop_on_late_zero_fill(broker, mon
     parent_trade.cancelledEvent.emit()
 
     assert cancelled == [stop_order]
+
+
+# ---------------------------------------------------------------------------
+# Cancel espurio por aviso 10349 de IBKR (incidente del 2026-07-29/30).
+#
+# ib_async solo trata como benignos los codigos de su lista `warningCodes`;
+# cualquier otro (10349 = "Order TIF was set to DAY based on order preset",
+# que es un AVISO, no un rechazo) lo manda a la rama de error, que marca la
+# orden Cancelled y emite cancelledEvent aunque siga viva en el broker. IBKR
+# manda el status real ~300ms despues. Ver _is_spurious_cancel en broker.py.
+# ---------------------------------------------------------------------------
+
+def test_is_spurious_cancel_true_for_informational_ibkr_code():
+    trade = FakeTrade(
+        order_id=1,
+        status="Cancelled",
+        log=[
+            _LogEntry("PendingSubmit"),
+            _LogEntry("Cancelled", error_code=10349),
+        ],
+    )
+    assert _is_spurious_cancel(trade) is True
+
+
+def test_is_spurious_cancel_false_for_a_real_cancellation():
+    """202 ("Order Canceled") es una cancelacion de verdad: no debe enmascararse."""
+    trade = FakeTrade(
+        order_id=1,
+        status="Cancelled",
+        log=[_LogEntry("PendingSubmit"), _LogEntry("Cancelled", error_code=202)],
+    )
+    assert _is_spurious_cancel(trade) is False
+
+
+def test_is_spurious_cancel_false_when_order_is_not_cancelled():
+    trade = FakeTrade(
+        order_id=1,
+        status="Submitted",
+        log=[_LogEntry("Cancelled", error_code=10349), _LogEntry("Submitted")],
+    )
+    assert _is_spurious_cancel(trade) is False
+
+
+def test_is_spurious_cancel_respects_a_real_cancel_after_a_spurious_one():
+    """Una orden puede sobrevivir al aviso 10349 y ser cancelada de verdad mas
+    tarde. Manda la ULTIMA entrada de cancelacion del log, no la primera."""
+    trade = FakeTrade(
+        order_id=1,
+        status="Cancelled",
+        log=[
+            _LogEntry("Cancelled", error_code=10349),
+            _LogEntry("Submitted"),
+            _LogEntry("Cancelled", error_code=202),
+        ],
+    )
+    assert _is_spurious_cancel(trade) is False
+
+
+def test_get_trade_fill_does_not_report_a_spurious_cancel_as_terminal(broker, monkeypatch):
+    trade = FakeTrade(
+        order_id=42,
+        status="Cancelled",
+        filled=0.0,
+        remaining=10.0,
+        log=[_LogEntry("Cancelled", error_code=10349)],
+    )
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+
+    status, filled, _avg, remaining = broker.get_trade_fill(42)
+
+    assert status not in OrderStatus.DoneStates
+    assert (filled, remaining) == (0.0, 10.0)
+
+
+def test_get_trade_fill_still_reports_a_real_cancel_as_terminal(broker, monkeypatch):
+    trade = FakeTrade(
+        order_id=42,
+        status="Cancelled",
+        log=[_LogEntry("Cancelled", error_code=202)],
+    )
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+
+    assert broker.get_trade_fill(42)[0] == "Cancelled"
+
+
+def test_wait_for_fill_keeps_waiting_through_a_spurious_cancel(broker, monkeypatch):
+    """El bug de fondo: _wait_for_fill volvia AL INSTANTE con filled_qty=0
+    porque el Cancelled falso es un DoneState. Debe seguir poleando hasta ver
+    el estado real (la orden llena unos ciclos despues)."""
+    trade = FakeTrade(
+        order_id=42,
+        status="Cancelled",
+        filled=0.0,
+        remaining=10.0,
+        log=[_LogEntry("Cancelled", error_code=10349)],
+    )
+    monkeypatch.setattr(broker.ib, "trades", lambda: [trade])
+
+    polls = {"n": 0}
+    real_get = broker.get_trade_fill
+
+    def counting_get(order_id):
+        polls["n"] += 1
+        if polls["n"] == 3:  # IBKR manda el status real recien en el 3er poll
+            trade.orderStatus.status = "Filled"
+            trade.orderStatus.filled = 10.0
+            trade.orderStatus.remaining = 0.0
+            trade.orderStatus.avgFillPrice = 27.76
+            trade.log.append(_LogEntry("Filled"))
+        return real_get(order_id)
+
+    monkeypatch.setattr(broker, "get_trade_fill", counting_get)
+
+    status, filled, avg, _remaining = asyncio.run(
+        broker._wait_for_fill(42, timeout=5.0, interval=0.01)
+    )
+
+    assert polls["n"] >= 3
+    assert (status, filled, avg) == ("Filled", 10.0, 27.76)
+
+
+def test_register_stop_reconciliation_ignores_a_spurious_parent_cancel(broker, monkeypatch):
+    """El corazon del incidente: al ver el Cancelled falso del padre, el
+    sistema cancelaba SU PROPIO stop-loss y dejaba la compra desprotegida."""
+    parent_status = _StubOrderStatus("Cancelled", filled=0.0, remaining=10.0)
+    parent_order = FakeOrder(order_id=1, aux_price=None, total_quantity=10.0)
+    parent_trade = _EventTrade(
+        parent_order, parent_status, log=[_LogEntry("Cancelled", error_code=10349)]
+    )
+
+    stop_status = _StubOrderStatus("PreSubmitted", filled=0.0, remaining=10.0)
+    stop_order = FakeOrder(order_id=2, aux_price=90.0, total_quantity=10.0)
+    stop_trade = _StubTrade(stop_order, stop_status)
+
+    cancelled: list = []
+    monkeypatch.setattr(broker.ib, "cancelOrder", lambda order: cancelled.append(order))
+    monkeypatch.setattr(broker.ib, "placeOrder", lambda contract, order: None)
+
+    broker._register_stop_reconciliation(
+        parent_trade, stop_trade, contract=object(), requested_qty=10.0
+    )
+
+    # Ni al registrar, ni cuando ib_async emite el cancelledEvent del aviso.
+    assert cancelled == []
+    parent_trade.cancelledEvent.emit()
+    assert cancelled == []
+
+    # Y el guard NO quedo consumido: el fill real posterior si se atiende.
+    parent_status.status = "Filled"
+    parent_status.filled = 4.0
+    parent_trade.log.append(_LogEntry("Filled"))
+    parent_trade.filledEvent.emit()
+
+    assert stop_order.totalQuantity == 4.0
+
+
+def test_place_order_sets_an_explicit_tif_on_parent_and_stop(broker, monkeypatch):
+    """Sin TIF explicito IBKR aplica el preset de la cuenta y lo avisa con el
+    codigo 10349 -- el disparador del cancel espurio. Fijarlo a mano elimina
+    el aviso en el origen (DAY es lo que el preset ya venia poniendo)."""
+    parent_status = _StubOrderStatus(
+        "Filled", filled=10.0, remaining=0.0, avg_fill_price=27.76
+    )
+    stub = _install_stub_ib(broker, monkeypatch, parent_status)
+
+    asyncio.run(
+        broker.place_order(
+            OrderRequest(
+                symbol="CCL",
+                side=Side.BUY,
+                quantity=10,
+                order_type=OrderType.LMT,
+                limit_price=27.76,
+                stop_loss_price=25.54,
+            )
+        )
+    )
+
+    assert len(stub.placed) >= 2
+    assert {o.tif for o in stub.placed} == {"DAY"}
