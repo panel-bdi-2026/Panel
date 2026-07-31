@@ -98,10 +98,25 @@ def _run_combo(
     cfg: ScreenerConfig, overrides: dict[str, Any], num_trials: int,
     years: int | None = None, n_folds: int = 3,
 ) -> dict[str, Any]:
-    patched_opp = cfg.opportunistic.model_copy(update={**FIXED, **overrides})
+    # Los overrides se reparten solos entre los de la estrategia y los de nivel
+    # ScreenerConfig (top_n, flags de sizing): asi un mismo sweep puede tocar
+    # parametros de señal y de construccion de cartera sin dos caminos distintos.
+    # Una clave que no exista en ninguno de los dos es un typo, y falla fuerte en
+    # vez de ignorarse en silencio -- un override mal escrito daria un resultado
+    # "valido" identico al baseline, que es la peor forma de perder un dia.
+    opp_fields = set(type(cfg.opportunistic).model_fields)
+    top_fields = set(type(cfg).model_fields)
+    desconocidas = set(overrides) - opp_fields - top_fields
+    if desconocidas:
+        raise ValueError(f"overrides sin campo correspondiente: {sorted(desconocidas)}")
+    opp_ov = {k: v for k, v in overrides.items() if k in opp_fields}
+    top_ov = {k: v for k, v in overrides.items() if k not in opp_fields}
+
+    patched_opp = cfg.opportunistic.model_copy(update={**FIXED, **opp_ov})
     cfg_update: dict[str, Any] = {
         "opportunistic": patched_opp,
         "deflated_sharpe_num_trials": num_trials,
+        **top_ov,
     }
     if years is not None:
         cfg_update["backtest_years"] = years

@@ -78,6 +78,19 @@ COMBOS: list[dict[str, Any]] = [
 # produccion corre con room_to_grow dominante. Es el peso mas grande del score,
 # o sea el criterio principal de ranking -- nunca se comparo cual de los dos
 # ordenamientos es mejor. El resto de los pesos no cambia (suman 1.0 igual).
+# top_n es la palanca de CONCENTRACION, y nunca se barrio. Es independiente de
+# todo lo demas que se probo (universo, gates, señal de entrada): no cambia QUE
+# se compra, sino cuanto pesa cada posicion y cuantas señales se descartan por
+# falta de cupo (cap_concurrent_positions). Menos posiciones = mas retorno
+# esperado y mas drawdown; el punto del barrido es ver donde deja de compensar.
+COMBOS_TOPN: list[dict[str, Any]] = [
+    {"top_n": 5},
+    {"top_n": 8},
+    {"top_n": 10},  # produccion
+    {"top_n": 15},
+    {"top_n": 20},
+]
+
 COMBOS_WEIGHTS: list[dict[str, Any]] = [
     # produccion: room_to_grow domina
     {"score_weight_momentum": 0.1538, "score_weight_room_to_grow": 0.3077},
@@ -103,11 +116,13 @@ def main() -> None:
     ap.add_argument("--out", default="sweep_gates.json")
     ap.add_argument("--rsi", action="store_true", help="Barre rsi_max en vez del regimen de gates")
     ap.add_argument("--weights", action="store_true", help="Barre los pesos momentum vs room_to_grow")
+    ap.add_argument("--topn", action="store_true", help="Barre top_n (concentracion de cartera)")
     args = ap.parse_args()
 
     path = Path(__file__).resolve().parent.parent / args.screener
     cfg = ScreenerConfig(**yaml.safe_load(path.read_text()))
-    combos = COMBOS_WEIGHTS if args.weights else COMBOS_RSI if args.rsi else COMBOS
+    combos = (COMBOS_TOPN if args.topn else COMBOS_WEIGHTS if args.weights
+              else COMBOS_RSI if args.rsi else COMBOS)
     total = len(combos)
 
     print(f"Sweep de regimen de gates — {total} combinaciones")
@@ -121,7 +136,8 @@ def main() -> None:
     results: list[dict[str, Any]] = []
     for i, ov in enumerate(combos, 1):
         regime = ("cross-seccional" if ov.get("backtest_cross_sectional_gates") else "absoluto")
-        label = (f"mom={ov['score_weight_momentum']:.4f} r2g={ov['score_weight_room_to_grow']:.4f}"
+        label = (f"top_n={ov['top_n']}" if args.topn
+                 else f"mom={ov['score_weight_momentum']:.4f} r2g={ov['score_weight_room_to_grow']:.4f}"
                  if args.weights
                  else f"rsi_max={ov['rsi_max']:.0f}" if args.rsi
                  else f"{regime:<15} min_vol={ov['min_volatility_pct']:.1f}")
@@ -144,7 +160,8 @@ def main() -> None:
             results.append({**ov, "error": str(exc)})
 
     print("\n" + "=" * 92)
-    eje = "mom_w" if args.weights else "rsi_max" if args.rsi else "min_vol"
+    eje = ("top_n" if args.topn else "mom_w" if args.weights
+           else "rsi_max" if args.rsi else "min_vol")
     print(f"{'regimen':<16} {eje:>7} | {'wf_ret':>7} {'wf_shp':>7} {'peor':>6} | "
           f"{'ret':>8} {'dd':>7} {'DSR':>6} | {'n':>5} {'hold':>5}")
     print("-" * 92)
@@ -154,7 +171,7 @@ def main() -> None:
         regime = "cross-seccional" if r.get("backtest_cross_sectional_gates") else "absoluto"
         mark = "  <-- mejor peor-fold" if r is best else ""
         print(
-            f"{regime:<16} {r.get('score_weight_momentum', r.get('rsi_max', r.get('min_volatility_pct'))):>7.4f} | {_fmt(r['wf_ret_pct'])} "
+            f"{regime:<16} {r.get('top_n', r.get('score_weight_momentum', r.get('rsi_max', r.get('min_volatility_pct')))):>7.4g} | {_fmt(r['wf_ret_pct'])} "
             f"{_fmt(r['wf_sharpe'])} {_fmt(r['wf_sharpe_worst'], 6)} | "
             f"{_fmt(r['full_ret_pct'], 8)} {_fmt(r['full_dd_pct'])} "
             f"{_fmt(r['full_dsr_pct'], 6, 1)} | {r['n_trades']:>5} "
@@ -165,7 +182,7 @@ def main() -> None:
     if best:
         print(f"\nMejor por PEOR fold: "
               f"{'cross-seccional' if best.get('backtest_cross_sectional_gates') else 'absoluto'}"
-              f" {eje}={best.get('score_weight_momentum', best.get('rsi_max', best.get('min_volatility_pct')))}")
+              f" {eje}={best.get('top_n', best.get('score_weight_momentum', best.get('rsi_max', best.get('min_volatility_pct'))))}")
         print(f"  Sharpe por fold:  {[f['sharpe'] for f in best['folds']]}")
         print(f"  Retorno por fold: {[f['ret_pct'] for f in best['folds']]}")
         print(f"  Benchmark:        {[f['bench_ret_pct'] for f in best['folds']]}")
