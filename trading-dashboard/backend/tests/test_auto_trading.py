@@ -1746,3 +1746,104 @@ def test_ensure_protective_stop_never_places_twice_when_ibkr_reports_live_stop(m
     asyncio.run(main_module._ensure_protective_stop(fund.id, "AAPL", 95.0))
 
     assert place_calls == [], "place_protective_stop no debia llamarse ni una vez"
+
+
+def test_reconcile_orphan_runs_even_without_untracked_fills(monkeypatch):
+    """La segunda pasada (adopcion de huerfanas) vivia debajo del `return` que
+    se tomaba cuando get_untracked_fills venia vacio. Como esa funcion solo
+    mira acciones *_submitted_unfilled, la adopcion terminaba dependiendo de
+    que por casualidad alguna orden no relacionada hubiera quedado sin llenar
+    en los ultimos 7 dias: el 2026-07-31 corrio solo porque ZBH genero una
+    entrada esa tarde."""
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    # Compra sometida por el sistema (pasa el guard was_submitted_by_system)
+    # que nunca quedo registrada en el fondo. NO es una *_submitted_unfilled,
+    # asi que get_untracked_fills la ignora y devuelve vacio.
+    main_module.audit.record(
+        "auto_trade_stop_loss_rejected",
+        {"symbol": "CCL", "quantity": 42.0, "stop_loss_price": 25.54, "fund_id": fund.id},
+        {"fund_id": fund.id, "order_id": 2477436, "filled_qty": 0.0},
+    )
+    assert main_module.audit.get_untracked_fills(since_days=7) == []
+
+    class _FakePosition:
+        symbol = "CCL"
+        quantity = 42.0
+        avg_cost = 27.7838
+        market_price = 27.9
+        unrealized_pnl = None
+
+    async def fake_get_positions():
+        return [_FakePosition()]
+
+    monkeypatch.setattr(main_module.broker, "get_positions", fake_get_positions)
+
+    async def fake_get_live(symbol, side="SELL"):
+        return []
+
+    monkeypatch.setattr(main_module.broker, "get_live_protective_stops", fake_get_live)
+
+    async def fake_place_protective_stop(symbol, quantity, stop_price, side="SELL"):
+        return 777
+
+    monkeypatch.setattr(
+        main_module.broker, "place_protective_stop", fake_place_protective_stop
+    )
+
+    asyncio.run(main_module._reconcile_unfilled_on_startup())
+
+    fund = main_module.funds_store.get(fund.id)
+    assert fund.owned_quantity("CCL") == 42.0
+
+
+def test_reconcile_orphan_keeps_going_when_one_symbol_fails(monkeypatch):
+    """El 2026-07-31 la pasada adopto 7 huerfanas y murio en silencio dejando
+    27 sin tocar -- ni adoptadas ni descartadas por el guard de posicion
+    externa (no habia una sola linea "se IGNORA" en el log). Un simbolo que
+    falla no puede llevarse puestos a los que faltan."""
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    for sym in ("AAA", "BBB", "CCC"):
+        main_module.audit.record(
+            "auto_trade_stop_loss_rejected",
+            {"symbol": sym, "quantity": 10.0, "stop_loss_price": 90.0, "fund_id": fund.id},
+            {"fund_id": fund.id, "order_id": 1, "filled_qty": 0.0},
+        )
+
+    def _pos(sym):
+        return type(
+            "P",
+            (),
+            {
+                "symbol": sym,
+                "quantity": 10.0,
+                "avg_cost": 100.0,
+                "market_price": 100.0,
+                "unrealized_pnl": None,
+            },
+        )()
+
+    async def fake_get_positions():
+        return [_pos("AAA"), _pos("BBB"), _pos("CCC")]
+
+    monkeypatch.setattr(main_module.broker, "get_positions", fake_get_positions)
+
+    async def fake_get_live(symbol, side="SELL"):
+        return []
+
+    monkeypatch.setattr(main_module.broker, "get_live_protective_stops", fake_get_live)
+
+    async def flaky_place_protective_stop(symbol, quantity, stop_price, side="SELL"):
+        if symbol == "BBB":
+            raise RuntimeError("IBKR rechazo el stop de BBB")
+        return 555
+
+    monkeypatch.setattr(
+        main_module.broker, "place_protective_stop", flaky_place_protective_stop
+    )
+
+    asyncio.run(main_module._reconcile_unfilled_on_startup())
+
+    fund = main_module.funds_store.get(fund.id)
+    # El que sigue a BBB en el orden de iteracion tiene que haberse adoptado
+    # igual: antes, la excepcion de BBB mataba la pasada entera.
+    assert fund.owned_quantity("CCC") == 10.0

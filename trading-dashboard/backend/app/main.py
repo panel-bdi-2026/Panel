@@ -2354,8 +2354,6 @@ async def _reconcile_unfilled_on_startup() -> None:
     en su chequeo único de arranque, que la posición todavía no existía.
     """
     entries = audit.get_untracked_fills(since_days=7)
-    if not entries:
-        return
 
     try:
         ibkr_positions = {p.symbol: p for p in await broker.get_positions()}
@@ -2363,81 +2361,97 @@ async def _reconcile_unfilled_on_startup() -> None:
         logger.warning("reconcile_unfilled: no se pudieron leer posiciones de IBKR: %s", exc)
         return
 
+    # Sin `entries` no hay nada que hacer en ESTA pasada, pero la segunda
+    # (huerfanas, mas abajo) tiene que correr igual: antes vivia debajo de un
+    # `return` que se tomaba cuando `entries` estaba vacio, y como
+    # get_untracked_fills solo mira acciones *_submitted_unfilled, la adopcion
+    # de huerfanas terminaba dependiendo de que por casualidad alguna orden no
+    # relacionada hubiera quedado sin llenar en los ultimos 7 dias. El
+    # 2026-07-31 corrio solo porque ZBH genero una entrada esa tarde. No
+    # determinista y silencioso: peor que no correr nunca.
     for entry in entries:
-        p   = entry.get("payload", {})
-        r   = entry.get("result", {})
-        sym = p.get("symbol")
-        fund_id = r.get("fund_id") or p.get("fund_id")
-        requested_qty = float(p.get("quantity") or 0)
-        stop_px = p.get("stop_loss_price")
-        order_id = r.get("order_id")
+        # Mismo blindaje que la segunda pasada: una entrada que explota no
+        # debe cancelar la reconciliacion de las que faltan.
+        try:
+            p   = entry.get("payload", {})
+            r   = entry.get("result", {})
+            sym = p.get("symbol")
+            fund_id = r.get("fund_id") or p.get("fund_id")
+            requested_qty = float(p.get("quantity") or 0)
+            stop_px = p.get("stop_loss_price")
+            order_id = r.get("order_id")
 
-        if not (sym and fund_id and requested_qty > 0):
-            continue
+            if not (sym and fund_id and requested_qty > 0):
+                continue
 
-        fund = funds_store.get(fund_id)
-        if fund is None:
-            continue
+            fund = funds_store.get(fund_id)
+            if fund is None:
+                continue
 
-        ibkr_pos = ibkr_positions.get(sym)
-        if ibkr_pos is None:
-            # La orden no muestra posicion en IBKR TODAVIA, pero puede seguir
-            # viva y llenar mas tarde (ver docstring). self.ib.trades() SI
-            # recuerda ordenes abiertas de sesiones anteriores tras
-            # reconectar (confirmado en los logs del incidente de MAMA), asi
-            # que subscribe_fill puede encontrarla igual y capturar el fill
-            # sin importar cuanto tarde, mientras el proceso siga vivo.
-            _register_fund_fill_reconciliation(
-                order_id=order_id,
-                fund_id=fund_id,
-                symbol=sym,
-                side=Side.BUY,
-                requested_qty=requested_qty,
-                already_filled_qty=0.0,
-                already_avg_price=0.0,
-                stop_loss_price=stop_px,
-                stop_order_id=r.get("stop_order_id"),
-                audit_action="auto_trade_reconciled_late",
+            ibkr_pos = ibkr_positions.get(sym)
+            if ibkr_pos is None:
+                # La orden no muestra posicion en IBKR TODAVIA, pero puede seguir
+                # viva y llenar mas tarde (ver docstring). self.ib.trades() SI
+                # recuerda ordenes abiertas de sesiones anteriores tras
+                # reconectar (confirmado en los logs del incidente de MAMA), asi
+                # que subscribe_fill puede encontrarla igual y capturar el fill
+                # sin importar cuanto tarde, mientras el proceso siga vivo.
+                _register_fund_fill_reconciliation(
+                    order_id=order_id,
+                    fund_id=fund_id,
+                    symbol=sym,
+                    side=Side.BUY,
+                    requested_qty=requested_qty,
+                    already_filled_qty=0.0,
+                    already_avg_price=0.0,
+                    stop_loss_price=stop_px,
+                    stop_order_id=r.get("stop_order_id"),
+                    audit_action="auto_trade_reconciled_late",
+                )
+                continue
+
+            # Si esta posicion fue cerrada por stop-loss despues de la orden
+            # submitted_unfilled original, no re-reconciliar: la posicion en IBKR
+            # puede quedar "fantasma" en paper trading (el stop se reporta ejecutado
+            # pero get_positions() sigue mostrando las acciones), lo que generaria
+            # un ciclo infinito de venta→recompra fuera de horario de mercado.
+            if audit.was_stopped_out_after(fund_id, sym, entry["ts"]):
+                continue
+
+            # Diferencia entre lo que IBKR tiene y lo que el fondo ya registra;
+            # acotada a lo pedido en la orden para no sobre-asignar si el usuario
+            # tiene acciones adicionales en la cuenta general.
+            untracked = min(requested_qty, ibkr_pos.quantity - fund.owned_quantity(sym))
+            if untracked <= 0:
+                continue
+
+            fill_price = ibkr_pos.avg_cost
+            logger.info(
+                "reconcile_unfilled: %s %.0f × $%.4f → fondo %s (audit id %s)",
+                sym, untracked, fill_price, fund_id, entry["id"],
             )
-            continue
-
-        # Si esta posicion fue cerrada por stop-loss despues de la orden
-        # submitted_unfilled original, no re-reconciliar: la posicion en IBKR
-        # puede quedar "fantasma" en paper trading (el stop se reporta ejecutado
-        # pero get_positions() sigue mostrando las acciones), lo que generaria
-        # un ciclo infinito de venta→recompra fuera de horario de mercado.
-        if audit.was_stopped_out_after(fund_id, sym, entry["ts"]):
-            continue
-
-        # Diferencia entre lo que IBKR tiene y lo que el fondo ya registra;
-        # acotada a lo pedido en la orden para no sobre-asignar si el usuario
-        # tiene acciones adicionales en la cuenta general.
-        untracked = min(requested_qty, ibkr_pos.quantity - fund.owned_quantity(sym))
-        if untracked <= 0:
-            continue
-
-        fill_price = ibkr_pos.avg_cost
-        logger.info(
-            "reconcile_unfilled: %s %.0f × $%.4f → fondo %s (audit id %s)",
-            sym, untracked, fill_price, fund_id, entry["id"],
-        )
-        funds_store.record_fill(
-            fund_id, sym, Side.BUY, untracked, fill_price,
-            stop_loss_price=stop_px,
-            commission=screener_config.commission_per_trade_usd,
-        )
-        audit.record(
-            "auto_trade_reconciled",
-            {"symbol": sym, "side": "BUY", "fund_id": fund_id,
-             "quantity": untracked, "source_audit_id": entry["id"]},
-            {"filled_qty": untracked, "avg_fill_price": fill_price, "fund_id": fund_id},
-        )
-        # La posicion recien reconciliada puede no tener ningun stop vivo
-        # protegiendola (ver docstring de _ensure_protective_stop): se
-        # coloca uno nuevo si hace falta, antes de seguir con el resto de
-        # las entradas.
-        if stop_px:
-            await _ensure_protective_stop(fund_id, sym, stop_px)
+            funds_store.record_fill(
+                fund_id, sym, Side.BUY, untracked, fill_price,
+                stop_loss_price=stop_px,
+                commission=screener_config.commission_per_trade_usd,
+            )
+            audit.record(
+                "auto_trade_reconciled",
+                {"symbol": sym, "side": "BUY", "fund_id": fund_id,
+                 "quantity": untracked, "source_audit_id": entry["id"]},
+                {"filled_qty": untracked, "avg_fill_price": fill_price, "fund_id": fund_id},
+            )
+            # La posicion recien reconciliada puede no tener ningun stop vivo
+            # protegiendola (ver docstring de _ensure_protective_stop): se
+            # coloca uno nuevo si hace falta, antes de seguir con el resto de
+            # las entradas.
+            if stop_px:
+                await _ensure_protective_stop(fund_id, sym, stop_px)
+        except Exception:
+            logger.exception(
+                "reconcile_unfilled: entrada %s falló, se sigue con el resto",
+                entry.get("id"),
+            )
 
     # Segunda pasada: posiciones en IBKR que no están en ningún fondo.
     # Cubre el caso donde órdenes se ejecutaron antes de que los trades
@@ -2455,41 +2469,49 @@ async def _reconcile_unfilled_on_startup() -> None:
         return
 
     for sym, ibkr_pos in ibkr_positions_all.items():
-        covered_qty = sum(f.owned_quantity(sym) for f in all_funds)
-        orphan_qty = ibkr_pos.quantity - covered_qty
-        if orphan_qty <= 0:
-            continue
-        # Solo reconciliar posiciones que el propio sistema sometió alguna vez:
-        # posiciones colocadas manualmente en IBKR fuera del sistema se ignoran
-        # para no mezclar capital externo con el presupuesto del fondo.
-        if not audit.was_submitted_by_system(sym):
-            logger.warning(
-                "reconcile_orphan: %s tiene %.0f acc en IBKR sin entrada en el sistema "
-                "— se IGNORA (posición externa, colocar manualmente si corresponde)",
-                sym, orphan_qty,
+        # Un simbolo que falla no puede llevarse puestos a los que faltan: sin
+        # este try/except, la pasada del 2026-07-31 adopto 7 huerfanas y murio
+        # en silencio dejando 27 sin tocar (ni adoptadas ni descartadas por el
+        # guard de posicion externa -- no habia una sola linea "se IGNORA" en
+        # el log, senal de que el loop nunca llego a ellas).
+        try:
+            covered_qty = sum(f.owned_quantity(sym) for f in all_funds)
+            orphan_qty = ibkr_pos.quantity - covered_qty
+            if orphan_qty <= 0:
+                continue
+            # Solo reconciliar posiciones que el propio sistema sometió alguna vez:
+            # posiciones colocadas manualmente en IBKR fuera del sistema se ignoran
+            # para no mezclar capital externo con el presupuesto del fondo.
+            if not audit.was_submitted_by_system(sym):
+                logger.warning(
+                    "reconcile_orphan: %s tiene %.0f acc en IBKR sin entrada en el sistema "
+                    "— se IGNORA (posición externa, colocar manualmente si corresponde)",
+                    sym, orphan_qty,
+                )
+                continue
+            fill_price = ibkr_pos.avg_cost
+            stop_px = audit.get_last_stop_price(sym)
+            logger.info(
+                "reconcile_orphan: %s %.0f × $%.4f → fondo %s (stop=%s)",
+                sym, orphan_qty, fill_price, auto_fund.id,
+                f"${stop_px:.4f}" if stop_px else "no encontrado",
             )
-            continue
-        fill_price = ibkr_pos.avg_cost
-        stop_px = audit.get_last_stop_price(sym)
-        logger.info(
-            "reconcile_orphan: %s %.0f × $%.4f → fondo %s (stop=%s)",
-            sym, orphan_qty, fill_price, auto_fund.id,
-            f"${stop_px:.4f}" if stop_px else "no encontrado",
-        )
-        funds_store.record_fill(
-            auto_fund.id, sym, Side.BUY, orphan_qty, fill_price,
-            stop_loss_price=stop_px,
-            commission=0.0,
-        )
-        audit.record(
-            "auto_trade_reconciled",
-            {"symbol": sym, "side": "BUY", "fund_id": auto_fund.id,
-             "quantity": orphan_qty, "source": "orphan_ibkr_position"},
-            {"filled_qty": orphan_qty, "avg_fill_price": fill_price,
-             "fund_id": auto_fund.id, "stop_loss_price": stop_px},
-        )
-        if stop_px:
-            await _ensure_protective_stop(auto_fund.id, sym, stop_px)
+            funds_store.record_fill(
+                auto_fund.id, sym, Side.BUY, orphan_qty, fill_price,
+                stop_loss_price=stop_px,
+                commission=0.0,
+            )
+            audit.record(
+                "auto_trade_reconciled",
+                {"symbol": sym, "side": "BUY", "fund_id": auto_fund.id,
+                 "quantity": orphan_qty, "source": "orphan_ibkr_position"},
+                {"filled_qty": orphan_qty, "avg_fill_price": fill_price,
+                 "fund_id": auto_fund.id, "stop_loss_price": stop_px},
+            )
+            if stop_px:
+                await _ensure_protective_stop(auto_fund.id, sym, stop_px)
+        except Exception:
+            logger.exception("reconcile_orphan: %s falló, se sigue con el resto", sym)
 
 
 @asynccontextmanager
