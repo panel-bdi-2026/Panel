@@ -96,6 +96,11 @@ export function PositionsTable() {
     return ((a[sortKey] ?? 0) - (b[sortKey] ?? 0)) * dir
   })
 
+  const longs     = sorted.filter(r => r.quantity > 0)
+  const shorts    = sorted.filter(r => r.quantity < 0)
+  const totalPnl  = rows.reduce((a, r) => a + (isNaN(r.livePnl)   ? 0 : r.livePnl),   0)
+  const totalMktV = rows.reduce((a, r) => a + (isNaN(r.liveValue) ? 0 : Math.abs(r.liveValue)), 0)
+
   const toggleSort = (k: SortKey) => {
     if (k === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     else { setSortKey(k); setSortDir('desc') }
@@ -112,7 +117,32 @@ export function PositionsTable() {
 
   return (
     <>
-      {/* Leyenda LONG/SHORT — significado no es obvio para todos los usuarios */}
+      {/* Resumen */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mb-3 text-sm">
+        <span className="text-gray-400">
+          <span className="text-gray-100 font-semibold nums">{sorted.length}</span> posiciones
+        </span>
+        <span className="text-gray-500">·</span>
+        <span className="text-profit/90">
+          <span className="font-semibold nums">{longs.length}</span> long
+        </span>
+        {shorts.length > 0 && (
+          <>
+            <span className="text-gray-500">·</span>
+            <span className="text-loss font-semibold nums">{shorts.length} short ⚠</span>
+          </>
+        )}
+        <span className="text-gray-500">·</span>
+        <span className="text-gray-400">
+          Valor: <span className="text-gray-200 nums">{fmtUsd(totalMktV)}</span>
+        </span>
+        <span className="text-gray-500">·</span>
+        <span className="text-gray-400">
+          P&L: <span className={`nums font-semibold ${totalPnl >= 0 ? 'text-profit' : 'text-loss'}`}>{fmtUsd(totalPnl)}</span>
+        </span>
+      </div>
+
+      {/* Leyenda LONG/SHORT */}
       <div className="flex items-center gap-1.5 text-[11px] text-gray-500 mb-2">
         <Info size={12} className="shrink-0" />
         <span><span className="text-profit font-medium">LONG</span> = comprada, gana si sube ·{' '}

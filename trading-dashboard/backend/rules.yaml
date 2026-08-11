@@ -588,11 +588,15 @@ symbol_whitelist:
 - ZS
 max_order_value_usd: 1500.0
 max_position_pct_of_equity: 9.0
-max_sector_concentration_pct: 30
+max_sector_concentration_pct: 30.0
+max_total_exposure_pct: 100.0
+max_portfolio_heat_pct: 6.0
 risk_per_trade_pct: 2.0
 min_transaction_usd: 500.0
 daily_loss_limit_pct: 2.0
+max_drawdown_pct: 15.0
 max_trades_per_day: 10
+max_trades_per_day_per_fund: null
 require_stop_loss_on_buy: true
 max_stop_loss_pct: 8.0
 allow_short_selling: false

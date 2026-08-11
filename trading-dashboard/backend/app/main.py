@@ -1790,22 +1790,19 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                 fund_id, symbol, Side.SELL, filled_qty, fill_price,
                 commission=screener_config.commission_per_trade_usd,
             )
-            # Esta venta cierra la posicion entera (order.quantity ya pedia
-            # toda la cantidad); si quedo un stop-loss protector vivo en
-            # IBKR de la compra original, hay que cancelarlo YA -- si no,
-            # sigue resting sin ninguna posicion detras y puede dispararse
-            # mas tarde, vendiendo de mas y dejando una posicion corta no
-            # intencional (ver incidente AEHR/TAP 2026-07-24, donde
-            # exactamente este stop huerfano genero un short pese a tener
-            # allow_short_selling=false).
-            if filled_qty >= order.quantity and stop_order_id is not None:
-                try:
-                    await broker.cancel_resting_order(stop_order_id)
-                except Exception:
-                    logger.exception(
-                        "No se pudo cancelar el stop-loss huerfano %s de %s tras el exit",
-                        stop_order_id, symbol,
-                    )
+            # Cancelar TODOS los stops SELL vivos para este símbolo, no solo
+            # stop_order_id: pueden existir duplicados de sesiones anteriores
+            # invisibles para self.ib.trades(), y un fill parcial tampoco debe
+            # dejar stops activos sin posición detrás. get_live_protective_stops
+            # consulta IBKR directamente via reqAllOpenOrdersAsync y los ve todos
+            # (ver incidente AEHR/TAP 2026-07-24, causa raíz confirmada Aug-2026).
+            try:
+                for sid in await broker.get_live_protective_stops(symbol, side="SELL"):
+                    await broker.cancel_resting_order(sid)
+            except Exception:
+                logger.exception(
+                    "No se pudieron cancelar stops huérfanos de %s tras el exit", symbol
+                )
         reason = (
             "take_profit" if hit_target
             else "max_holding_days" if timed_out
@@ -2477,7 +2474,27 @@ async def _reconcile_unfilled_on_startup() -> None:
         try:
             covered_qty = sum(f.owned_quantity(sym) for f in all_funds)
             orphan_qty = ibkr_pos.quantity - covered_qty
-            if orphan_qty <= 0:
+            if orphan_qty == 0:
+                continue
+            if orphan_qty < 0:
+                # Short fantasma: IBKR tiene posición negativa no cubierta por ningún
+                # fondo. Causa típica: stops duplicados que dispararon después de cerrar
+                # la posición larga (ver stops duplicados Aug-2026). Con
+                # allow_short_selling=false, cerrar a mercado inmediatamente.
+                if not rules_engine.config.allow_short_selling:
+                    logger.warning(
+                        "reconcile_orphan: %s tiene %.0f en IBKR (short fantasma) — cerrando a mercado",
+                        sym, ibkr_pos.quantity,
+                    )
+                    try:
+                        close_result = await broker.close_short_position(sym, abs(orphan_qty))
+                        audit.record(
+                            "auto_trade_close_phantom_short",
+                            {"symbol": sym, "quantity": abs(orphan_qty), "source": "orphan_ibkr_short"},
+                            close_result,
+                        )
+                    except Exception:
+                        logger.exception("reconcile_orphan_short: no se pudo cerrar %s", sym)
                 continue
             # Solo reconciliar posiciones que el propio sistema sometió alguna vez:
             # posiciones colocadas manualmente en IBKR fuera del sistema se ignoran
