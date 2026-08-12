@@ -1639,6 +1639,14 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                     fund = funds_store.get(fund_id)
                     position = fund.positions.get(symbol) if fund else None
                     if position is None or position.quantity <= 0:
+                        # Posicion cerrada por stop: cancelar cualquier stop duplicado
+                        # que pudiera ejecutar sobre una posicion ya inexistente y
+                        # generar un short fantasma (Gap A — ver analisis Aug-2026).
+                        try:
+                            for sid in await broker.get_live_protective_stops(symbol, side="SELL"):
+                                await broker.cancel_resting_order(sid)
+                        except Exception:
+                            logger.exception("No se pudieron cancelar stops residuales de %s tras stop-loss fill", symbol)
                         return
                 reconciled_via_order = True
 
@@ -1671,6 +1679,12 @@ async def _check_fund_exit(fund_id: str, symbol: str) -> None:
                 fund = funds_store.get(fund_id)
                 position = fund.positions.get(symbol) if fund else None
                 if position is None or position.quantity <= 0:
+                    # Idem ruta anterior: cancelar stops residuales.
+                    try:
+                        for sid in await broker.get_live_protective_stops(symbol, side="SELL"):
+                            await broker.cancel_resting_order(sid)
+                    except Exception:
+                        logger.exception("No se pudieron cancelar stops residuales de %s tras stop-loss reconcile", symbol)
                     return
 
         await _check_fund_scale_out(fund_id, symbol)
@@ -2086,6 +2100,45 @@ async def _auto_exit_monitor_loop() -> None:
     )
 
 
+async def _close_intraday_phantom_shorts() -> None:
+    """Detecta y cierra shorts fantasma creados durante la sesion activa (Gap B).
+    Compara las posiciones negativas de IBKR contra lo que los fondos dicen tener:
+    si IBKR muestra qty < 0 para un simbolo donde ningun fondo tiene posicion larga
+    abierta, es un short no intencional (tipicamente de un stop duplicado que ejecuto
+    sobre una posicion ya cerrada) y se cierra a mercado inmediatamente.
+    No depende de un restart para detectarlo -- complementa _reconcile_unfilled_on_startup."""
+    if rules_engine.config.allow_short_selling:
+        return
+    try:
+        ibkr_positions = await broker.get_positions()
+    except Exception:
+        return
+    for ibkr_pos in ibkr_positions:
+        if ibkr_pos.quantity >= 0:
+            continue
+        sym = ibkr_pos.symbol
+        # Si algun fondo tiene cantidad long para este simbolo, no es un short fantasma.
+        any_long = any(
+            (f.positions.get(sym) or type("_", (), {"quantity": 0})()).quantity > 0
+            for f in funds_store.list()
+        )
+        if any_long:
+            continue
+        logger.warning(
+            "phantom_short_live: %s qty=%.0f en IBKR sin posicion long en ningun fondo — cerrando",
+            sym, ibkr_pos.quantity,
+        )
+        try:
+            close_result = await broker.close_short_position(sym, abs(ibkr_pos.quantity))
+            audit.record(
+                "auto_trade_close_phantom_short",
+                {"symbol": sym, "quantity": abs(ibkr_pos.quantity), "source": "intraday_monitor"},
+                close_result,
+            )
+        except Exception:
+            logger.exception("phantom_short_live: no se pudo cerrar %s", sym)
+
+
 async def _run_trailing_stop_monitor_cycle() -> None:
     """Mismo recorrido de fondos/posiciones que _run_auto_exit_monitor_cycle,
     pero solo para el trailing stop (ver _check_fund_trailing_stop), separado
@@ -2102,6 +2155,10 @@ async def _run_trailing_stop_monitor_cycle() -> None:
         await _ensure_missing_protective_stops()
     except Exception as exc:
         logger.warning("ensure_missing_protective_stops failed: %s", exc)
+    try:
+        await _close_intraday_phantom_shorts()
+    except Exception as exc:
+        logger.warning("close_intraday_phantom_shorts failed: %s", exc)
     for fund in funds_store.list():
         if not fund.auto_trading_enabled:
             continue
