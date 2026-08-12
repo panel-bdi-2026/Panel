@@ -100,6 +100,7 @@ export interface Position {
   avg_cost: number
   market_price: number | null
   unrealized_pnl: number | null
+  price_is_live: boolean
 }
 
 // ── Status ────────────────────────────────────────────────────────────────────

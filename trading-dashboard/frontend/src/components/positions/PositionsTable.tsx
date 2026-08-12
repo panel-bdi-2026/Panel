@@ -19,6 +19,7 @@ interface Row {
   livePnl: number
   livePnlPct: number
   weight: number
+  priceIsLive: boolean
 }
 
 type SortKey = 'symbol' | 'live' | 'quantity' | 'liveValue' | 'livePnl'
@@ -26,10 +27,14 @@ type SortKey = 'symbol' | 'live' | 'quantity' | 'liveValue' | 'livePnl'
 const pnlClass = (v: number | null) =>
   v == null ? 'text-gray-500' : v >= 0 ? 'text-profit' : 'text-loss'
 
-function LivePrice({ value }: { value: number | null }) {
+function LivePrice({ value, isLive }: { value: number | null; isLive: boolean }) {
   const flash = useFlashOnChange(value)
+  if (value === null) return <span className="text-gray-500">—</span>
   return (
-    <span className={`nums rounded px-1 ${flash}`}>{value !== null ? fmtUsd(value) : '—'}</span>
+    <span className={`nums rounded px-1 ${flash}`} title={isLive ? undefined : 'Precio al cierre anterior (mercado cerrado)'}>
+      {fmtUsd(value)}
+      {!isLive && <span className="ml-0.5 text-[9px] text-gray-500 font-normal align-super">C</span>}
+    </span>
   )
 }
 
@@ -57,7 +62,12 @@ function MobileCard({ r }: { r: Row }) {
       <div className="grid grid-cols-4 gap-2 text-xs">
         <div><p className="text-gray-500">Qty</p><p className="text-gray-300 nums">{Math.abs(r.quantity)}</p></div>
         <div><p className="text-gray-500">Costo</p><p className="text-gray-300 nums">{fmtUsd(r.avg_cost)}</p></div>
-        <div><p className="text-gray-500">Live</p><p className={`text-gray-300 nums rounded ${flash}`}>{r.live !== null ? fmtUsd(r.live) : '—'}</p></div>
+        <div>
+          <p className="text-gray-500">{r.priceIsLive ? 'Live' : 'Cierre'}</p>
+          <p className={`text-gray-300 nums rounded ${flash}`} title={r.priceIsLive ? undefined : 'Precio al cierre anterior'}>
+            {r.live !== null ? fmtUsd(r.live) : '—'}
+          </p>
+        </div>
         <div><p className="text-gray-500">% cart.</p><p className="text-gray-300 nums">{r.weight.toFixed(1)}%</p></div>
       </div>
       <div className="flex items-center justify-between text-xs border-t border-surface-3 pt-2">
@@ -85,7 +95,7 @@ export function PositionsTable() {
     const liveValue = live !== null ? live * p.quantity : NaN
     const livePnl = live !== null ? (live - p.avg_cost) * p.quantity : (p.unrealized_pnl ?? NaN)
     const livePnlPct = live !== null && p.avg_cost !== 0 ? ((live - p.avg_cost) / p.avg_cost) * 100 : NaN
-    return { symbol: p.symbol, quantity: p.quantity, avg_cost: p.avg_cost, live, liveValue, livePnl, livePnlPct, weight: 0 }
+    return { symbol: p.symbol, quantity: p.quantity, avg_cost: p.avg_cost, live, liveValue, livePnl, livePnlPct, weight: 0, priceIsLive: p.price_is_live }
   })
   const totalValue = rows.reduce((a, r) => a + Math.abs(r.liveValue), 0) || 1
   rows.forEach((r) => { r.weight = (Math.abs(r.liveValue) / totalValue) * 100 })
@@ -182,7 +192,7 @@ export function PositionsTable() {
                 </td>
                 <td className="py-2 pr-4 text-right text-gray-300 nums">{r.quantity}</td>
                 <td className="py-2 pr-4 text-right text-gray-400 nums">{fmtUsd(r.avg_cost)}</td>
-                <td className="py-2 pr-4 text-right text-gray-300"><LivePrice value={r.live} /></td>
+                <td className="py-2 pr-4 text-right text-gray-300"><LivePrice value={r.live} isLive={r.priceIsLive} /></td>
                 <td className="py-2 pr-4 text-right text-gray-300 nums">{fmtUsd(r.liveValue)}</td>
                 <td className={`py-2 pr-4 text-right nums ${pnlClass(r.livePnl)}`}>
                   {fmtUsd(r.livePnl)} <span className="text-xs">({fmtPct(r.livePnlPct)})</span>

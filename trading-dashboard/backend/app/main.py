@@ -2565,11 +2565,30 @@ async def _reconcile_unfilled_on_startup() -> None:
                 continue
             fill_price = ibkr_pos.avg_cost
             stop_px = audit.get_last_stop_price(sym)
+            estimated_cost = orphan_qty * fill_price
             logger.info(
                 "reconcile_orphan: %s %.0f × $%.4f → fondo %s (stop=%s)",
                 sym, orphan_qty, fill_price, auto_fund.id,
                 f"${stop_px:.4f}" if stop_px else "no encontrado",
             )
+            # Si el fondo no tiene cash suficiente para adoptar la posicion
+            # (porque la compra se hizo fuera del sistema de fondos y nunca
+            # se descontó del ledger), se añade un flujo de capital sintético
+            # para cubrir la diferencia. Sin esto, el cash del fondo queda
+            # negativo indefinidamente cada vez que el reconciliador adopta
+            # posiciones huérfanas de sesiones o herramientas externas.
+            if estimated_cost > auto_fund.cash_usd:
+                deficit = estimated_cost - auto_fund.cash_usd
+                funds_store.apply_capital_flow(
+                    auto_fund.id, deficit,
+                    note=f"Adopcion huerfana {sym}: capital externo requerido ({orphan_qty:.0f} × ${fill_price:.2f})",
+                )
+                logger.warning(
+                    "reconcile_orphan: fondo sin cash suficiente para %s ($%.2f < $%.2f) "
+                    "— flujo sintetico de $%.2f agregado",
+                    sym, auto_fund.cash_usd, estimated_cost, deficit,
+                )
+                auto_fund = funds_store.get(auto_fund.id)  # refresca tras el flujo
             funds_store.record_fill(
                 auto_fund.id, sym, Side.BUY, orphan_qty, fill_price,
                 stop_loss_price=stop_px,

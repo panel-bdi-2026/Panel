@@ -74,7 +74,11 @@ export function FundDetailModal({ fund, onClose }: Props) {
     refetchInterval: 10000,
   })
   const priceBySymbol: Record<string, number | null> = {}
-  for (const p of positions ?? []) priceBySymbol[p.symbol] = p.market_price
+  const priceIsLiveBySymbol: Record<string, boolean> = {}
+  for (const p of positions ?? []) {
+    priceBySymbol[p.symbol] = p.market_price
+    priceIsLiveBySymbol[p.symbol] = p.price_is_live
+  }
 
   // Nombre comercial al lado del ticker (ej. "Apple Inc." junto a AAPL) —
   // cache de 24hs en el backend y acá: el nombre de una empresa no cambia.
@@ -253,8 +257,10 @@ export function FundDetailModal({ fund, onClose }: Props) {
                         <p className="text-gray-200 font-medium nums">{fmtUsd(costTotal)}</p>
                       </div>
                       <div>
-                        <p className="text-gray-500">Precio actual</p>
-                        <p className="text-gray-200 font-medium nums">{fmtUsd(marketPrice)}</p>
+                        <p className="text-gray-500">{priceIsLiveBySymbol[sym] !== false ? 'Precio actual' : 'Precio (cierre)'}</p>
+                        <p className="text-gray-200 font-medium nums" title={priceIsLiveBySymbol[sym] !== false ? undefined : 'Precio al cierre anterior (mercado cerrado)'}>
+                          {fmtUsd(marketPrice)}
+                        </p>
                       </div>
                       <div>
                         <p className="text-gray-500">Valor mercado</p>

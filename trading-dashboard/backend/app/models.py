@@ -102,6 +102,9 @@ class Position(BaseModel):
     avg_cost: float
     market_price: Optional[float] = None
     unrealized_pnl: Optional[float] = None
+    # True = precio en tiempo real de IBKR; False = ultimo precio conocido
+    # (del cierre anterior, mientras el mercado esta cerrado o sin datos live).
+    price_is_live: bool = True
 
 
 class PendingOrder(BaseModel):

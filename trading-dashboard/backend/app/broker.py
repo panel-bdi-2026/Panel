@@ -155,6 +155,12 @@ class IBKRBroker:
         # solas via callbacks de ib_async -- get_live_price solo lee el ultimo
         # valor cacheado, sin pedirle nada nuevo a IBKR.
         self._live_tickers: dict[str, Ticker] = {}
+        # Ultimo precio valido conocido por simbolo (clave = simbolo canonico).
+        # Se actualiza cada vez que get_positions() recibe un precio no-None de
+        # IBKR. Se usa como fallback cuando el mercado esta cerrado y IBKR no
+        # entrega precio live, para que la UI muestre el cierre anterior en vez
+        # de "—". Se pierde en cada restart del proceso (cache en memoria pura).
+        self._last_known_price: dict[str, float] = {}
 
     async def connect(self) -> None:
         try:
@@ -267,14 +273,26 @@ class IBKRBroker:
 
         out: list[Position] = []
         for p in positions:
-            market_price = price_by_conid.get(p.contract.conId)
+            sym = _from_ib_symbol(p.contract.symbol)
+            live_price = price_by_conid.get(p.contract.conId)
+            if live_price is not None:
+                self._last_known_price[sym] = live_price
+                market_price = live_price
+                price_is_live = True
+            else:
+                # Mercado cerrado o sin datos: usar el ultimo precio conocido
+                # (del cache en memoria) para mostrar el cierre anterior.
+                cached = self._last_known_price.get(sym)
+                market_price = cached
+                price_is_live = False
             unrealized = (market_price - p.avgCost) * p.position if market_price is not None else None
             out.append(Position(
-                symbol=_from_ib_symbol(p.contract.symbol),
+                symbol=sym,
                 quantity=p.position,
                 avg_cost=p.avgCost,
                 market_price=market_price,
                 unrealized_pnl=unrealized,
+                price_is_live=price_is_live,
             ))
         return out
 
