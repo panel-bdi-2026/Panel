@@ -25,6 +25,10 @@ ExecStartPre=/opt/panel/trading-dashboard/deploy/scripts/wait_for_ibgateway.sh
 ExecStart=/opt/panel/trading-dashboard/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=10
+# Limita el uso de memoria del proceso. El servicio usa ~120MB en reposo y
+# puede crecer a ~300MB durante scans masivos; 600MB da margen amplio sin
+# arriesgar el servidor de 2GB en caso de un leak de memoria.
+MemoryMax=600M
 
 [Install]
 WantedBy=multi-user.target

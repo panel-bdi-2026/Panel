@@ -641,7 +641,7 @@ low_liquidity_slippage_multiplier: 3.0
 backtest_vol_weighting_enabled: false
 backtest_risk_based_sizing_enabled: false
 invest_idle_cash_in_benchmark: false
-deflated_sharpe_num_trials: 1
+deflated_sharpe_num_trials: 50
 auto_scan_enabled: true
 auto_scan_interval_minutes: 5
 max_auto_drafts_per_cycle: 8
