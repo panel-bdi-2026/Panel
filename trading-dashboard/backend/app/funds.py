@@ -334,6 +334,11 @@ class FundsStore:
         # fuera de esta clase.
         self._lock = threading.Lock()
         self.funds: dict[str, Fund] = self._load()
+        # Hook opcional que se llama tras cada record_fill exitoso. Permite que
+        # main.py invalide caches dependientes del historial de trades (ej.
+        # _roi_history_cache) sin crear una dependencia circular entre fondos y
+        # el estado global del servidor. Se asigna desde el lifespan de main.py.
+        self.on_fill_hook: Callable[[], None] | None = None
 
     def _backup_corrupt_file(self) -> None:
         """Copia funds.json a un .bak con timestamp antes de descartar lo
@@ -502,7 +507,12 @@ class FundsStore:
                 symbol, side, quantity, price, stop_loss_price, stop_order_id, commission
             )
             self.save()
-            return trade
+        if self.on_fill_hook is not None:
+            try:
+                self.on_fill_hook()
+            except Exception:
+                logger.exception("on_fill_hook lanzó una excepción")
+        return trade
 
     def update_stop_loss(self, fund_id: str, symbol: str, new_stop_price: float) -> Fund | None:
         with self._lock:

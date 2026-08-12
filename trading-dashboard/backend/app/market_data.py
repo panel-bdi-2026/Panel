@@ -123,6 +123,13 @@ _FETCH_TIMEOUT_SECONDS = 45
 _fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="market-data-fetch")
 
 
+def shutdown_fetch_executor() -> None:
+    """Cierra el ThreadPoolExecutor de fetches. Llamar desde el lifespan
+    shutdown de main.py para evitar que threads huérfanos queden vivos
+    después de que el proceso termine."""
+    _fetch_executor.shutdown(wait=False)
+
+
 def _fetch_with_timeout(fn):
     future = _fetch_executor.submit(fn)
     try:

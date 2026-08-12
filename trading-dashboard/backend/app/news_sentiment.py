@@ -33,6 +33,12 @@ _sentiment_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=_SENTIMENT_MAX_WORKERS, thread_name_prefix="news-sentiment"
 )
 
+
+def shutdown_sentiment_executor() -> None:
+    """Cierra el ThreadPoolExecutor de sentiment. Llamar desde el lifespan
+    shutdown de main.py para evitar threads huérfanos tras el shutdown."""
+    _sentiment_executor.shutdown(wait=False)
+
 # Cache de nombre de empresa para filtrado de titulares. Se llena la primera
 # vez que se pide sentimiento de un símbolo y se reutiliza dentro de la sesión.
 _company_name_cache: dict[str, str] = {}

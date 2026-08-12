@@ -44,7 +44,9 @@ from .market_data import (
     get_fundamentals,
     is_bars_cached,
     is_fundamentals_cached,
+    shutdown_fetch_executor,
 )
+from .news_sentiment import shutdown_sentiment_executor
 from .models import OrderRequest, OrderType, PendingOrder, Position, SignalResult, Side, validate_symbol
 from .rules import RulesConfig, RulesEngine
 from .screener import MomentumScreener
@@ -1908,7 +1910,25 @@ async def _ensure_missing_protective_stops() -> None:
     has_live_protective_stop (trades()): sobrevive a un reconnect() que deja
     trades() vacio (causa raiz de los shorts fantasma -- ver C1 del
     NUEVO_INFORME). Solo actua en modo paper con la cuenta conectada y sin halt."""
-    if state["mode"] != "paper" or state["halted"] or not state["connected"]:
+    if state["halted"] or not state["connected"]:
+        return
+    if state["mode"] != "paper":
+        # En modo live NO colocamos stops automáticamente (el riesgo de stops
+        # duplicados que creaban phantom shorts es inaceptable con dinero real).
+        # En cambio, alertamos para que el operador actúe manualmente.
+        missing: list[str] = []
+        for fund in funds_store.list():
+            if not fund.auto_trading_enabled:
+                continue
+            for symbol, position in fund.positions.items():
+                if position.quantity <= 0:
+                    continue
+                if position.stop_order_id is None and position.stop_loss_price is None:
+                    missing.append(f"{symbol} (fondo {fund.name})")
+        if missing:
+            msg = "Posiciones sin stop-loss en modo LIVE: " + ", ".join(missing)
+            logger.error(msg)
+            send_alert(settings, "⚠ Stops faltantes en LIVE", msg)
         return
     for fund in funds_store.list():
         if not fund.auto_trading_enabled:
@@ -2609,6 +2629,9 @@ async def _reconcile_unfilled_on_startup() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Invalidar el cache de ROI history cada vez que se registra un fill,
+    # para que el endpoint devuelva datos frescos sin esperar el TTL de 5min.
+    funds_store.on_fill_hook = lambda: globals().update({"_roi_history_cache": None})
     try:
         await broker.connect()
         state["connected"] = True
@@ -2648,6 +2671,8 @@ async def lifespan(app: FastAPI):
     await asyncio.gather(*background_tasks, return_exceptions=True)
     audit.close()
     broker.disconnect()
+    shutdown_fetch_executor()
+    shutdown_sentiment_executor()
 
 
 app = FastAPI(title="IBKR Trading Dashboard", lifespan=lifespan)
@@ -2731,9 +2756,13 @@ def logout(response: Response, session: Optional[str] = Cookie(default=None)):
 
 
 @app.get("/api/health")
-def health_check():
-    """Chequeo de salud del sistema. Sin autenticación para permitir
-    monitoreo externo (UptimeRobot, cron, etc.).
+def health_check(
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None),
+):
+    """Chequeo de salud del sistema. Sin autenticación devuelve solo el
+    estado agregado (ok/degraded) para monitoreo externo. Con autenticación
+    devuelve el detalle completo de loops, uptime, etc.
 
     Retorna 200 si todo está bien, 503 si hay algún problema activo.
     """
@@ -2759,7 +2788,6 @@ def health_check():
 
     last_scan_at = None
     if scan_ages:
-        # La entrada más reciente entre todas las estrategias
         most_recent = max(
             (e["as_of"] for e in signal_cache.values() if e.get("as_of")),
             default=None,
@@ -2767,27 +2795,42 @@ def health_check():
         if most_recent:
             last_scan_at = most_recent.isoformat()
 
-    # Un loop con 3+ fallos consecutivos es un loop practicamente muerto:
-    # con backoff exponencial el intervalo ya subio a 8x el normal.
     failing_loops = [
         name for name, h in _loop_health.items() if h.get("fails", 0) >= 3
     ]
     if failing_loops:
         issues.append("background_loop_failing")
 
-    payload = {
-        "status": "ok" if not issues else "degraded",
-        "issues": issues,
-        "timestamp": now.isoformat(),
-        "mode": state["mode"],
-        "halted": state.get("halted", False),
-        "uptime_seconds": int((now - _startup_time).total_seconds()),
-        "last_scan_at": last_scan_at,
-        "loops": {
-            name: {"consecutive_failures": h["fails"], "last_error": h.get("last_error")}
-            for name, h in _loop_health.items()
-        },
-    }
+    status_str = "ok" if not issues else "degraded"
+
+    # Sin autenticación: solo el resumen mínimo necesario para monitoreo externo.
+    # Con autenticación: detalle completo de loops, uptime y estado interno.
+    session_cookie = request.cookies.get(SESSION_COOKIE_NAME)
+    authed = (x_api_key and secrets.compare_digest(x_api_key, settings.api_key)) or (
+        session_cookie and _session_valid(session_cookie)
+    )
+
+    if authed:
+        payload = {
+            "status": status_str,
+            "issues": issues,
+            "timestamp": now.isoformat(),
+            "mode": state["mode"],
+            "halted": state.get("halted", False),
+            "uptime_seconds": int((now - _startup_time).total_seconds()),
+            "last_scan_at": last_scan_at,
+            "loops": {
+                name: {"consecutive_failures": h["fails"], "last_error": h.get("last_error")}
+                for name, h in _loop_health.items()
+            },
+        }
+    else:
+        payload = {
+            "status": status_str,
+            "issues": issues,
+            "timestamp": now.isoformat(),
+        }
+
     if issues:
         raise HTTPException(status_code=503, detail=payload)
     return payload
