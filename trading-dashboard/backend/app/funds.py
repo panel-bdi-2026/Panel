@@ -180,6 +180,27 @@ class Fund(BaseModel):
         self.capital_flows.append(flow)
         return flow
 
+    def _enforce_cash_floor(self, symbol: str) -> None:
+        """Garantiza que cash_usd nunca quede negativo después de un BUY.
+        Si quedó en negativo, inyecta un flujo de capital sintético por el
+        déficit exacto y loguea un error para que sea visible en journalctl.
+        Esto es una red de seguridad de último recurso: la validación principal
+        corre antes de enviar la orden (RulesEngine.evaluate en main.py), pero
+        race conditions entre fills concurrentes o adopciones del reconciliador
+        pueden saltearla. Llamar solo desde record_fill, después de cada BUY."""
+        if self.cash_usd >= 0:
+            return
+        deficit = -self.cash_usd
+        logger.error(
+            "cash negativo en fondo '%s' tras BUY %s (déficit $%.2f) — "
+            "inyectando capital sintético. Revisar race condition en reconciliador.",
+            self.name, symbol, deficit,
+        )
+        self.apply_capital_flow(
+            deficit,
+            note=f"Capital sintético de emergencia: BUY {symbol} excedió cash disponible (déficit ${deficit:.2f})",
+        )
+
     def record_fill(
         self,
         symbol: str,
@@ -212,12 +233,15 @@ class Fund(BaseModel):
         equity_estimate()/cash_usd ya eran correctos, porque la comision de
         compra si se descuenta del cash en el momento de comprar).
 
-        No valida nada (cash suficiente): esa validacion corre ANTES de
-        enviar la orden al broker (ver main.py). La cantidad vendida si se
-        acota a lo que la posicion realmente tiene: un caller con un bug (ej.
-        una reconciliacion que calculo mal closed_qty) no debe poder inflar
-        cash_usd con dinero virtual ni registrar un PnL irreal vendiendo mas
-        de lo que el fondo posee.
+        La validacion principal de cash corre ANTES de enviar la orden al
+        broker (ver main.py). Como red de seguridad de último recurso,
+        _enforce_cash_floor() garantiza que cash_usd nunca quede negativo
+        aunque un race condition o una adopcion del reconciliador se salteen
+        esa validacion: en ese caso inyecta un flujo de capital sintetico y
+        loguea un error. La cantidad vendida se acota a lo que la posicion
+        realmente tiene: un caller con un bug no puede inflar cash_usd con
+        dinero virtual ni registrar un PnL irreal vendiendo mas de lo que
+        el fondo posee.
         """
         pos = self.positions.setdefault(symbol, FundPosition())
         realized_pnl = None
@@ -236,6 +260,7 @@ class Fund(BaseModel):
                     self._reset_position(pos)
                 quantity = qty_covered
                 self.cash_usd -= price * qty_covered + commission
+                self._enforce_cash_floor(symbol)
             else:
                 if pos.quantity == 0:
                     pos.opened_at = opened_at if opened_at is not None else datetime.now(timezone.utc)
@@ -250,6 +275,7 @@ class Fund(BaseModel):
                 pos.quantity = new_qty
                 pos.cost_basis_commission += commission
                 self.cash_usd -= price * quantity + commission
+                self._enforce_cash_floor(symbol)
         else:
             if quantity > pos.quantity:
                 logger.warning(
