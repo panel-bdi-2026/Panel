@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 import threading
 import uuid
@@ -180,27 +181,6 @@ class Fund(BaseModel):
         self.capital_flows.append(flow)
         return flow
 
-    def _enforce_cash_floor(self, symbol: str) -> None:
-        """Garantiza que cash_usd nunca quede negativo después de un BUY.
-        Si quedó en negativo, inyecta un flujo de capital sintético por el
-        déficit exacto y loguea un error para que sea visible en journalctl.
-        Esto es una red de seguridad de último recurso: la validación principal
-        corre antes de enviar la orden (RulesEngine.evaluate en main.py), pero
-        race conditions entre fills concurrentes o adopciones del reconciliador
-        pueden saltearla. Llamar solo desde record_fill, después de cada BUY."""
-        if self.cash_usd >= 0:
-            return
-        deficit = -self.cash_usd
-        logger.error(
-            "cash negativo en fondo '%s' tras BUY %s (déficit $%.2f) — "
-            "inyectando capital sintético. Revisar race condition en reconciliador.",
-            self.name, symbol, deficit,
-        )
-        self.apply_capital_flow(
-            deficit,
-            note=f"Capital sintético de emergencia: BUY {symbol} excedió cash disponible (déficit ${deficit:.2f})",
-        )
-
     def record_fill(
         self,
         symbol: str,
@@ -233,15 +213,11 @@ class Fund(BaseModel):
         equity_estimate()/cash_usd ya eran correctos, porque la comision de
         compra si se descuenta del cash en el momento de comprar).
 
-        La validacion principal de cash corre ANTES de enviar la orden al
-        broker (ver main.py). Como red de seguridad de último recurso,
-        _enforce_cash_floor() garantiza que cash_usd nunca quede negativo
-        aunque un race condition o una adopcion del reconciliador se salteen
-        esa validacion: en ese caso inyecta un flujo de capital sintetico y
-        loguea un error. La cantidad vendida se acota a lo que la posicion
-        realmente tiene: un caller con un bug no puede inflar cash_usd con
-        dinero virtual ni registrar un PnL irreal vendiendo mas de lo que
-        el fondo posee.
+        La validacion de cash corre en FundsStore.record_fill() bajo el lock,
+        ajustando la cantidad comprada si el cash no alcanza para la orden
+        completa. La cantidad vendida se acota a lo que la posicion realmente
+        tiene: un caller con un bug no puede inflar cash_usd con dinero virtual
+        ni registrar un PnL irreal vendiendo mas de lo que el fondo posee.
         """
         pos = self.positions.setdefault(symbol, FundPosition())
         realized_pnl = None
@@ -260,7 +236,6 @@ class Fund(BaseModel):
                     self._reset_position(pos)
                 quantity = qty_covered
                 self.cash_usd -= price * qty_covered + commission
-                self._enforce_cash_floor(symbol)
             else:
                 if pos.quantity == 0:
                     pos.opened_at = opened_at if opened_at is not None else datetime.now(timezone.utc)
@@ -275,7 +250,6 @@ class Fund(BaseModel):
                 pos.quantity = new_qty
                 pos.cost_basis_commission += commission
                 self.cash_usd -= price * quantity + commission
-                self._enforce_cash_floor(symbol)
         else:
             if quantity > pos.quantity:
                 logger.warning(
@@ -529,6 +503,28 @@ class FundsStore:
             fund = self.funds.get(fund_id)
             if fund is None:
                 return None
+            # Ajuste de cantidad bajo el lock: garantía atómica de que el cash
+            # nunca queda negativo, sin importar el camino de llamada (auto-trade,
+            # reconciliador de huérfanas, fill tardío). Para ventas no aplica
+            # porque suman cash. Para compras, se recalcula cuántas unidades
+            # puede costear el cash actual e.g. si el fondo tiene $300 y llega
+            # una orden de 10 acciones a $50, se registran solo 6.
+            if side == Side.BUY and price > 0:
+                affordable = math.floor((fund.cash_usd - commission) / price)
+                if affordable < quantity:
+                    logger.warning(
+                        "record_fill: BUY %s en '%s' ajustado de %.0f → %.0f acciones "
+                        "(cash=$%.2f insuficiente para la cantidad original)",
+                        symbol, fund.name, quantity, affordable, fund.cash_usd,
+                    )
+                    quantity = affordable
+                if quantity <= 0:
+                    logger.error(
+                        "record_fill: BUY %s en '%s' descartado — cash $%.2f "
+                        "insuficiente para ni una acción a $%.2f",
+                        symbol, fund.name, fund.cash_usd, price,
+                    )
+                    return None
             trade = fund.record_fill(
                 symbol, side, quantity, price, stop_loss_price, stop_order_id, commission
             )
