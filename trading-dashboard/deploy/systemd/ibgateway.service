@@ -1,0 +1,16 @@
+[Unit]
+Description=IB Gateway headless (via IBC)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trading
+Group=trading
+ExecStart=/opt/panel/trading-dashboard/deploy/scripts/start_ibgateway.sh
+Restart=always
+RestartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
