@@ -550,6 +550,25 @@ class IBKRBroker:
         _status, filled, avg_price, _remaining = result
         return {"filled_qty": filled or 0.0, "avg_fill_price": avg_price}
 
+    async def close_orphan_long_position(self, symbol: str, quantity: float) -> dict:
+        """Cierra una posición larga huérfana con SELL MKT sin pasar por
+        place_order ni por rules_engine. Solo la llama el reconciliador de
+        huérfanas cuando la posición supera el capital disponible del fondo:
+        es preferible cerrarla que aceptarla con capital sintético, especialmente
+        en live mode donde el capital asignado al fondo es un límite real."""
+        contract = Stock(_to_ib_symbol(symbol), "SMART", "USD")
+        await self.ib.qualifyContractsAsync(contract)
+        if not contract.conId:
+            return {"filled_qty": 0.0, "avg_fill_price": None}
+        order = MarketOrder("SELL", abs(quantity))
+        order.tif = _DEFAULT_TIF
+        trade = self.ib.placeOrder(contract, order)
+        result = await self._wait_for_fill(trade.order.orderId, timeout=30.0)
+        if result is None:
+            return {"filled_qty": 0.0, "avg_fill_price": None}
+        _status, filled, avg_price, _remaining = result
+        return {"filled_qty": filled or 0.0, "avg_fill_price": avg_price}
+
     def subscribe_fill(
         self,
         order_id: int,

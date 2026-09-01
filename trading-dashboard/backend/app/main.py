@@ -2461,6 +2461,17 @@ async def _reconcile_unfilled_on_startup() -> None:
             fund = funds_store.get(fund_id)
             if fund is None:
                 continue
+            # No intentar registrar fills en fondos cerrados: tienen $0 de cash
+            # y el cash-floor check los descartaría silenciosamente. La segunda
+            # pasada (reconcile_orphan) los maneja: si el fondo activo no tiene
+            # capital suficiente, cierra la posición en IBKR en vez de aceptarla.
+            if fund.closed:
+                logger.info(
+                    "reconcile_unfilled: fondo '%s' cerrado — ignorando fill "
+                    "pendiente de %s (lo gestiona reconcile_orphan)",
+                    fund.name, sym,
+                )
+                continue
 
             ibkr_pos = ibkr_positions.get(sym)
             if ibkr_pos is None:
@@ -2586,29 +2597,39 @@ async def _reconcile_unfilled_on_startup() -> None:
             fill_price = ibkr_pos.avg_cost
             stop_px = audit.get_last_stop_price(sym)
             estimated_cost = orphan_qty * fill_price
+            # Si el fondo no tiene cash suficiente para adoptar la posicion,
+            # cerrarla en IBKR en vez de inyectar capital sintetico. En live
+            # mode el capital asignado al fondo es un limite real: nunca debe
+            # superarse por reconciliacion automatica. En paper mode aplica el
+            # mismo principio para mantener coherencia con la simulacion.
+            if estimated_cost > auto_fund.cash_usd:
+                logger.warning(
+                    "reconcile_orphan: %s %.0f × $%.4f — fondo '%s' sin cash "
+                    "($%.2f disponible, $%.2f requerido) — cerrando en IBKR "
+                    "para no superar el capital asignado",
+                    sym, orphan_qty, fill_price, auto_fund.name,
+                    auto_fund.cash_usd, estimated_cost,
+                )
+                try:
+                    close_result = await broker.close_orphan_long_position(sym, orphan_qty)
+                    audit.record(
+                        "auto_trade_close_orphan_over_budget",
+                        {"symbol": sym, "quantity": orphan_qty,
+                         "source": "orphan_over_budget", "fund_id": auto_fund.id},
+                        close_result,
+                    )
+                except Exception:
+                    logger.exception(
+                        "reconcile_orphan: no se pudo cerrar %s en IBKR — "
+                        "posición queda abierta sin respaldo de capital",
+                        sym,
+                    )
+                continue
             logger.info(
                 "reconcile_orphan: %s %.0f × $%.4f → fondo %s (stop=%s)",
                 sym, orphan_qty, fill_price, auto_fund.id,
                 f"${stop_px:.4f}" if stop_px else "no encontrado",
             )
-            # Si el fondo no tiene cash suficiente para adoptar la posicion
-            # (porque la compra se hizo fuera del sistema de fondos y nunca
-            # se descontó del ledger), se añade un flujo de capital sintético
-            # para cubrir la diferencia. Sin esto, el cash del fondo queda
-            # negativo indefinidamente cada vez que el reconciliador adopta
-            # posiciones huérfanas de sesiones o herramientas externas.
-            if estimated_cost > auto_fund.cash_usd:
-                deficit = estimated_cost - auto_fund.cash_usd
-                funds_store.apply_capital_flow(
-                    auto_fund.id, deficit,
-                    note=f"Adopcion huerfana {sym}: capital externo requerido ({orphan_qty:.0f} × ${fill_price:.2f})",
-                )
-                logger.warning(
-                    "reconcile_orphan: fondo sin cash suficiente para %s ($%.2f < $%.2f) "
-                    "— flujo sintetico de $%.2f agregado",
-                    sym, auto_fund.cash_usd, estimated_cost, deficit,
-                )
-                auto_fund = funds_store.get(auto_fund.id)  # refresca tras el flujo
             funds_store.record_fill(
                 auto_fund.id, sym, Side.BUY, orphan_qty, fill_price,
                 stop_loss_price=stop_px,
@@ -2627,11 +2648,30 @@ async def _reconcile_unfilled_on_startup() -> None:
             logger.exception("reconcile_orphan: %s falló, se sigue con el resto", sym)
 
 
+def _migrate_synthetic_capital_flows() -> None:
+    """Migración única: marca como synthetic=True los flujos de capital que el
+    reconciliador de huérfanas inyectó antes de que existiera el campo. Se
+    detectan por la nota ('Adopcion huerfana ...'). Es idempotente: flujos que
+    ya tienen synthetic=True no se tocan. Persiste el cambio si hubo alguno."""
+    changed = False
+    with funds_store._lock:
+        for fund in funds_store.funds.values():
+            for flow in fund.capital_flows:
+                if not flow.synthetic and flow.note and "adopcion huerfana" in flow.note.lower():
+                    flow.synthetic = True
+                    changed = True
+        if changed:
+            funds_store.save()
+    if changed:
+        logger.info("migrate_synthetic_flows: flujos de adopcion huerfana marcados como synthetic=True")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Invalidar el cache de ROI history cada vez que se registra un fill,
     # para que el endpoint devuelva datos frescos sin esperar el TTL de 5min.
     funds_store.on_fill_hook = lambda: globals().update({"_roi_history_cache": None})
+    _migrate_synthetic_capital_flows()
     try:
         await broker.connect()
         state["connected"] = True

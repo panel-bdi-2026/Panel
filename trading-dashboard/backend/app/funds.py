@@ -77,6 +77,9 @@ class CapitalFlow(BaseModel):
     amount: float
     created_at: datetime
     note: Optional[str] = None
+    # True para inyecciones sintéticas del reconciliador de huérfanas: no
+    # representan dinero real del usuario y se excluyen de net_contributed_capital.
+    synthetic: bool = False
 
 
 class Fund(BaseModel):
@@ -164,9 +167,9 @@ class Fund(BaseModel):
         return sum(t.realized_pnl for t in self.trades if t.realized_pnl is not None)
 
     def net_contributed_capital(self) -> float:
-        return sum(f.amount for f in self.capital_flows)
+        return sum(f.amount for f in self.capital_flows if not f.synthetic)
 
-    def apply_capital_flow(self, amount: float, note: Optional[str] = None) -> CapitalFlow:
+    def apply_capital_flow(self, amount: float, note: Optional[str] = None, synthetic: bool = False) -> CapitalFlow:
         """Aporta (amount > 0) o retira (amount < 0) capital virtual. No
         valida nada (cash real disponible en la cuenta, cash_usd suficiente
         para retirar): esas validaciones corren ANTES, en main.py -- mismo
@@ -177,6 +180,7 @@ class Fund(BaseModel):
             amount=amount,
             created_at=datetime.now(timezone.utc),
             note=note,
+            synthetic=synthetic,
         )
         self.capital_flows.append(flow)
         return flow
@@ -472,6 +476,7 @@ class FundsStore:
         amount: float,
         note: Optional[str] = None,
         allocation_check: Optional[Callable[[Fund, float], None]] = None,
+        synthetic: bool = False,
     ) -> CapitalFlow | None:
         """Aporta/retira capital. `allocation_check`, si se pasa, recibe el
         Fund (ya bajo el lock, con su cash_usd actual) y la suma de cash_usd
@@ -484,7 +489,7 @@ class FundsStore:
                 return None
             if allocation_check is not None:
                 allocation_check(fund, self.total_allocated_cash(exclude_fund_id=fund_id))
-            flow = fund.apply_capital_flow(amount, note)
+            flow = fund.apply_capital_flow(amount, note, synthetic=synthetic)
             self.save()
             return flow
 
