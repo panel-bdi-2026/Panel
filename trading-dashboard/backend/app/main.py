@@ -31,7 +31,7 @@ from .backtest import (
     run_opportunistic_backtest,
     run_opportunistic_backtest_walk_forward,
 )
-from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError
+from .broker import IBKRBroker, IBKRConnectionError, StopLossRejectedError, _from_ib_symbol
 from .config import settings
 from .funds import FundsStore, FundValidationError
 from .indicators import atr, market_regime_ok, rate_of_change, sma
@@ -66,6 +66,8 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dis
 # via su lastResort handler) y quedarian invisibles en journalctl pese a llamar
 # al logger correctamente.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# httpx loguea en INFO la URL completa, que en Tiingo lleva el token como query param.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Este modulo asume UN SOLO proceso worker. screener_config, state, clients,
@@ -254,6 +256,10 @@ _loop_health: dict[str, dict] = {}
 # Estado entre ciclos de _run_health_alert_cycle (los issues que ya se notificaron).
 # Debe sobrevivir entre llamadas, de ahi que sea de modulo y no local al loop.
 _health_alerting: set[str] = set()
+# Ultimo envio por issue: un issue que persiste se recuerda cada 24h (un halt
+# de 4 semanas paso desapercibido con un solo email al inicio).
+_health_alert_last_sent: dict[str, datetime] = {}
+_HEALTH_REMINDER_SECONDS = 24 * 3600
 
 
 def _persist_state() -> None:
@@ -405,6 +411,21 @@ async def _run_health_alert_cycle() -> None:
         body = f"Problemas detectados a las {now_str}:\n\n"
         body += "\n".join(f"• {i}" for i in sorted(new_issues))
         send_alert(settings, subject, body)
+        for issue in new_issues:
+            _health_alert_last_sent[issue] = now
+
+    stale = sorted(
+        i for i in current - new_issues
+        if (now - _health_alert_last_sent.get(i, now)).total_seconds() >= _HEALTH_REMINDER_SECONDS
+    )
+    if stale:
+        send_alert(
+            settings,
+            "⚠ Recordatorio: " + ", ".join(stale),
+            "Siguen activos (más de 24h sin resolverse):\n\n" + "\n".join(f"• {i}" for i in stale),
+        )
+        for issue in stale:
+            _health_alert_last_sent[issue] = now
 
     for issue in resolved:
         send_alert(
@@ -412,6 +433,7 @@ async def _run_health_alert_cycle() -> None:
             f"✓ Resuelto: {issue}",
             f"El problema fue resuelto a las {now_str}:\n\n• {issue}",
         )
+        _health_alert_last_sent.pop(issue, None)
 
     _health_alerting = current
 
@@ -2007,11 +2029,12 @@ async def _reconcile_protective_stops_cycle() -> None:
                     # coloque exactamente uno nuevo en el siguiente ciclo de 5s,
                     # en vez de acumular decenas de stops como antes (ver C1 bis).
                     if position.stop_order_id is not None:
+                        gone_id = position.stop_order_id
                         funds_store.set_stop_order_id(fund.id, symbol, None)
                         logger.warning(
                             "reconcile_stops: stop_order_id=%s ya no existe en IBKR para %s "
                             "(fondo %s) -- limpiado para que _ensure_missing lo reponga",
-                            position.stop_order_id, symbol, fund.id,
+                            gone_id, symbol, fund.id,
                         )
                     continue
                 cancelled = await broker.cancel_duplicate_protective_stops(
@@ -2570,6 +2593,13 @@ async def _reconcile_unfilled_on_startup() -> None:
                 # la posición larga (ver stops duplicados Aug-2026). Con
                 # allow_short_selling=false, cerrar a mercado inmediatamente.
                 if not rules_engine.config.allow_short_selling:
+                    pending = await broker.get_pending_market_orders(sym, "BUY")
+                    if pending:
+                        logger.warning(
+                            "reconcile_orphan: %s short %.0f ya tiene BUY pendiente(s) %s — no se duplica",
+                            sym, ibkr_pos.quantity, pending,
+                        )
+                        continue
                     logger.warning(
                         "reconcile_orphan: %s tiene %.0f en IBKR (short fantasma) — cerrando a mercado",
                         sym, ibkr_pos.quantity,
@@ -2603,6 +2633,13 @@ async def _reconcile_unfilled_on_startup() -> None:
             # superarse por reconciliacion automatica. En paper mode aplica el
             # mismo principio para mantener coherencia con la simulacion.
             if estimated_cost > auto_fund.cash_usd:
+                pending = await broker.get_pending_market_orders(sym, "SELL")
+                if pending:
+                    logger.warning(
+                        "reconcile_orphan: %s ya tiene SELL pendiente(s) %s — no se duplica el cierre",
+                        sym, pending,
+                    )
+                    continue
                 logger.warning(
                     "reconcile_orphan: %s %.0f × $%.4f — fondo '%s' sin cash "
                     "($%.2f disponible, $%.2f requerido) — cerrando en IBKR "
@@ -4172,6 +4209,54 @@ def set_fund_strategy(fund_id: str, body: FundStrategyUpdate, _: None = Depends(
         raise HTTPException(status_code=404, detail="Fondo no encontrado.")
     audit.record("fund_strategy_changed", {"fund_id": fund_id, "strategy_id": body.strategy_id}, {})
     return _fund_view(fund)
+
+
+@app.post("/api/admin/emergency-close-ibkr")
+async def emergency_close_all_ibkr(_: None = Depends(require_api_key)):
+    """Cierra TODAS las posiciones abiertas en IBKR directamente (SELL longs,
+    BUY shorts) sin pasar por el rules engine ni actualizar el ledger de fondos.
+    Solo para uso de emergencia al cerrar fondos con ledger desincronizado."""
+    # Primero cancelar stops/ordenes vivas: un stop que sobrevive al cierre
+    # dispara despues sobre una posicion en cero y abre un short.
+    await broker.cancel_all_open_orders()
+    positions = [(_from_ib_symbol(p.contract.symbol), p.position) for p in broker.ib.positions()
+                 if p.position != 0]
+    results = []
+    for symbol, qty in positions:
+        try:
+            r = await broker.close_position_direct(symbol, qty)
+            results.append({"symbol": symbol, "ibkr_qty": qty, **r})
+            logger.info("emergency_close_ibkr: %s qty=%.0f → %s", symbol, qty, r)
+        except Exception as exc:
+            results.append({"symbol": symbol, "ibkr_qty": qty, "error": str(exc)})
+            logger.exception("emergency_close_ibkr: error cerrando %s", symbol)
+    audit.record("emergency_close_ibkr", {"positions": len(positions)}, {"results": results})
+    return {"closed": len([r for r in results if r.get("filled_qty", 0) > 0]),
+            "total": len(results), "results": results}
+
+
+@app.post("/api/admin/force-zero-fund/{fund_id}")
+async def force_zero_fund(fund_id: str, _: None = Depends(require_api_key)):
+    """Fuerza todas las posiciones del fondo a qty=0 y su cash a 0 para
+    poder cerrarlo después. Solo para uso de emergencia con ledger desincronizado."""
+    async with _funds_order_lock:
+        fund = funds_store.get(fund_id)
+        if fund is None:
+            raise HTTPException(status_code=404, detail="Fondo no encontrado.")
+        with funds_store._lock:
+            for sym in list(fund.positions.keys()):
+                fund.positions[sym].quantity = 0.0
+            if abs(fund.cash_usd) > 0.005:
+                fund.apply_capital_flow(
+                    -fund.cash_usd,
+                    note="Ajuste forzado — cierre de emergencia (ledger desincronizado con IBKR)",
+                    synthetic=True,
+                )
+            funds_store.save()
+    logger.warning("force_zero_fund: fondo '%s' zeroed forzosamente", fund.name)
+    audit.record("force_zero_fund", {"fund_id": fund_id}, {})
+    return {"fund_id": fund_id, "name": fund.name, "cash_usd": 0.0,
+            "message": "Posiciones y cash zeroed. Listo para /close."}
 
 
 @app.post("/api/funds/{fund_id}/close")

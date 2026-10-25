@@ -502,8 +502,28 @@ def test_place_protective_stop_places_standalone_sell_stop_and_returns_order_id(
     assert order.action == "SELL"
     assert order.totalQuantity == 10
     assert order.auxPrice == 145.0
+    # GTC: con DAY, IBKR lo cancelaba al cierre y la posicion quedaba desnuda.
+    assert order.tif == "GTC"
     # Standalone: sin padre, sin bracket.
     assert getattr(order, "parentId", 0) == 0
+
+
+def test_get_pending_market_orders_ignores_stops_and_done_orders(broker, monkeypatch):
+    trades = [
+        _LiveStopTrade("PSX", order_id=1, action="BUY", order_type="MKT", status="PreSubmitted"),
+        _LiveStopTrade("PSX", order_id=2, action="BUY", order_type="STP", status="Submitted"),
+        _LiveStopTrade("PSX", order_id=3, action="BUY", order_type="MKT", status="Cancelled"),
+        _LiveStopTrade("PSX", order_id=4, action="SELL", order_type="MKT", status="Submitted"),
+        _LiveStopTrade("QLYS", order_id=5, action="BUY", order_type="MKT", status="Submitted"),
+    ]
+
+    async def fake_req_all():
+        return trades
+
+    monkeypatch.setattr(broker.ib, "reqAllOpenOrdersAsync", fake_req_all)
+
+    assert asyncio.run(broker.get_pending_market_orders("PSX", "BUY")) == [1]
+    assert asyncio.run(broker.get_pending_market_orders("PSX", "SELL")) == [4]
 
 
 def test_place_protective_stop_returns_none_when_contract_fails_to_qualify(broker, monkeypatch):
@@ -1213,4 +1233,7 @@ def test_place_order_sets_an_explicit_tif_on_parent_and_stop(broker, monkeypatch
     )
 
     assert len(stub.placed) >= 2
-    assert {o.tif for o in stub.placed} == {"DAY"}
+    parent, stop = stub.placed[0], stub.placed[1]
+    assert parent.tif == "DAY"
+    # El stop hijo es GTC para que no expire al cierre (ver _STOP_TIF).
+    assert stop.tif == "GTC"

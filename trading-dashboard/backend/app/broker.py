@@ -76,6 +76,10 @@ _SPURIOUS_CANCEL_CODES = frozenset({10349})
 # igual: es la defensa contra CUALQUIER otro codigo informativo que ib_async
 # clasifique mal, no solo el 10349.
 _DEFAULT_TIF = "DAY"
+# Los stops protectores tienen que sobrevivir al cierre: con DAY, IBKR los
+# cancelaba a las 16:00 ET y la posicion quedaba sin proteccion hasta que algun
+# ciclo los repusiera (y con halt activo, nunca: 2026-09-30 a 2026-10-25).
+_STOP_TIF = "GTC"
 
 
 def _is_spurious_cancel(trade) -> bool:
@@ -437,6 +441,26 @@ class IBKRBroker:
                 return True
         return False
 
+    async def get_pending_market_orders(self, symbol: str, side: str) -> "list[int]":
+        """Ids de ordenes no-STOP vivas en IBKR para `symbol` y `side` (incluye
+        las encoladas fuera de horario). Sirve para no duplicar una orden de
+        cierre que ya esta en camino."""
+        ib_symbol = _to_ib_symbol(symbol)
+        return [
+            trade.order.orderId
+            for trade in await self.ib.reqAllOpenOrdersAsync()
+            if trade.contract.symbol == ib_symbol
+            and trade.order.action == side
+            and trade.order.orderType not in ("STOP", "STP")
+            and trade.orderStatus.status not in OrderStatus.DoneStates
+        ]
+
+    async def cancel_all_open_orders(self) -> None:
+        """Cancela todas las ordenes vivas de la cuenta (incluidas las de otras
+        sesiones/clientes) via reqGlobalCancel."""
+        self.ib.reqGlobalCancel()
+        await asyncio.sleep(2)
+
     async def get_live_protective_stops(self, symbol: str, side: str = "SELL") -> "list[int]":
         """Ids de todas las ordenes STOP protectoras vivas para `symbol`,
         consultando IBKR directamente via reqAllOpenOrdersAsync.
@@ -529,7 +553,7 @@ class IBKRBroker:
         if not contract.conId:
             return None
         stop = StopOrder(side, abs(quantity), stop_price)
-        stop.tif = _DEFAULT_TIF
+        stop.tif = _STOP_TIF
         self.ib.placeOrder(contract, stop)
         return stop.orderId
 
@@ -549,6 +573,25 @@ class IBKRBroker:
             return {"filled_qty": 0.0, "avg_fill_price": None}
         _status, filled, avg_price, _remaining = result
         return {"filled_qty": filled or 0.0, "avg_fill_price": avg_price}
+
+    async def close_position_direct(self, symbol: str, ibkr_quantity: float) -> dict:
+        """Cierra una posición en IBKR sin pasar por place_order ni rules_engine.
+        ibkr_quantity > 0 → long → SELL. ibkr_quantity < 0 → short → BUY."""
+        if ibkr_quantity == 0:
+            return {"filled_qty": 0.0, "avg_fill_price": None}
+        side = "SELL" if ibkr_quantity > 0 else "BUY"
+        contract = Stock(_to_ib_symbol(symbol), "SMART", "USD")
+        await self.ib.qualifyContractsAsync(contract)
+        if not contract.conId:
+            return {"filled_qty": 0.0, "avg_fill_price": None}
+        order = MarketOrder(side, abs(ibkr_quantity))
+        order.tif = _DEFAULT_TIF
+        trade = self.ib.placeOrder(contract, order)
+        result = await self._wait_for_fill(trade.order.orderId, timeout=30.0)
+        if result is None:
+            return {"filled_qty": 0.0, "avg_fill_price": None}
+        _status, filled, avg_price, _remaining = result
+        return {"side": side, "filled_qty": filled or 0.0, "avg_fill_price": avg_price}
 
     async def close_orphan_long_position(self, symbol: str, quantity: float) -> dict:
         """Cierra una posición larga huérfana con SELL MKT sin pasar por
@@ -741,7 +784,7 @@ class IBKRBroker:
 
             protective_side = Side.SELL if order.side == Side.BUY else Side.BUY
             stop = StopOrder(protective_side.value, order.quantity, order.stop_loss_price)
-            stop.tif = _DEFAULT_TIF
+            stop.tif = _STOP_TIF
             stop.parentId = parent.orderId
             stop.transmit = True
             stop_trade = self.ib.placeOrder(contract, stop)

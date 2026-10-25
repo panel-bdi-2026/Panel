@@ -1847,3 +1847,93 @@ def test_reconcile_orphan_keeps_going_when_one_symbol_fails(monkeypatch):
     # El que sigue a BBB en el orden de iteracion tiene que haberse adoptado
     # igual: antes, la excepcion de BBB mataba la pasada entera.
     assert fund.owned_quantity("CCC") == 10.0
+
+
+# ---------------------------------------------------------------------------
+# reconcile_orphan no debe duplicar cierres: entre 2026-10-02 y 10-05 cada
+# reconexion nocturna encolaba OTRA BUY MKT de 1916 PSX sobre las anteriores.
+# ---------------------------------------------------------------------------
+
+class _OrphanPos:
+    def __init__(self, symbol, quantity, avg_cost=100.0):
+        self.symbol = symbol
+        self.quantity = quantity
+        self.avg_cost = avg_cost
+        self.market_price = avg_cost
+        self.unrealized_pnl = None
+
+
+def _setup_orphan(monkeypatch, positions, pending):
+    main_module.funds_store.create("Fondo", 1_000, auto_trading_enabled=True)
+    monkeypatch.setattr(main_module.rules_engine.config, "allow_short_selling", False)
+
+    async def fake_get_positions():
+        return positions
+
+    async def fake_pending(symbol, side):
+        return pending.get((symbol, side), [])
+
+    monkeypatch.setattr(main_module.broker, "get_positions", fake_get_positions)
+    monkeypatch.setattr(main_module.broker, "get_pending_market_orders", fake_pending)
+    monkeypatch.setattr(main_module.audit, "was_submitted_by_system", lambda sym: True)
+
+
+def test_reconcile_orphan_short_skips_close_when_buy_already_pending(monkeypatch):
+    _setup_orphan(monkeypatch, [_OrphanPos("PSX", -1912)], {("PSX", "BUY"): [4379582]})
+
+    async def fail_close(symbol, quantity):
+        raise AssertionError("no debe encolar otra BUY si ya hay una pendiente")
+
+    monkeypatch.setattr(main_module.broker, "close_short_position", fail_close)
+    asyncio.run(main_module._reconcile_unfilled_on_startup())
+
+
+def test_reconcile_orphan_short_closes_when_nothing_pending(monkeypatch):
+    _setup_orphan(monkeypatch, [_OrphanPos("PSX", -1912)], {})
+    calls = []
+
+    async def fake_close(symbol, quantity):
+        calls.append((symbol, quantity))
+        return {"filled_qty": quantity, "avg_fill_price": 250.0}
+
+    monkeypatch.setattr(main_module.broker, "close_short_position", fake_close)
+    asyncio.run(main_module._reconcile_unfilled_on_startup())
+    assert calls == [("PSX", 1912)]
+
+
+def test_reconcile_orphan_over_budget_skips_close_when_sell_already_pending(monkeypatch):
+    _setup_orphan(monkeypatch, [_OrphanPos("QLYS", 2898, avg_cost=176.9)], {("QLYS", "SELL"): [1]})
+
+    async def fail_close(symbol, quantity):
+        raise AssertionError("no debe encolar otra SELL si ya hay una pendiente")
+
+    monkeypatch.setattr(main_module.broker, "close_orphan_long_position", fail_close)
+    asyncio.run(main_module._reconcile_unfilled_on_startup())
+
+
+def test_health_alert_reminds_persistent_issue_every_24h(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    sent = []
+    monkeypatch.setattr(main_module, "send_alert", lambda s, subject, body: sent.append(subject))
+    monkeypatch.setattr(main_module, "_health_alerting", set())
+    monkeypatch.setattr(main_module, "_health_alert_last_sent", {})
+    monkeypatch.setattr(main_module, "signal_cache", {})
+    monkeypatch.setitem(main_module.state, "connected", True)
+    monkeypatch.setitem(main_module.state, "halted", True)
+
+    asyncio.run(main_module._run_health_alert_cycle())
+    assert sent == ["⚠ Alerta: trading detenido (halted)"]
+
+    asyncio.run(main_module._run_health_alert_cycle())
+    assert len(sent) == 1, "no debe repetir antes de 24h"
+
+    issue = "trading detenido (halted)"
+    main_module._health_alert_last_sent[issue] = datetime.now(timezone.utc) - timedelta(hours=25)
+    asyncio.run(main_module._run_health_alert_cycle())
+    assert sent[-1] == "⚠ Recordatorio: trading detenido (halted)"
+
+    main_module.state["halted"] = False
+    asyncio.run(main_module._run_health_alert_cycle())
+    assert sent[-1] == "✓ Resuelto: trading detenido (halted)"
+    assert issue not in main_module._health_alert_last_sent
