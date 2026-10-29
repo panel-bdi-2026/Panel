@@ -1,0 +1,14 @@
+# Runtime/generado — no versionar
+# data/: cache local de precios (Tiingo parquet) + config cacheada
+data/
+# scripts/results/: outputs de corridas de backtest/optimización (excepto los
+# ya trackeados explícitamente antes de este .gitignore, que se preservan)
+scripts/results/
+state.db
+state.db-shm
+state.db-wal
+state.json
+error.log
+*.pyc
+__pycache__/
+.venv/

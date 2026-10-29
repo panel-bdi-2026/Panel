@@ -1,0 +1,254 @@
+[
+  {
+    "strategy": "opportunistic",
+    "macd_days": 3,
+    "opp_rsi_max": 60.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 1873,
+      "dsr": 30.4,
+      "cumret": 363.5,
+      "exposure": 157.3
+    },
+    "test": {
+      "n_trades": 706,
+      "dsr": 91.9,
+      "cumret": 485.8,
+      "exposure": 144.8
+    }
+  },
+  {
+    "strategy": "opportunistic",
+    "macd_days": 3,
+    "opp_rsi_max": 65.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 2008,
+      "dsr": 33.6,
+      "cumret": 379.3,
+      "exposure": 158.4
+    },
+    "test": {
+      "n_trades": 787,
+      "dsr": 83.2,
+      "cumret": 487.5,
+      "exposure": 165.2
+    }
+  },
+  {
+    "strategy": "opportunistic",
+    "macd_days": 3,
+    "opp_rsi_max": 70.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 2044,
+      "dsr": 29.8,
+      "cumret": 360.2,
+      "exposure": 170.5
+    },
+    "test": {
+      "n_trades": 814,
+      "dsr": 82.7,
+      "cumret": 495.6,
+      "exposure": 171.1
+    }
+  },
+  {
+    "strategy": "opportunistic",
+    "macd_days": 3,
+    "opp_rsi_max": 75.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 2051,
+      "dsr": 29.1,
+      "cumret": 343.7,
+      "exposure": 169.5
+    },
+    "test": {
+      "n_trades": 824,
+      "dsr": 78.0,
+      "cumret": 460.9,
+      "exposure": 177.5
+    }
+  },
+  {
+    "strategy": "opportunistic",
+    "macd_days": 5,
+    "opp_rsi_max": 60.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 2221,
+      "dsr": 29.4,
+      "cumret": 369.2,
+      "exposure": 173.3
+    },
+    "test": {
+      "n_trades": 810,
+      "dsr": 83.2,
+      "cumret": 503.5,
+      "exposure": 164.1
+    }
+  },
+  {
+    "strategy": "opportunistic",
+    "macd_days": 5,
+    "opp_rsi_max": 65.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 2320,
+      "dsr": 22.5,
+      "cumret": 304.9,
+      "exposure": 203.0
+    },
+    "test": {
+      "n_trades": 868,
+      "dsr": 67.1,
+      "cumret": 449.9,
+      "exposure": 193.4
+    }
+  },
+  {
+    "strategy": "opportunistic",
+    "macd_days": 5,
+    "opp_rsi_max": 70.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 2341,
+      "dsr": 18.2,
+      "cumret": 257.0,
+      "exposure": 242.2
+    },
+    "test": {
+      "n_trades": 890,
+      "dsr": 70.0,
+      "cumret": 471.3,
+      "exposure": 193.6
+    }
+  },
+  {
+    "strategy": "opportunistic",
+    "macd_days": 5,
+    "opp_rsi_max": 75.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 2349,
+      "dsr": 18.5,
+      "cumret": 257.1,
+      "exposure": 233.2
+    },
+    "test": {
+      "n_trades": 896,
+      "dsr": 65.1,
+      "cumret": 437.1,
+      "exposure": 201.5
+    }
+  },
+  {
+    "strategy": "opportunistic",
+    "macd_days": 7,
+    "opp_rsi_max": 60.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 2466,
+      "dsr": 28.6,
+      "cumret": 428.9,
+      "exposure": 208.3
+    },
+    "test": {
+      "n_trades": 896,
+      "dsr": 73.6,
+      "cumret": 515.4,
+      "exposure": 187.3
+    }
+  },
+  {
+    "strategy": "opportunistic",
+    "macd_days": 7,
+    "opp_rsi_max": 65.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 2537,
+      "dsr": 27.6,
+      "cumret": 431.1,
+      "exposure": 228.2
+    },
+    "test": {
+      "n_trades": 930,
+      "dsr": 64.9,
+      "cumret": 457.7,
+      "exposure": 203.5
+    }
+  },
+  {
+    "strategy": "opportunistic",
+    "macd_days": 7,
+    "opp_rsi_max": 70.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 2542,
+      "dsr": 25.6,
+      "cumret": 426.7,
+      "exposure": 264.2
+    },
+    "test": {
+      "n_trades": 937,
+      "dsr": 66.6,
+      "cumret": 459.0,
+      "exposure": 204.0
+    }
+  },
+  {
+    "strategy": "opportunistic",
+    "macd_days": 7,
+    "opp_rsi_max": 75.0,
+    "cross_sectional_gates": true,
+    "invest_idle": false,
+    "risk_per_trade_pct": 2.0,
+    "max_position_pct": 30,
+    "train": {
+      "n_trades": 2543,
+      "dsr": 24.0,
+      "cumret": 402.8,
+      "exposure": 287.3
+    },
+    "test": {
+      "n_trades": 935,
+      "dsr": 68.9,
+      "cumret": 462.8,
+      "exposure": 202.6
+    }
+  }
+]

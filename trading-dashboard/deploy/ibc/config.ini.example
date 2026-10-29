@@ -1,0 +1,32 @@
+; Plantilla de config.ini para IBC (https://github.com/IbcAlpha/IBC).
+; Copia este archivo a /opt/ibc/config.ini en el servidor y completa tus
+; credenciales ahi -- esa copia con datos reales NUNCA debe subirse a git
+; (vive solo en el servidor, fuera de este repo).
+;
+; Los nombres de campos pueden variar levemente entre versiones de IBC --
+; confirma contra el config.ini de ejemplo que viene dentro del zip que
+; descargues desde https://github.com/IbcAlpha/IBC/releases/latest.
+
+; Credenciales de tu cuenta IBKR (paper o live, segun TradingMode abajo).
+IbLoginId=
+IbPassword=
+
+; "paper" para probar primero (recomendado). Cambiar a "live" solo cuando
+; estes listo, en paralelo con LIVE_CONFIRM en el .env del backend.
+TradingMode=paper
+
+; Mas seguro: rechazar conexiones API entrantes que no esten en la lista de
+; IPs confiables (TrustedTwsApiClientIPs) en vez de aceptarlas o preguntar.
+AcceptIncomingConnectionAction=reject
+
+; El backend corre en la misma VM que IB Gateway, asi que la unica IP que
+; necesita poder conectarse a la API es localhost.
+TrustedTwsApiClientIPs=127.0.0.1
+
+; Que hacer si ya hay otra sesion abierta con las mismas credenciales al
+; reiniciar (pasa en el reinicio forzado semanal de IBKR, domingo ~1am ET).
+ExistingSessionDetectedAction=primary
+
+; Revisa el userguide.md de tu version de IBC para mas opciones (puerto de
+; la API, ReadOnlyApi, horarios de cierre/reinicio automatico, etc.) -- esta
+; plantilla cubre solo lo esencial para arrancar.

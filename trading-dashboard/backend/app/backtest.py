@@ -1,0 +1,1863 @@
+from __future__ import annotations
+
+import math
+import random
+import statistics
+import time
+from collections import Counter
+from datetime import timedelta
+
+import pandas as pd
+
+from .indicators import (
+    atr,
+    bollinger_percent_b,
+    macd,
+    market_regime_ok,
+    momentum_12_1,
+    pct_from_high,
+    rate_of_change,
+    rsi,
+    sma,
+)
+from .market_data import MarketDataError, get_daily_bars, is_bars_cached
+from .models import BacktestSummary, BacktestTrade, EquityCurvePoint, WalkForwardFold, WalkForwardResult
+from .rules import RulesConfig
+from .screener_config import GROWTH_TICKERS, ScreenerConfig
+from .sector_strength import sector_relative_strength_series
+from .sectors import SECTOR_ETF, get_sector
+
+# Misma ventana fija que _CONTEXT_MOMENTUM_3M_DAYS en strategies/common.py
+# (el momentum "de contexto" que usa Oportunista para su propio
+# sector_relative_strength) y _MOMENTUM_3M_DAYS en sector_strength.py: se
+# duplica el valor en vez de importarlo porque este modulo no puede depender
+# de strategies/ sin arriesgar el mismo ciclo de import ya documentado en
+# sector_strength.py (strategies/common.py -> strategies/__init__.py ->
+# screener.py).
+_OPPORTUNISTIC_CONTEXT_MOMENTUM_DAYS = 63
+
+
+class BacktestError(RuntimeError):
+    pass
+
+
+def _backtest_universe(cfg: ScreenerConfig) -> list[str]:
+    """cfg.universe sin los simbolos de GROWTH_TICKERS (ver el comentario de
+    look-ahead de inclusion en screener_config.py): esos tickers se eligieron
+    buscando hoy nombres que ya tuvieron una corrida fuerte reciente, asi que
+    dejarlos en el universo de un backtest historico infla el resultado con
+    ganadores que solo estan ahi porque ya se sabe que ganaron. Se filtra por
+    membership (no por orden de la lista original) para que tambien excluya
+    estos simbolos si el usuario los agrego a mano a un universe custom."""
+    return [s for s in cfg.universe if s not in GROWTH_TICKERS]
+
+
+def _band_score_series(value: pd.Series, center: float, half_range: float) -> pd.Series:
+    """Vectorizado, misma formula que band_score en strategies/common.py (no
+    se importa de ahi por el mismo motivo que _OPPORTUNISTIC_CONTEXT_MOMENTUM_DAYS:
+    evitar el ciclo de import documentado en sector_strength.py)."""
+    half_range = max(1e-9, half_range)
+    return 100.0 * (1.0 - (value - center).abs().div(half_range).clip(upper=1.0))
+
+
+def _effective_slippage_pct(
+    base_slippage_pct: float, dollar_volume: float, threshold: float, multiplier: float
+) -> float:
+    """slippage_pct base, multiplicado si dollar_volume (volumen promedio en
+    USD del dia de ESTE fill puntual) esta por debajo de threshold. threshold
+    <= 0 deshabilita (siempre devuelve el base). Un dollar_volume NaN (sin
+    suficiente historia todavia) tampoco aplica el multiplicador, mismo
+    criterio de "sin dato no bloquea/no penaliza" que el resto de los gates
+    del backtest."""
+    if threshold <= 0 or pd.isna(dollar_volume) or dollar_volume >= threshold:
+        return base_slippage_pct
+    return base_slippage_pct * multiplier
+
+
+def _trailing_stop_price(
+    current_stop: float,
+    price_today: float,
+    atr_today: float,
+    trail_multiplier: float,
+    entry_price: float,
+    activation_pct: float,
+) -> float:
+    """Replica _check_fund_trailing_stop (main.py): sube (nunca baja) el
+    stop-loss a candidate_stop = precio_de_hoy - ATR_de_hoy * trail_multiplier.
+
+    Solo actua si el precio ya supero entry_price * (1 + activation_pct/100)
+    (umbral de activacion): esto evita que el ruido normal en los primeros dias
+    del trade suba el stop antes de que la tesis se confirme.
+
+    Se llama con el cierre del dia DESPUES de chequear el stop existente contra
+    el minimo intradiario de ese mismo dia: el stop nuevo recien protege a
+    partir del dia siguiente, nunca retroactivamente."""
+    if activation_pct > 0 and price_today < entry_price * (1 + activation_pct / 100):
+        return current_stop
+    candidate_stop = price_today - trail_multiplier * atr_today
+    return max(current_stop, candidate_stop)
+
+
+_EULER_MASCHERONI = 0.5772156649015329
+
+
+def _deflated_sharpe_ratio_pct(daily_returns: list[float], num_trials: int) -> float | None:
+    """Probabilistic/Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014):
+    probabilidad (0-100) de que el Sharpe ratio verdadero (no observado) sea
+    mayor a cero, ajustada por dos sesgos que el sharpe_ratio crudo ignora:
+
+    1. No-normalidad de daily_returns (skewness/kurtosis): un sharpe_ratio
+       identico es menos confiable si viene de una distribucion con colas
+       pesadas o asimetria negativa (formula de la varianza del estimador de
+       Sharpe de Mertens 2002, el mismo ingrediente del Probabilistic Sharpe
+       Ratio).
+    2. Sesgo de seleccion de haber probado num_trials variantes de
+       parametros/estrategias antes de quedarse con esta (ver
+       ScreenerConfig.deflated_sharpe_num_trials): el umbral contra el que se
+       compara el sharpe_ratio observado sube con la cantidad de pruebas (el
+       maximo esperado entre num_trials sharpes con skill verdadero cero
+       crece con num_trials), penalizando el "probar muchas configuraciones y
+       quedarse con la que mejor backtest dio".
+
+    Usa momentos POBLACIONALES (entre n, no n-1) para mean/std/skew/kurtosis
+    de daily_returns, consistentes entre si (misma convencion que la formula
+    de Mertens). num_trials <= 1 deja el umbral de comparacion en 0 (sin
+    ajuste por multiples pruebas, equivalente al Probabilistic Sharpe Ratio
+    puro contra un benchmark de Sharpe cero).
+
+    None si no hay variacion en daily_returns (desvio poblacional 0, ej.
+    retornos diarios todos iguales) o si la varianza del estimador de Sharpe
+    resulta no positiva (kurtosis extrema en una muestra muy chica): en
+    ambos casos el cociente no esta definido, mismo criterio de "no
+    representable, no inventar un numero" que sharpe_ratio con desvio 0.
+    """
+    n = len(daily_returns)
+    mean_r = statistics.mean(daily_returns)
+    variance_pop = sum((r - mean_r) ** 2 for r in daily_returns) / n
+    std_pop = variance_pop**0.5
+    if std_pop == 0:
+        return None
+
+    sr_hat = mean_r / std_pop
+    skew = (sum((r - mean_r) ** 3 for r in daily_returns) / n) / std_pop**3
+    kurtosis = (sum((r - mean_r) ** 4 for r in daily_returns) / n) / std_pop**4
+
+    sr_variance = (1 - skew * sr_hat + (kurtosis - 1) / 4 * sr_hat**2) / (n - 1)
+    if sr_variance <= 0:
+        return None
+    sr_std = sr_variance**0.5
+
+    z = statistics.NormalDist()
+    if num_trials > 1:
+        benchmark_sr = sr_std * (
+            (1 - _EULER_MASCHERONI) * z.inv_cdf(1 - 1 / num_trials)
+            + _EULER_MASCHERONI * z.inv_cdf(1 - 1 / (num_trials * math.e))
+        )
+    else:
+        benchmark_sr = 0.0
+
+    return z.cdf((sr_hat - benchmark_sr) / sr_std) * 100
+
+
+def _trade_daily_marks(
+    bars: pd.DataFrame, entry_idx: int, exit_idx: int, entry_fill: float, ret_pct: float
+) -> dict:
+    """Factor de retorno acumulado dia por dia de una operacion individual,
+    usando el cierre real de cada dia que estuvo abierta (no una interpolacion
+    lineal entre 0% y el retorno final). El ultimo dia se corrige para que el
+    factor coincida exactamente con el retorno final ya neto de
+    comision/slippage (ret_pct) en vez del cierre crudo, que no refleja esos
+    costos ni un eventual fill de stop-loss en el minimo intradiario."""
+    close = bars["Close"]
+    marks = {bars.index[i]: float(close.iloc[i]) / entry_fill for i in range(entry_idx, exit_idx + 1)}
+    marks[bars.index[exit_idx]] = 1 + ret_pct / 100
+    return marks
+
+
+def _cross_sectional_score_panel(raw_components: dict[str, pd.DataFrame], weights: dict[str, float]) -> pd.DataFrame:
+    """Replica, dia por dia, la misma logica de apply_cross_sectional_normalization
+    (ver scoring.py) que usa el scan en vivo: en vez de un percentil por
+    simbolo en un solo instante, calcula un percentil por simbolo en CADA
+    fecha de `raw_components`, contra el resto de simbolos que tengan un dato
+    valido ese mismo dia -- no contra el universo de HOY, que no es el
+    universo que realmente estaba "vivo" en cada momento historico.
+
+    raw_components: {nombre_de_score_component: DataFrame fecha x simbolo},
+    ya con los mismos defaults para dato faltante que aplica la version en
+    vivo (ver _momentum_raw_components / _opportunistic_raw_components). Un
+    NaN que sobrevive hasta aca significa "todavia no hay suficiente historia
+    para este simbolo en esta fecha" (excluye a ese simbolo del ranking
+    cross-sectional ese dia), no "dato faltante con default" -- igual que
+    evaluate_symbol no devuelve señal en absoluto sin esa historia minima.
+
+    Devuelve un DataFrame fecha x simbolo con el score final (suma pesada de
+    percentiles 0-100 por componente).
+    """
+    score_df = None
+    for key, weight in weights.items():
+        raw_df = raw_components[key]
+        ranks = raw_df.rank(axis=1, method="average")
+        n_valid = raw_df.notna().sum(axis=1)
+        denom = (n_valid - 1).where(n_valid > 1)  # NaN si hay <2 simbolos validos ese dia: percentil indefinido
+        pct = ranks.sub(1).div(denom, axis=0) * 100
+        contribution = weight * pct
+        score_df = contribution if score_df is None else score_df + contribution
+    return score_df
+
+
+def _momentum_raw_components(
+    bars_by_symbol: dict[str, pd.DataFrame], cfg: ScreenerConfig, bench_bars: pd.DataFrame, history_days: int
+) -> dict[str, pd.DataFrame]:
+    """Componentes crudos (sin normalizar, historia completa) del score de
+    Momentum para cada simbolo, replicando uno a uno los score_components de
+    evaluate_symbol (ver screener.py) pero como Series dia por dia en vez de
+    un solo iloc[-1]. Insumo de _cross_sectional_score_panel."""
+    benchmark_roc = rate_of_change(bench_bars["Close"], cfg.momentum_lookback_days)
+
+    keys = (
+        "relative_strength", "momentum_12_1", "trend",
+        "rsi", "macd", "bollinger", "sector_relative_strength",
+    )
+    per_symbol: dict[str, dict[str, pd.Series]] = {key: {} for key in keys}
+
+    for symbol, bars in bars_by_symbol.items():
+        close = bars["Close"]
+        sma_fast_s = sma(close, cfg.sma_fast)
+        sma_slow_s = sma(close, cfg.sma_slow)
+        roc_3m = rate_of_change(close, cfg.momentum_lookback_days)
+        roc_12_1 = momentum_12_1(close, cfg.momentum_12_1_lookback_days, cfg.momentum_12_1_skip_days)
+        rsi_s = rsi(close, cfg.rsi_period)
+        _, _, macd_hist_s = macd(close)
+        bollinger_s = bollinger_percent_b(close)
+        macd_pct_s = (macd_hist_s / close * 100).where(close != 0)
+        aligned_bench_roc = benchmark_roc.reindex(close.index, method="ffill")
+
+        # Misma puerta que evaluate_symbol (mas atr, que no es parte del
+        # score: se chequea aparte en _simulate_symbol antes de usarlo para
+        # el stop-loss). Sin esto, un simbolo con poca historia entraria al
+        # ranking cross-sectional con momentum/tendencia indefinidos.
+        valid = ~(sma_slow_s.isna() | roc_3m.isna() | roc_12_1.isna())
+
+        # Fuerza continua de la tendencia, mismo calculo que screener.py:
+        # promedio de cuanto el precio esta por encima de la SMA rapida y
+        # cuanto la SMA rapida esta por encima de la SMA lenta, ambos en %.
+        # Si falta alguna SMA (NaN o cero) se cae al viejo +-10 fijo, igual
+        # que el fallback en evaluate_symbol.
+        trend_ok = (close > sma_fast_s) & (sma_fast_s > sma_slow_s)
+        trend_fallback = pd.Series(-10.0, index=close.index)
+        trend_fallback[trend_ok] = 10.0
+        trend_strength_pct = (
+            (close - sma_fast_s) / sma_fast_s.where(sma_fast_s != 0) * 100
+            + (sma_fast_s - sma_slow_s) / sma_slow_s.where(sma_slow_s != 0) * 100
+        ) / 2
+        trend_component = trend_strength_pct.fillna(trend_fallback)
+
+        sector_rel = sector_relative_strength_series(symbol, roc_3m, history_days)
+        sector_component = sector_rel.fillna(0.0) if sector_rel is not None else pd.Series(0.0, index=close.index)
+
+        per_symbol["relative_strength"][symbol] = (roc_3m - aligned_bench_roc).where(valid)
+        per_symbol["momentum_12_1"][symbol] = roc_12_1.where(valid)
+        per_symbol["trend"][symbol] = trend_component.where(valid)
+        per_symbol["rsi"][symbol] = (rsi_s - 50).where(valid)
+        per_symbol["macd"][symbol] = macd_pct_s.fillna(0.0).where(valid)
+        per_symbol["bollinger"][symbol] = bollinger_s.fillna(0.5).where(valid)
+        per_symbol["sector_relative_strength"][symbol] = sector_component.where(valid)
+
+    return {key: pd.concat(series_dict, axis=1) for key, series_dict in per_symbol.items()}
+
+
+def _simulate_symbol(
+    symbol: str,
+    bars: pd.DataFrame,
+    cfg: ScreenerConfig,
+    score_series: pd.Series,
+    benchmark_regime_ok: pd.Series,
+    marks_by_trade_id: dict | None = None,
+    rules_config: RulesConfig | None = None,
+) -> list[BacktestTrade]:
+    """Simula la entrada/salida de Momentum sobre historia, score-driven (ver
+    _cross_sectional_score_panel) en vez del antiguo AND booleano de filtros
+    tecnicos: entra cuando score_series supera cfg.backtest_score_entry_threshold
+    Y, ademas, el regimen de mercado, la proximidad al maximo de 52 semanas, la
+    liquidez minima, la tendencia (trend_ok) y el RSI (rsi_ok) lo permiten --
+    estos cinco NO son parte del score (son gates booleanos puros igual que en
+    el scan en vivo, ver screener.py), asi que se siguen chequeando aparte.
+    trend_ok/rsi_ok en particular replican el gate que en vivo separa la banda
+    "pasa filtros" (score 50-100) de "no pasa" (0-49, ver
+    apply_cross_sectional_normalization): sin este gate aca, el backtest podia
+    simular entradas en simbolos que rompen tendencia o tienen el RSI fuera de
+    rango pero igual sacan un score compuesto alto por sus otros componentes,
+    algo que el motor de auto-trading en vivo practicamente nunca haria (esa
+    combinacion cae del lado "no pasa", que rara vez cruza el umbral de
+    entrada). Sale por stop-loss (basado en el ATR del
+    dia de la senal, igual que la sugerencia en vivo, y si cfg.trailing_stop_enabled
+    el stop sube dia a dia con el ATR de cada dia en posicion -- nunca baja --
+    igual que _check_fund_trailing_stop en main.py), por tiempo maximo en la
+    posicion, o por ruptura de tendencia (el cierre cae por debajo de la SMA
+    rapida) -- igual que _check_fund_exit en main.py, que es la UNICA salida
+    que el motor de auto-trading en vivo ejecuta hoy. No se modela una salida
+    por score porque en vivo no existe: haria falta un rescan cross-sectional
+    de todo el universo en cada chequeo de salida (caro, y ademas el monitor
+    de salida corre independiente del scan periodico, ver
+    _run_auto_exit_monitor_cycle en main.py), asi que modelarla aca solo
+    inflaria el backtest con una mecanica que la cuenta en vivo nunca
+    ejecuta. Una sola posicion por simbolo a la vez.
+
+    Como el score recien se conoce al cierre del dia que lo confirma, el fill
+    de entrada se simula a la apertura del dia siguiente (no al cierre del
+    dia de la senal, que seria mirar al futuro). El stop-loss se chequea
+    contra el minimo intradiario (no el cierre): si el precio perfora el stop
+    durante el dia, en la realidad se sale ahi (o peor, si abre con un gap por
+    debajo del stop), no se espera al cierre. Tambien se restan comision y
+    slippage estimados, para no inflar los retornos respecto a la operatoria
+    real.
+
+    `rules_config`, si se pasa, replica el mismo ajuste de _try_auto_trade_entry
+    en main.py: si el stop-loss implicado por el ATR excede
+    rules_config.max_stop_loss_pct, se tensa al tope en vez de simular la
+    entrada con el stop ancho original. Sin esto, el backtest no reflejaba una
+    decision que el motor de auto-trading en vivo SI toma, sesgando tanto la
+    frecuencia de stop-outs simulada como (indirectamente, via stop_loss_pct)
+    el sizing por riesgo de _risk_based_trade_weight.
+    """
+    close = bars["Close"]
+    atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
+    from_high_s = pct_from_high(close, 252)
+    sma_fast_s = sma(close, cfg.sma_fast)
+    # sma_slow_s y rsi_s: gates de calidad de la entrada (trend_ok/rsi_ok),
+    # los mismos que el scan en vivo exige para que un simbolo pase a la
+    # banda "pasa filtros" del score (ver screener.py/apply_cross_sectional_
+    # normalization). Sin este gate aca, el backtest podia simular una
+    # entrada en un simbolo que rompe tendencia o tiene el RSI fuera de rango
+    # pero igual saca un score alto por sus otros componentes -- algo que en
+    # vivo el motor de auto-trading practicamente nunca haria, porque esa
+    # combinacion cae en la banda "no pasa" (0-49) y rara vez cruza el umbral
+    # de entrada (ver la banda 50-100/0-49 en screener.py).
+    sma_slow_s = sma(close, cfg.sma_slow)
+    rsi_s = rsi(close, cfg.rsi_period)
+    # Mismo criterio de liquidez que el scan en vivo (ver screener.py): volumen
+    # promedio en DOLARES de los ultimos 20 dias, no en cantidad de acciones.
+    dollar_volume_s = bars["Volume"].rolling(20, min_periods=1).mean() * close
+
+    notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
+
+    trades: list[BacktestTrade] = []
+    in_position = False
+    entry_price = 0.0
+    entry_idx = 0
+    entry_date = None
+    stop_price = 0.0
+    initial_stop_price = 0.0  # stop al momento de la entrada, ya tensado si aplico -- nunca lo mueve el trailing
+    entry_atr = 0.0
+    pending_entry_atr = None  # ATR del dia en que se detecto la senal (ver mas abajo)
+
+    # Si el filtro de cercania al maximo de 52 semanas esta activo, incluye
+    # 252 (igual que from_high_s, ver pct_from_high): sin esto, el primer
+    # tramo del backtest podia evaluar near_high_ok con fh todavia NaN (no
+    # hay 252 dias previos), y un NaN se trata como "sin dato, no bloquea" --
+    # dejaba pasar entradas en ese tramo inicial sin que el filtro las
+    # hubiera evaluado de verdad. Con el filtro apagado (near_high_ok siempre
+    # True) no hace falta esperar esos 252 dias: nada en la entrada depende
+    # de fh.
+    near_high_min_days = 252 if cfg.near_high_filter_enabled else 0
+    start_idx = (
+        max(
+            cfg.sma_slow,
+            cfg.momentum_lookback_days,
+            cfg.momentum_12_1_lookback_days,
+            cfg.atr_period,
+            near_high_min_days,
+        )
+        + 1
+    )
+    for i in range(start_idx, len(bars)):
+        date = bars.index[i]
+        price = float(close.iloc[i])
+        low_price = float(bars["Low"].iloc[i])
+        open_price = float(bars["Open"].iloc[i])
+
+        if pending_entry_atr is not None:
+            # La senal se detecto con el cierre del dia anterior: el score
+            # recien se conoce una vez cerrado ese dia, asi que en la
+            # realidad la orden se coloca al dia siguiente. Entrar al cierre
+            # del mismo dia de la senal seria mirar al futuro; el fill
+            # realista es la apertura de este dia.
+            in_position = True
+            entry_price = open_price
+            entry_idx = i
+            entry_date = date
+            entry_atr = pending_entry_atr
+            stop_price = entry_price - cfg.stop_loss_atr_multiplier * pending_entry_atr
+            # Mismo ajuste que _try_auto_trade_entry: si el stop implicado por
+            # el ATR excede el riesgo maximo permitido, se tensa al tope en
+            # vez de simular la entrada con el stop ancho original.
+            if rules_config is not None and entry_price > 0 and stop_price > 0:
+                implied_stop_pct = (entry_price - stop_price) / entry_price * 100
+                if implied_stop_pct > rules_config.max_stop_loss_pct:
+                    stop_price = entry_price * (1 - rules_config.max_stop_loss_pct / 100)
+            initial_stop_price = stop_price
+            pending_entry_atr = None
+            continue
+
+        if in_position:
+            held_days = i - entry_idx
+            hit_stop = low_price <= stop_price
+            timed_out = held_days >= cfg.max_holding_days
+            sma_fast_today = sma_fast_s.iloc[i]
+            trend_broke = not pd.isna(sma_fast_today) and price < sma_fast_today
+            if hit_stop or timed_out or trend_broke:
+                exit_reason = "stop_loss" if hit_stop else ("max_holding_days" if timed_out else "trend_break")
+                # Si hubo gap por debajo del stop, el fill realista es el open
+                # (peor que el stop); si no, se asume fill al precio del stop.
+                raw_exit_price = min(open_price, stop_price) if hit_stop else price
+
+                entry_slippage_pct = _effective_slippage_pct(
+                    cfg.slippage_pct,
+                    dollar_volume_s.iloc[entry_idx],
+                    cfg.low_liquidity_dollar_volume_threshold,
+                    cfg.low_liquidity_slippage_multiplier,
+                )
+                exit_slippage_pct = _effective_slippage_pct(
+                    cfg.slippage_pct,
+                    dollar_volume_s.iloc[i],
+                    cfg.low_liquidity_dollar_volume_threshold,
+                    cfg.low_liquidity_slippage_multiplier,
+                )
+                entry_fill = entry_price * (1 + entry_slippage_pct / 100)
+                exit_fill = raw_exit_price * (1 - exit_slippage_pct / 100)
+                commission_pct = (
+                    (2 * cfg.commission_per_trade_usd / notional_per_trade) * 100
+                    if notional_per_trade
+                    else 0.0
+                )
+                ret_pct = (exit_fill - entry_fill) / entry_fill * 100 - commission_pct
+
+                entry_atr_pct = round(entry_atr / entry_price * 100, 4) if entry_price else None
+                # stop_loss_pct se deriva de la distancia REAL entrada->stop
+                # inicial (initial_stop_price, ya tensado si rules_config lo
+                # exigio), no de stop_loss_atr_multiplier * entry_atr_pct a
+                # ciegas: sin tensar son matematicamente equivalentes, pero
+                # con el ajuste aplicado la formula vieja ignoraba el tope y
+                # reportaba un riesgo mayor al que la posicion realmente tomo
+                # (afecta tambien el sizing por riesgo de
+                # _risk_based_trade_weight, que consume este campo).
+                trade = BacktestTrade(
+                    symbol=symbol,
+                    entry_date=entry_date,
+                    exit_date=date,
+                    entry_price=round(entry_price, 2),
+                    exit_price=round(raw_exit_price, 2),
+                    return_pct=round(ret_pct, 2),
+                    exit_reason=exit_reason,
+                    entry_atr_pct=entry_atr_pct,
+                    stop_loss_pct=(
+                        round((entry_price - initial_stop_price) / entry_price * 100, 4) if entry_price else None
+                    ),
+                )
+                trades.append(trade)
+                if marks_by_trade_id is not None:
+                    marks_by_trade_id[id(trade)] = _trade_daily_marks(bars, entry_idx, i, entry_fill, ret_pct)
+                in_position = False
+            elif cfg.trailing_stop_enabled and not pd.isna(atr_s.iloc[i]):
+                trail_mult = cfg.trailing_stop_atr_multiplier if cfg.trailing_stop_atr_multiplier is not None else cfg.stop_loss_atr_multiplier
+                stop_price = _trailing_stop_price(stop_price, price, float(atr_s.iloc[i]), trail_mult, entry_price, cfg.trailing_stop_activation_pct)
+            continue
+
+        if pd.isna(atr_s.iloc[i]):
+            continue
+
+        score_today = score_series.get(date)
+        if score_today is None or pd.isna(score_today) or score_today < cfg.backtest_score_entry_threshold:
+            continue
+
+        regime_ok = bool(benchmark_regime_ok.iloc[i]) if i < len(benchmark_regime_ok) else True
+        fh = from_high_s.iloc[i]
+        near_high_ok = (
+            not cfg.near_high_filter_enabled
+            or pd.isna(fh)
+            or fh >= -cfg.max_pct_below_52w_high
+        )
+        liquidity_ok = dollar_volume_s.iloc[i] >= cfg.min_avg_dollar_volume
+
+        sma_slow_today = sma_slow_s.iloc[i]
+        trend_ok = not pd.isna(sma_slow_today) and price > sma_fast_s.iloc[i] > sma_slow_today
+        rsi_today = rsi_s.iloc[i]
+        rsi_ok = not pd.isna(rsi_today) and cfg.rsi_min <= rsi_today <= cfg.rsi_max
+
+        if regime_ok and near_high_ok and liquidity_ok and trend_ok and rsi_ok:
+            pending_entry_atr = atr_s.iloc[i]
+
+    return trades
+
+
+def _opportunistic_raw_components(
+    bars_by_symbol: dict[str, pd.DataFrame], cfg: ScreenerConfig, history_days: int
+) -> dict[str, pd.DataFrame]:
+    """Componentes crudos (sin normalizar, historia completa) del score de
+    Oportunista para cada simbolo, replicando uno a uno los score_components
+    de evaluate_symbol (ver strategies/opportunistic.py) pero como Series dia
+    por dia en vez de un solo iloc[-1]. Insumo de _cross_sectional_score_panel.
+
+    El componente sector_relative_strength usa la ventana fija de 63 dias
+    (_OPPORTUNISTIC_CONTEXT_MOMENTUM_DAYS, igual que ctx["momentum_3m_pct"] en
+    context_technicals), NO opp.momentum_lookback_days: esa ventana corta es
+    la que usa el componente "momentum" (señal de giro de corto plazo), una
+    ventana distinta con un proposito distinto en la misma estrategia."""
+    opp = cfg.opportunistic
+    keys = ("momentum", "volatility", "rsi_recovery", "room_to_grow", "macd_turn", "sector_relative_strength")
+    per_symbol: dict[str, dict[str, pd.Series]] = {key: {} for key in keys}
+
+    # Mismos centro/medio-rango que evaluate_symbol (ver opportunistic.py):
+    # banded, no monotonico, calculados una sola vez fuera del loop por
+    # simbolo ya que no dependen del simbolo.
+    volatility_mid = (opp.min_volatility_pct + opp.max_volatility_pct) / 2
+    volatility_half_range = max(1.0, (opp.max_volatility_pct - opp.min_volatility_pct) / 2)
+    room_to_grow_mid = (opp.min_pct_below_52w_high + opp.max_pct_below_52w_high) / 2
+    room_to_grow_half_range = max(1.0, (opp.max_pct_below_52w_high - opp.min_pct_below_52w_high) / 2)
+
+    for symbol, bars in bars_by_symbol.items():
+        close = bars["Close"]
+        atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
+        roc_short = rate_of_change(close, opp.momentum_lookback_days)
+        rsi_s = rsi(close, opp.rsi_period)
+        from_high_s = pct_from_high(close, 252)
+        _, _, macd_hist_s = macd(close)
+        macd_pct_s = (macd_hist_s / close * 100).where(close != 0)
+        roc_3m_context = rate_of_change(close, _OPPORTUNISTIC_CONTEXT_MOMENTUM_DAYS)
+
+        # Misma puerta que "ctx is not None" (atr/momentum de contexto de 63
+        # dias) mas roc_short no-NaN en evaluate_symbol; RSI nunca es NaN (ver
+        # indicators.py).
+        valid = ~(atr_s.isna() | roc_3m_context.isna() | roc_short.isna())
+
+        volatility_pct_s = (atr_s / close * 100).where(close != 0)
+        volatility_component = _band_score_series(volatility_pct_s, volatility_mid, volatility_half_range)
+        room_to_grow_raw = from_high_s.abs().fillna(0.0)
+        room_to_grow_component = _band_score_series(room_to_grow_raw, room_to_grow_mid, room_to_grow_half_range)
+
+        sector_rel = sector_relative_strength_series(symbol, roc_3m_context, history_days)
+        sector_component = sector_rel.fillna(0.0) if sector_rel is not None else pd.Series(0.0, index=close.index)
+
+        per_symbol["momentum"][symbol] = roc_short.where(valid)
+        per_symbol["volatility"][symbol] = volatility_component.where(valid)
+        per_symbol["rsi_recovery"][symbol] = (rsi_s - opp.rsi_min).where(valid)
+        per_symbol["room_to_grow"][symbol] = room_to_grow_component.where(valid)
+        per_symbol["macd_turn"][symbol] = macd_pct_s.fillna(0.0).where(valid)
+        per_symbol["sector_relative_strength"][symbol] = sector_component.where(valid)
+
+    return {key: pd.concat(series_dict, axis=1) for key, series_dict in per_symbol.items()}
+
+
+def _simulate_symbol_opportunistic(
+    symbol: str,
+    bars: pd.DataFrame,
+    cfg: ScreenerConfig,
+    score_series: pd.Series,
+    benchmark_regime_ok: pd.Series,
+    marks_by_trade_id: dict | None = None,
+    rules_config: RulesConfig | None = None,
+    sector_etf_close: "pd.Series | None" = None,
+    daily_vol_threshold: "pd.Series | None" = None,
+    daily_from_high_threshold: "pd.Series | None" = None,
+) -> list[BacktestTrade]:
+    """Misma logica score-driven que _simulate_symbol (ver ese docstring para
+    el detalle de fills/stop-loss/comision/slippage/salida), aplicada a
+    Oportunista: las 4 condiciones booleanas originales (momentum corto
+    positivo, RSI en zona de recuperacion, volatilidad minima, espacio de
+    crecimiento) son, ADEMAS de gates duros de entrada, cada una un componente
+    continuo del score (ver _opportunistic_raw_components) -- igual que
+    trend_ok/rsi_ok en _simulate_symbol, replican el gate que en vivo separa
+    la banda "pasa filtros" (50-100) de "no pasa" (0-49, ver
+    apply_cross_sectional_normalization), para que el backtest no simule
+    entradas que el motor en vivo practicamente nunca tomaria. Los gates
+    restantes son la liquidez minima (igual que Momentum, que tampoco la
+    incluye en su score) y el regimen del benchmark: comprar caidas (la
+    esencia de Oportunista) en un mercado en regimen bajista de fondo es
+    comprar cuchillos cayendo, asi que este filtro ahora se aplica tambien
+    aqui (antes solo bloqueaba nuevas entradas de Momentum).
+
+    Entra cuando score_series supera opp.backtest_score_entry_threshold Y los
+    4 gates de calidad Y la liquidez lo permiten; sale por stop-loss o tiempo
+    maximo en la
+    posicion (opp.max_holding_days). SIN ruptura de tendencia: a diferencia
+    de Momentum, la entrada de Oportunista no exige ninguna condicion de
+    tendencia (ver strategies/opportunistic.py), asi que salir por romper una
+    SMA que nunca formo parte de la señal de entrada no tiene tesis detras.
+    Esto replica _check_fund_exit en main.py (ver _strategy_exit_params ahi):
+    el monitor de salida en vivo SI es especifico por estrategia, y antes de
+    ese fix usaba por accidente la SMA global de Momentum para todas -- este
+    backtest reflejaba ese mismo comportamiento viejo, por eso se actualiza
+    junto con el fix en vivo para no reintroducir la discrepancia.
+
+    `rules_config`, si se pasa, replica el mismo ajuste de
+    _try_auto_trade_entry en main.py: si el stop-loss implicado por el ATR
+    excede rules_config.max_stop_loss_pct, se tensa al tope en vez de simular
+    la entrada con el stop ancho original (ver docstring de _simulate_symbol
+    para el detalle completo)."""
+    opp = cfg.opportunistic
+    close = bars["Close"]
+    atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
+    roc_short_s = rate_of_change(close, opp.momentum_lookback_days)
+    rsi_s = rsi(close, opp.rsi_period)
+    from_high_s = pct_from_high(close, 252)
+    dollar_volume_s = bars["Volume"].rolling(20, min_periods=1).mean() * close
+    # Series pre-computadas para los gates de calidad de entrada.
+    # Períodos=0 deshabilitan el gate respectivo (ver checks más abajo).
+    _, _, macd_hist_s = macd(close)
+    sma_s = sma(close, opp.require_above_sma_period) if opp.require_above_sma_period > 0 else close
+    roc_5d_s = rate_of_change(close, 5)
+    vol_avg_s = bars["Volume"].rolling(20, min_periods=1).mean()
+    vol_ratio_s = bars["Volume"] / vol_avg_s.replace(0, float("nan"))
+    # ROC del ETF de sector alineado al índice de la acción (point-in-time).
+    # sector_exit_roc_days=0 o sector_etf_close=None → sin chequeo de sector.
+    sector_roc_s: "pd.Series | None" = None
+    if sector_etf_close is not None and opp.sector_exit_roc_days > 0:
+        raw_sector_roc = rate_of_change(sector_etf_close, opp.sector_exit_roc_days)
+        sector_roc_s = raw_sector_roc.reindex(close.index, method="ffill")
+
+    notional_per_trade = cfg.backtest_assumed_capital_usd / cfg.top_n if cfg.top_n else 0.0
+
+    # Gates cross-seccionales (v5): umbrales diarios alineados al índice del símbolo.
+    # None = usar gates absolutos clásicos.
+    aligned_vol_thresh: "pd.Series | None" = (
+        daily_vol_threshold.reindex(close.index, method="ffill") if daily_vol_threshold is not None else None
+    )
+    aligned_fh_thresh: "pd.Series | None" = (
+        daily_from_high_threshold.reindex(close.index, method="ffill") if daily_from_high_threshold is not None else None
+    )
+
+    trades: list[BacktestTrade] = []
+    in_position = False
+    entry_price = 0.0
+    entry_idx = 0
+    entry_date = None
+    stop_price = 0.0
+    initial_stop_price = 0.0  # stop al momento de la entrada, ya tensado si aplico -- nunca lo mueve el trailing
+    take_profit_price = 0.0
+    entry_atr = 0.0
+    pending_entry_atr = None
+    last_stop_exit_date = None  # para cooldown post-stop-loss
+
+    start_idx = max(opp.momentum_lookback_days, cfg.atr_period, 252) + 1
+    for i in range(start_idx, len(bars)):
+        date = bars.index[i]
+        price = float(close.iloc[i])
+        high_price = float(bars["High"].iloc[i])
+        low_price = float(bars["Low"].iloc[i])
+        open_price = float(bars["Open"].iloc[i])
+
+        if pending_entry_atr is not None:
+            in_position = True
+            entry_price = open_price
+            entry_idx = i
+            entry_date = date
+            entry_atr = pending_entry_atr
+            stop_price = entry_price - opp.stop_loss_atr_multiplier * pending_entry_atr
+            if rules_config is not None and entry_price > 0 and stop_price > 0:
+                implied_stop_pct = (entry_price - stop_price) / entry_price * 100
+                if implied_stop_pct > rules_config.max_stop_loss_pct:
+                    stop_price = entry_price * (1 - rules_config.max_stop_loss_pct / 100)
+            initial_stop_price = stop_price
+            take_profit_price = entry_price * (1 + opp.take_profit_pct / 100) if opp.take_profit_pct > 0 else 0.0
+            pending_entry_atr = None
+            continue
+
+        if in_position:
+            held_days = i - entry_idx
+            hit_stop = low_price <= stop_price
+            # Take-profit: el stop tiene precedencia si el open ya abrió bajo él.
+            # En cualquier otro caso, si el high llegó al target, tomamos ganancia.
+            hit_target = (
+                opp.take_profit_pct > 0
+                and take_profit_price > 0
+                and high_price >= take_profit_price
+                and not (hit_stop and open_price <= stop_price)
+            )
+            timed_out = held_days >= opp.max_holding_days
+            sector_broke = False
+            if sector_roc_s is not None:
+                regime_today = bool(benchmark_regime_ok.iloc[i]) if i < len(benchmark_regime_ok) else True
+                if regime_today:
+                    sr = sector_roc_s.iloc[i]
+                    if not pd.isna(sr):
+                        sector_broke = float(sr) < opp.sector_exit_roc_threshold
+            # Salida por score: el mismo score cross-seccional que decide la
+            # entrada (score_series se calculó diariamente sobre el universo
+            # completo). Si está disponible y cae por debajo del umbral,
+            # cerramos la posición — permite capturar rotación: cuando la tesis
+            # original se debilita, se libera capital para nuevas señales.
+            # score_exit_threshold=0 desactiva este check (default).
+            score_exit = False
+            if opp.score_exit_threshold > 0:
+                score_today_exit = score_series.get(date)
+                if score_today_exit is not None and not pd.isna(score_today_exit):
+                    score_exit = float(score_today_exit) < opp.score_exit_threshold
+            if hit_stop or hit_target or timed_out or sector_broke or score_exit:
+                if hit_stop and not hit_target:
+                    exit_reason = "stop_loss"
+                    raw_exit_price = min(open_price, stop_price)
+                elif hit_target:
+                    exit_reason = "take_profit"
+                    # Si el open ya superó el target (gap up), salimos al open
+                    raw_exit_price = max(open_price, take_profit_price)
+                elif timed_out:
+                    exit_reason = "max_holding_days"
+                    raw_exit_price = price
+                elif score_exit:
+                    exit_reason = "score_exit"
+                    raw_exit_price = price
+                else:
+                    exit_reason = "sector_exit"
+                    raw_exit_price = price
+
+                entry_slippage_pct = _effective_slippage_pct(
+                    cfg.slippage_pct,
+                    dollar_volume_s.iloc[entry_idx],
+                    cfg.low_liquidity_dollar_volume_threshold,
+                    cfg.low_liquidity_slippage_multiplier,
+                )
+                exit_slippage_pct = _effective_slippage_pct(
+                    cfg.slippage_pct,
+                    dollar_volume_s.iloc[i],
+                    cfg.low_liquidity_dollar_volume_threshold,
+                    cfg.low_liquidity_slippage_multiplier,
+                )
+                entry_fill = entry_price * (1 + entry_slippage_pct / 100)
+                exit_fill = raw_exit_price * (1 - exit_slippage_pct / 100)
+                commission_pct = (
+                    (2 * cfg.commission_per_trade_usd / notional_per_trade) * 100
+                    if notional_per_trade
+                    else 0.0
+                )
+                ret_pct = (exit_fill - entry_fill) / entry_fill * 100 - commission_pct
+
+                entry_atr_pct = round(entry_atr / entry_price * 100, 4) if entry_price else None
+                # stop_loss_pct se deriva de la distancia real entrada->stop
+                # inicial (ya tensado si rules_config lo exigio) -- ver el
+                # mismo comentario en _simulate_symbol.
+                trade = BacktestTrade(
+                    symbol=symbol,
+                    entry_date=entry_date,
+                    exit_date=date,
+                    entry_price=round(entry_price, 2),
+                    exit_price=round(raw_exit_price, 2),
+                    return_pct=round(ret_pct, 2),
+                    exit_reason=exit_reason,
+                    entry_atr_pct=entry_atr_pct,
+                    stop_loss_pct=(
+                        round((entry_price - initial_stop_price) / entry_price * 100, 4) if entry_price else None
+                    ),
+                )
+                trades.append(trade)
+                if marks_by_trade_id is not None:
+                    marks_by_trade_id[id(trade)] = _trade_daily_marks(bars, entry_idx, i, entry_fill, ret_pct)
+                in_position = False
+                if exit_reason == "stop_loss":
+                    last_stop_exit_date = date
+            elif cfg.trailing_stop_enabled and not pd.isna(atr_s.iloc[i]):
+                trail_mult = cfg.trailing_stop_atr_multiplier if cfg.trailing_stop_atr_multiplier is not None else cfg.stop_loss_atr_multiplier
+                stop_price = _trailing_stop_price(stop_price, price, float(atr_s.iloc[i]), trail_mult, entry_price, cfg.trailing_stop_activation_pct)
+            continue
+
+        if pd.isna(atr_s.iloc[i]):
+            continue
+
+        score_today = score_series.get(date)
+        if score_today is None or pd.isna(score_today) or score_today < opp.backtest_score_entry_threshold:
+            continue
+
+        if dollar_volume_s.iloc[i] < cfg.min_avg_dollar_volume:
+            continue
+
+        # Cooldown post-stop: no re-entrar al mismo símbolo hasta N días después del último stop.
+        if cfg.stop_loss_cooldown_days > 0 and last_stop_exit_date is not None:
+            if date < last_stop_exit_date + timedelta(days=cfg.stop_loss_cooldown_days):
+                continue
+
+        regime_ok = bool(benchmark_regime_ok.iloc[i]) if i < len(benchmark_regime_ok) else True
+        if not regime_ok:
+            continue
+
+        atr_today = atr_s.iloc[i]
+        volatility_pct = (atr_today / price * 100) if price else 0.0
+        roc_today = roc_short_s.iloc[i]
+        rsi_today = rsi_s.iloc[i]
+        fh_today = from_high_s.iloc[i]
+
+        momentum_ok = not pd.isna(roc_today) and roc_today > 0
+        rsi_ok = not pd.isna(rsi_today) and opp.rsi_min <= rsi_today <= opp.rsi_max
+        if aligned_vol_thresh is not None:
+            vol_thresh_today = float(aligned_vol_thresh.iloc[i]) if not pd.isna(aligned_vol_thresh.iloc[i]) else opp.min_volatility_pct
+            volatility_ok = volatility_pct >= vol_thresh_today
+        else:
+            volatility_ok = volatility_pct >= opp.min_volatility_pct
+        volatility_max_ok = volatility_pct <= opp.max_volatility_pct_gate
+        if aligned_fh_thresh is not None:
+            fh_thresh_today = float(aligned_fh_thresh.iloc[i]) if not pd.isna(aligned_fh_thresh.iloc[i]) else -opp.min_pct_below_52w_high
+            room_to_grow_ok = pd.isna(fh_today) or fh_today <= fh_thresh_today
+        else:
+            room_to_grow_ok = pd.isna(fh_today) or fh_today <= -opp.min_pct_below_52w_high
+
+        if not (momentum_ok and rsi_ok and volatility_ok and volatility_max_ok and room_to_grow_ok):
+            continue
+
+        # Gate: MACD cruzó de negativo a positivo en los últimos N días.
+        # Lookback=0 deshabilita el gate (usado en tests de mecánica pura).
+        # volume_crossover_min_ratio>0: además, el día del cruce debe tener
+        # volumen ≥ ese múltiplo del promedio 20d (confirma convicción).
+        lb = opp.macd_crossover_lookback_days
+        if lb > 0:
+            macd_crossover_ok = False
+            if i >= lb + 1:
+                for j in range(i - lb, i):
+                    v0, v1 = macd_hist_s.iloc[j], macd_hist_s.iloc[j + 1]
+                    if not pd.isna(v0) and not pd.isna(v1) and v0 < 0 and v1 >= 0:
+                        if opp.volume_crossover_min_ratio > 0:
+                            vr = vol_ratio_s.iloc[j + 1]
+                            if pd.isna(vr) or float(vr) < opp.volume_crossover_min_ratio:
+                                continue
+                        macd_crossover_ok = True
+                        break
+            if not macd_crossover_ok:
+                continue
+
+        # Gate: RSI subiendo N días consecutivos.
+        # rsi_rising_min_days=0: all([]) = True vacuamente (gate desactivado).
+        n_rsi = opp.rsi_rising_min_days
+        rsi_rising_ok = i >= n_rsi and all(
+            not pd.isna(rsi_s.iloc[i - k]) and not pd.isna(rsi_s.iloc[i - k - 1])
+            and rsi_s.iloc[i - k - 1] < rsi_s.iloc[i - k]
+            for k in range(n_rsi)
+        )
+        if not rsi_rising_ok:
+            continue
+
+        # Gate: no entrar tarde en rally ya corrido
+        roc5 = roc_5d_s.iloc[i]
+        if not pd.isna(roc5) and roc5 > opp.max_5d_run_pct:
+            continue
+
+        # Gate: precio por encima de SMA(N).
+        # require_above_sma_period=0 deshabilita el gate.
+        if opp.require_above_sma_period > 0:
+            sma_val = sma_s.iloc[i]
+            if not pd.isna(sma_val) and price <= sma_val:
+                continue
+
+        # Filtro de volumen de confirmación: entry_volume_multiplier > 0 exige
+        # que el volumen de HOY supere N× el promedio de entry_volume_lookback días.
+        if cfg.entry_volume_multiplier > 0 and i >= cfg.entry_volume_lookback:
+            avg_vol = vol_avg_s.iloc[i]
+            if not pd.isna(avg_vol) and avg_vol > 0:
+                today_vol = float(bars["Volume"].iloc[i])
+                if today_vol < avg_vol * cfg.entry_volume_multiplier:
+                    continue
+
+        pending_entry_atr = atr_today
+
+    return trades
+
+
+def _collect_opportunistic_trades(
+    cfg: ScreenerConfig, rules_config: RulesConfig | None = None, *, cache_only: bool = False
+) -> tuple[list[BacktestTrade], dict, pd.DataFrame]:
+    """Simula la estrategia Oportunista sobre todo el universo configurado y
+    devuelve las operaciones resultantes (ya capadas a top_n posiciones
+    concurrentes), el dict de marcas diarias por operacion (ver
+    _trade_daily_marks) y la historia del benchmark. Separado de
+    run_opportunistic_backtest para que run_opportunistic_backtest_walk_forward
+    pueda reusar la misma simulacion sin volver a pedir datos de mercado.
+
+    Dos pasadas, igual que _collect_momentum_trades: primero se piden las
+    barras de TODO el universo (con la misma pausa anti-rate-limit que antes),
+    despues se calcula el panel de score cross-sectional dia por dia sobre ese
+    universo ya descargado (ver _cross_sectional_score_panel), y recien
+    despues se simula cada simbolo -- no se puede saber el percentil de un
+    simbolo en una fecha dada sin tener primero la historia de todos los
+    demas para esa misma fecha."""
+    history_days = int(cfg.backtest_years * 365)
+    opp = cfg.opportunistic
+
+    try:
+        bench_bars = get_daily_bars(cfg.benchmark_symbol, history_days, cache_only=cache_only)
+    except MarketDataError as exc:
+        raise BacktestError(str(exc)) from exc
+
+    if cfg.opportunistic_regime_filter_enabled:
+        benchmark_regime_ok = market_regime_ok(
+            bench_bars["Close"], cfg.regime_sma_period, cfg.regime_slope_lookback_days,
+            cfg.regime_absolute_momentum_lookback_days,
+        )
+    else:
+        benchmark_regime_ok = pd.Series(True, index=bench_bars.index)
+
+    bars_by_symbol: dict[str, pd.DataFrame] = {}
+    delay = cfg.scan_request_delay_seconds
+    for i, symbol in enumerate(_backtest_universe(cfg)):
+        # Misma pausa anti-rate-limit que el scan en vivo, salvo que el dato ya
+        # este cacheado (ver is_bars_cached): ahi no hay fetch real que
+        # espaciar -- tipico cuando este mismo universo ya se corrio para
+        # Momentum segundos antes con el mismo backtest_years.
+        if i > 0 and delay > 0 and not is_bars_cached(symbol, history_days):
+            time.sleep(delay)
+        try:
+            bars = get_daily_bars(symbol, history_days, cache_only=cache_only)
+        except MarketDataError:
+            continue
+        if len(bars) < opp.momentum_lookback_days + 252:
+            continue
+        bars_by_symbol[symbol] = bars
+
+    # Mismo guard que _collect_momentum_trades: pd.concat sobre un dict vacio
+    # en _opportunistic_raw_components rompe con ValueError en vez de la
+    # BacktestError de "sin operaciones" que ya se usa mas abajo.
+    if not bars_by_symbol:
+        raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
+
+    raw_components = _opportunistic_raw_components(bars_by_symbol, cfg, history_days)
+    score_panel = _cross_sectional_score_panel(raw_components, {
+        "momentum": opp.score_weight_momentum,
+        "volatility": opp.score_weight_volatility,
+        "rsi_recovery": opp.score_weight_rsi_recovery,
+        "room_to_grow": opp.score_weight_room_to_grow,
+        "macd_turn": opp.score_weight_macd_turn,
+        "sector_relative_strength": opp.score_weight_sector_relative_strength,
+    })
+
+    # Pre-fetch sector ETF close series para la simulación de salida por sector.
+    # Las barras ya están en caché por _opportunistic_raw_components (via
+    # sector_relative_strength_series), así que no hay fetches de red nuevos.
+    sector_etf_close_by_symbol: dict[str, "pd.Series | None"] = {}
+    if opp.sector_exit_roc_days > 0:
+        for symbol in bars_by_symbol:
+            sector = get_sector(symbol)
+            etf = SECTOR_ETF.get(sector) if sector else None
+            if etf:
+                try:
+                    sector_etf_close_by_symbol[symbol] = get_daily_bars(etf, history_days)["Close"]
+                except MarketDataError:
+                    sector_etf_close_by_symbol[symbol] = None
+            else:
+                sector_etf_close_by_symbol[symbol] = None
+
+    # Gates cross-seccionales v5: umbrales diarios del universo (None = gates absolutos clásicos).
+    # Se calculan directamente desde bars_by_symbol para evitar materializar DataFrames extra.
+    daily_vol_threshold: "pd.Series | None" = None
+    daily_from_high_threshold: "pd.Series | None" = None
+    if opp.backtest_cross_sectional_gates:
+        vol_pct_by_sym: dict[str, pd.Series] = {}
+        fh_by_sym: dict[str, pd.Series] = {}
+        for sym, bars in bars_by_symbol.items():
+            close = bars["Close"]
+            atr_s = atr(bars["High"], bars["Low"], close, cfg.atr_period)
+            vol_pct_by_sym[sym] = (atr_s / close.replace(0, float("nan")) * 100)
+            fh_by_sym[sym] = pct_from_high(close, 252)
+        vol_panel = pd.concat(vol_pct_by_sym, axis=1)
+        fh_panel = pd.concat(fh_by_sym, axis=1)
+        daily_vol_threshold = vol_panel.quantile(0.60, axis=1).clip(lower=1.5)
+        daily_from_high_threshold = fh_panel.median(axis=1)
+        del vol_panel, fh_panel, vol_pct_by_sym, fh_by_sym
+
+    all_trades: list[BacktestTrade] = []
+    marks_by_trade_id: dict = {}
+    for symbol, bars in bars_by_symbol.items():
+        aligned_regime_ok = benchmark_regime_ok.reindex(bars.index, method="ffill").fillna(True)
+        all_trades.extend(
+            _simulate_symbol_opportunistic(
+                symbol, bars, cfg, score_panel[symbol], aligned_regime_ok, marks_by_trade_id, rules_config,
+                sector_etf_close=sector_etf_close_by_symbol.get(symbol),
+                daily_vol_threshold=daily_vol_threshold,
+                daily_from_high_threshold=daily_from_high_threshold,
+            )
+        )
+
+    if not all_trades:
+        raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
+
+    all_trades.sort(key=lambda t: t.entry_date)
+    all_trades = cap_concurrent_positions(all_trades, cfg.top_n, cfg.max_concurrent_positions_per_sector)
+
+    if not all_trades:
+        raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
+
+    return all_trades, marks_by_trade_id, bench_bars
+
+
+def run_opportunistic_backtest(cfg: ScreenerConfig, rules_config: RulesConfig | None = None) -> BacktestSummary:
+    """Backtest de la estrategia Oportunista, en paralelo a run_backtest
+    (Momentum). Misma estructura y mismas simplificaciones documentadas ahi
+    (curva de equity diaria real con cupo top_n, sin supervivencia historica
+    del universo); aca solo cambia la logica de entrada/salida por simbolo
+    (ver _simulate_symbol_opportunistic)."""
+    all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg, rules_config)
+    return _compute_summary_stats(
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id,
+        cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
+        cfg.deflated_sharpe_num_trials,
+        risk_based_sizing_enabled=cfg.backtest_risk_based_sizing_enabled,
+        rules_config=rules_config,
+        assumed_capital_usd=cfg.backtest_assumed_capital_usd,
+    )
+
+
+def run_opportunistic_backtest_walk_forward(
+    cfg: ScreenerConfig, n_folds: int = 3, rules_config: RulesConfig | None = None
+) -> WalkForwardResult:
+    """Validacion out-of-sample de la estrategia Oportunista. Ver docstring de
+    run_backtest_walk_forward (Momentum) para el alcance y las limitaciones:
+    misma logica, solo cambia la simulacion subyacente."""
+    all_trades, marks_by_trade_id, bench_bars = _collect_opportunistic_trades(cfg, rules_config)
+    return _build_walk_forward_result(
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds,
+        cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
+        risk_based_sizing_enabled=cfg.backtest_risk_based_sizing_enabled,
+        rules_config=rules_config,
+        assumed_capital_usd=cfg.backtest_assumed_capital_usd,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Monte Carlo y análisis por sub-período — ver docstrings individuales abajo.
+# Expuestas también desde el script scripts/backtest_15yr.py que corre el
+# análisis completo de 15 años.
+# ---------------------------------------------------------------------------
+# Períodos históricos nombrados para analyze_subperiods. Cubre los grandes
+# regímenes de mercado desde 2010: crisis de deuda europea (2011),
+# desaceleración China (2015-16), corrección Q4 2018, crash COVID (2020),
+# bear de tasas (2022) y el rally de IA (2023-25). La estrategia tiene que
+# sostenerse en todos ellos para que el resultado del backtest sea evidencia
+# real, no solo suerte de época.
+ANALYSIS_SUBPERIODS: list[tuple[str, str, str]] = [
+    ("2010-2012 Post-crisis recovery",  "2010-01-01", "2012-12-31"),
+    ("2013-2015 Secular bull",          "2013-01-01", "2015-07-31"),
+    ("2015-2016 China/EM correction",   "2015-08-01", "2016-03-31"),
+    ("2016-2018 Trump rally",           "2016-04-01", "2018-09-30"),
+    ("2018 Q4 Crash",                   "2018-10-01", "2018-12-31"),
+    ("2019 Late-cycle bull",            "2019-01-01", "2020-01-31"),
+    ("2020 COVID crash",                "2020-02-01", "2020-04-30"),
+    ("2020-2021 Recovery & stimulus",   "2020-05-01", "2021-12-31"),
+    ("2022 Bear market (rates)",        "2022-01-01", "2022-12-31"),
+    ("2023-2025 AI rally",              "2023-01-01", "2025-12-31"),
+]
+
+
+def run_monte_carlo(
+    all_trades: list[BacktestTrade],
+    top_n: int,
+    bench_bars: pd.DataFrame,
+    marks_by_trade_id: dict,
+    n_simulations: int = 10_000,
+    *,
+    vol_weighting_enabled: bool = False,
+    risk_based_sizing_enabled: bool = False,
+    rules_config: RulesConfig | None = None,
+    assumed_capital_usd: float = 100_000.0,
+) -> dict:
+    """Permuta los retornos diarios de la curva de equity `n_simulations` veces
+    para estimar cuánto del resultado real depende del orden en que ocurrieron
+    los días (suerte de secuencia) en vez del skill de la estrategia.
+
+    Usa retornos DIARIOS (no por operación individual) para preservar la
+    estructura de cartera con posiciones solapadas: cada día ya tiene
+    incorporado el efecto de tener 1 a top_n posiciones abiertas
+    simultáneamente. Permutar días en vez de trades es lo que hace que el
+    max drawdown simulado sea realista (evita el artefacto de asumir que todos
+    los trades son secuenciales sin solapamiento).
+
+    Devuelve percentiles P5/P25/P50/P75/P95 de retorno acumulado, max drawdown
+    y Sharpe para el conjunto de simulaciones, más probabilidad de retorno
+    positivo.
+    """
+    _, daily_equity, _, _ = _daily_equity_curve(
+        all_trades, top_n, bench_bars, marks_by_trade_id,
+        vol_weighting_enabled=vol_weighting_enabled,
+        risk_based_sizing_enabled=risk_based_sizing_enabled,
+        rules_config=rules_config,
+        assumed_capital_usd=assumed_capital_usd,
+    )
+    if len(daily_equity) < 2:
+        return {}
+
+    # daily_equity es la curva de equity ACUMULADA (1.0 en t=0, crece con el
+    # tiempo). Para permutar, necesitamos los retornos DIARIOS incrementales:
+    # r_t = equity[t] / equity[t-1] - 1, no equity[t] - 1 (que sería el
+    # retorno acumulado desde el inicio hasta el día t).
+    daily_returns = [daily_equity[i] / daily_equity[i - 1] - 1
+                     for i in range(1, len(daily_equity))]
+    n = len(daily_returns)
+    mean_r = sum(daily_returns) / n
+
+    sim_returns: list[float] = []
+    sim_drawdowns: list[float] = []
+    sim_sharpes: list[float] = []
+
+    for _ in range(n_simulations):
+        shuffled = random.sample(daily_returns, n)
+
+        equity = 1.0
+        peak = 1.0
+        max_dd = 0.0
+        for r in shuffled:
+            equity *= (1.0 + r)
+            if equity > peak:
+                peak = equity
+            dd = (equity - peak) / peak
+            if dd < max_dd:
+                max_dd = dd
+
+        sim_returns.append((equity - 1.0) * 100.0)
+        sim_drawdowns.append(max_dd * 100.0)
+        var_r = sum((r - mean_r) ** 2 for r in shuffled) / (n - 1) if n > 1 else 0.0
+        std_r = var_r ** 0.5
+        sim_sharpes.append((mean_r / std_r) * (252 ** 0.5) if std_r > 0 else 0.0)
+
+    sim_returns.sort()
+    sim_drawdowns.sort()
+    sim_sharpes.sort()
+
+    def _p(lst: list[float], p: float) -> float:
+        return lst[min(int(len(lst) * p), len(lst) - 1)]
+
+    return {
+        "n_simulations": n_simulations,
+        "n_trading_days": n,
+        "cumulative_return_pct": {
+            "p5":  _p(sim_returns, 0.05),
+            "p25": _p(sim_returns, 0.25),
+            "p50": _p(sim_returns, 0.50),
+            "p75": _p(sim_returns, 0.75),
+            "p95": _p(sim_returns, 0.95),
+        },
+        "max_drawdown_pct": {
+            "p5":  _p(sim_drawdowns, 0.05),   # mejor caso (menor DD)
+            "p50": _p(sim_drawdowns, 0.50),
+            "p95": _p(sim_drawdowns, 0.95),   # peor caso (mayor DD)
+        },
+        "sharpe": {
+            "p5":  _p(sim_sharpes, 0.05),
+            "p50": _p(sim_sharpes, 0.50),
+            "p95": _p(sim_sharpes, 0.95),
+        },
+        "prob_positive_pct": sum(1 for r in sim_returns if r > 0) / n_simulations * 100.0,
+    }
+
+
+def analyze_subperiods(
+    all_trades: list[BacktestTrade],
+    top_n: int,
+    bench_bars: pd.DataFrame,
+    marks_by_trade_id: dict,
+    periods: list[tuple[str, str, str]] | None = None,
+    *,
+    vol_weighting_enabled: bool = False,
+    risk_based_sizing_enabled: bool = False,
+    rules_config: RulesConfig | None = None,
+    assumed_capital_usd: float = 100_000.0,
+) -> list[dict]:
+    """Métricas de la estrategia recortadas a cada período histórico nombrado.
+
+    Filtra las operaciones cuya entry_date cae dentro del rango de cada
+    período y recalcula las métricas de resumen sobre ese subconjunto. Permite
+    ver si la estrategia aguanta en regímenes adversos (2022 bear, 2020 crash)
+    o solo funciona en rallies.
+
+    Reusa marks_by_trade_id y bench_bars ya calculados (sin pedidos de red).
+    """
+    if periods is None:
+        periods = ANALYSIS_SUBPERIODS
+
+    results: list[dict] = []
+    for name, start_str, end_str in periods:
+        period_start = pd.Timestamp(start_str, tz="UTC")
+        period_end   = pd.Timestamp(end_str,   tz="UTC")
+
+        fold_trades = [
+            t for t in all_trades
+            if period_start <= t.entry_date <= period_end
+        ]
+
+        base: dict = {
+            "period": name, "start": start_str, "end": end_str,
+            "n_trades": len(fold_trades),
+            "win_rate_pct": None, "cumulative_return_pct": None,
+            "benchmark_return_pct": None, "max_drawdown_pct": None,
+            "sharpe_ratio": None,
+        }
+
+        if not fold_trades:
+            results.append(base)
+            continue
+
+        fold_bench = bench_bars.loc[
+            (bench_bars.index >= period_start) & (bench_bars.index <= period_end)
+        ]
+        if fold_bench.empty:
+            results.append(base)
+            continue
+
+        try:
+            summary = _compute_summary_stats(
+                fold_trades, top_n, fold_bench, marks_by_trade_id,
+                False, vol_weighting_enabled,
+                risk_based_sizing_enabled=risk_based_sizing_enabled,
+                rules_config=rules_config,
+                assumed_capital_usd=assumed_capital_usd,
+            )
+            base.update({
+                "n_trades": summary.total_trades,
+                "win_rate_pct": summary.win_rate_pct,
+                "cumulative_return_pct": summary.strategy_cumulative_return_pct,
+                "benchmark_return_pct": summary.benchmark_cumulative_return_pct,
+                "max_drawdown_pct": summary.max_drawdown_pct,
+                "sharpe_ratio": summary.sharpe_ratio,
+            })
+        except Exception:
+            pass
+
+        results.append(base)
+
+    return results
+
+
+def cap_concurrent_positions(
+    trades: list[BacktestTrade], top_n: int, max_per_sector: int | None = None
+) -> list[BacktestTrade]:
+    """Filtra una lista de operaciones a un maximo de top_n posiciones abiertas
+    a la vez, recorriendolas por fecha de entrada y descartando las que no
+    tendrian cupo libre (como en la operatoria real, donde no se pueden tener
+    mas de top_n posiciones simultaneas). Sin top_n valido devuelve la lista
+    intacta. Se asume que `trades` ya viene ordenada por fecha de entrada.
+
+    Si max_per_sector esta activo (ver
+    ScreenerConfig.max_concurrent_positions_per_sector), ademas descarta una
+    operacion si su sector (get_sector) ya tiene esa cantidad de posiciones
+    abiertas a la vez, aunque todavia haya cupo libre en top_n: sin esto, el
+    cupo global no evita terminar con, por ejemplo, top_n posiciones todas del
+    mismo sector (una sola apuesta concentrada, no una cartera diversificada)."""
+    if not top_n or top_n <= 0:
+        return list(trades)
+    taken: list[BacktestTrade] = []
+    open_exit_dates: list = []
+    open_sector_exit_dates: dict[str, list] = {}
+    for t in trades:
+        open_exit_dates = [d for d in open_exit_dates if d > t.entry_date]
+        if len(open_exit_dates) >= top_n:
+            continue  # sin cupo libre: en la realidad no se podria abrir
+        sector = get_sector(t.symbol) if max_per_sector else None
+        if sector is not None and max_per_sector:
+            sector_dates = [d for d in open_sector_exit_dates.get(sector, []) if d > t.entry_date]
+            open_sector_exit_dates[sector] = sector_dates
+            if len(sector_dates) >= max_per_sector:
+                continue  # sin cupo libre en el sector: ya esta concentrado
+        taken.append(t)
+        open_exit_dates.append(t.exit_date)
+        if sector is not None and max_per_sector:
+            open_sector_exit_dates[sector].append(t.exit_date)
+    return taken
+
+
+def _trade_weights(all_trades: list[BacktestTrade], top_n: int, vol_weighting_enabled: bool) -> dict[int, float]:
+    """Pondera cada operacion para _daily_equity_curve, keyeado por id(trade)
+    (mismo criterio que marks_by_trade_id). Por defecto (vol_weighting_enabled
+    apagado, o falta el ATR de entrada de alguna operacion) devuelve el mismo
+    peso uniforme 1/top_n para todas -- igual comportamiento que antes de que
+    existiera este campo, sin excepciones.
+
+    Si esta activo, pondera cada posicion ~ 1/ATR_entrada (mismo criterio que
+    el sizing por riesgo en vivo, ver rules.suggested_quantity: menos peso a
+    lo mas volatil) en vez de equiponderar, normalizado para que el promedio
+    de los multiplicadores sea 1 (mismo presupuesto total de capital que el
+    esquema equiponderado, para que las dos curvas sigan siendo comparables).
+    El multiplicador se acota a [0.5, 2.0] para que un simbolo con ATR casi
+    nulo no termine dominando la cartera simulada -- mismo espiritu que los
+    topes de tamaño de posicion del sizing en vivo
+    (max_position_pct_of_equity/max_order_value_usd)."""
+    base_weight = 1.0 / top_n if top_n else 0.0
+    if not vol_weighting_enabled or not all_trades:
+        return {id(t): base_weight for t in all_trades}
+    inv_atrs = []
+    for t in all_trades:
+        if t.entry_atr_pct is None or t.entry_atr_pct <= 0:
+            # Falta el dato en alguna operacion (ej. trade sintetico de test):
+            # no se puede ponderar el conjunto de forma consistente, se cae a
+            # equiponderar todo en vez de mezclar criterios distintos.
+            return {id(t): base_weight for t in all_trades}
+        inv_atrs.append(1.0 / t.entry_atr_pct)
+    avg_inv_atr = sum(inv_atrs) / len(inv_atrs)
+    weights: dict[int, float] = {}
+    for t, inv_atr in zip(all_trades, inv_atrs):
+        multiplier = inv_atr / avg_inv_atr if avg_inv_atr else 1.0
+        multiplier = max(0.5, min(2.0, multiplier))
+        weights[id(t)] = base_weight * multiplier
+    return weights
+
+
+def _risk_based_trade_weight(
+    trade: BacktestTrade,
+    prior_equity_factor: float,
+    assumed_capital_usd: float,
+    rules_config: RulesConfig,
+) -> float:
+    """Fraccion de la equity simulada que esta operacion ocuparia si se
+    hubiera dimensionado con la MISMA formula que RulesEngine.suggested_
+    quantity() (rules.py) usa en vivo, expresada como peso (fraccion de
+    equity) en vez de cantidad de acciones -- el backtest ya trabaja en %
+    continuos, nunca en acciones discretas, asi que se omite unicamente el
+    math.floor() final a acciones enteras de la version en vivo.
+
+    Mismos 3 ingredientes, derivados de forma que entry_price se cancela:
+      - weight_by_risk = risk_per_trade_pct / trade.stop_loss_pct (ambos en
+        %, ya que risk_budget_usd / (stop_loss_pct/100 * entry_price) /
+        equity_usd = risk_per_trade_pct / stop_loss_pct).
+      - weight_by_position_pct = max_position_pct_of_equity / 100 (igual que
+        en vivo con current_position_qty=0: el backtest nunca tiene mas de
+        una posicion abierta por simbolo a la vez).
+      - weight_by_order_value = max_order_value_usd / equity_usd.
+    El minimo de los tres (nunca negativo) es el mismo "el clamp mas
+    restrictivo gana" que la version en vivo.
+
+    prior_equity_factor es la equity simulada AL CIERRE DEL DIA ANTERIOR (no
+    de hoy: la entrada se simula a la apertura, antes de conocerse el cierre
+    de hoy -- usar el cierre de hoy para dimensionar la entrada de hoy seria
+    mirar al futuro, igual motivo que el fill de entrada al open del dia
+    siguiente a la senal). assumed_capital_usd convierte ese factor (1.0 =
+    capital inicial) a un monto en dolares, unico punto donde
+    max_order_value_usd (que esta en USD, no en %) se vuelve comparable.
+
+    0.0 si la equity simulada ya cayo a 0 o por debajo (guard numerico
+    minimo contra division por cero en escenarios extremos, no logica de
+    producto nueva) o si stop_loss_pct no esta definido o no es positivo
+    (deberia evitarse aguas arriba por el chequeo de "todas las operaciones
+    tienen stop_loss_pct" antes de optar por este camino, ver
+    _daily_equity_curve)."""
+    equity_usd = prior_equity_factor * assumed_capital_usd
+    if equity_usd <= 0 or trade.stop_loss_pct is None or trade.stop_loss_pct <= 0:
+        return 0.0
+    weight_by_risk = rules_config.risk_per_trade_pct / trade.stop_loss_pct
+    weight_by_position_pct = rules_config.max_position_pct_of_equity / 100
+    weight_by_order_value = rules_config.max_order_value_usd / equity_usd
+    return max(0.0, min(weight_by_risk, weight_by_position_pct, weight_by_order_value))
+
+
+def _daily_equity_curve(
+    all_trades: list[BacktestTrade],
+    top_n: int,
+    bench_bars: pd.DataFrame,
+    marks_by_trade_id: dict | None = None,
+    invest_idle_cash_in_benchmark: bool = False,
+    vol_weighting_enabled: bool = False,
+    risk_based_sizing_enabled: bool = False,
+    rules_config: RulesConfig | None = None,
+    assumed_capital_usd: float = 100_000.0,
+) -> tuple[list[EquityCurvePoint], list[float], float, float]:
+    """Construye la curva de equity dia por dia (no solo en cada evento de
+    salida): cada operacion abierta aporta un retorno NO realizado, ponderado
+    por 1/top_n igual que una operacion cerrada. Antes la curva solo se
+    actualizaba al cerrar una operacion, como si una posicion abierta no
+    existiera (no aportaba nada, ni ganancia ni perdida) hasta su cierre --
+    eso ocultaba el drawdown combinado real cuando varias operaciones se
+    solapan en el tiempo.
+
+    El retorno no realizado dia por dia viene de marks_by_trade_id (ver
+    _trade_daily_marks): el camino real de cierre de cada operacion, generado
+    por quien construyo `all_trades` (_simulate_symbol /
+    _simulate_symbol_opportunistic). Si una operacion no tiene marca para una
+    fecha dada (trades sinteticos de test, o un desajuste de calendario entre
+    el simbolo y el benchmark) se cae de vuelta a una interpolacion lineal
+    entre 0% (en su entry_date) y su return_pct final (en su exit_date), que
+    sigue siendo mas fiel que tratar la operacion como un salto instantaneo
+    en su fecha de cierre.
+
+    El calendario de fechas es el del benchmark (mismos dias de trading que
+    las acciones individuales) recortado al rango de la primera entrada a la
+    ultima salida, mas las fechas exactas de entrada/salida de cada operacion
+    por si alguna no cae justo en una fecha del benchmark.
+
+    Ademas de la exposicion (fraccion de capital con alguna posicion abierta)
+    se usa esa misma fraccion, dia por dia, para componer un benchmark
+    "ajustado por exposicion": cuanto hubiera devuelto el benchmark si solo se
+    hubiera estado invertido en el la misma fraccion de capital que la
+    estrategia realmente tuvo desplegada cada dia (en vez de 100% todo el
+    periodo). Usa el precio de cierre mas reciente conocido en o antes de cada
+    fecha (bench_close.asof) para tolerar fechas del calendario que no caen
+    justo en una barra del benchmark (igual motivo que el resto de la funcion).
+
+    Si invest_idle_cash_in_benchmark esta activo (ver ScreenerConfig), el
+    cash que ese mismo dia NO esta desplegado en ninguna posicion (1 -
+    exposicion) se simula invertido en el benchmark en vez de quieto a 0%:
+    mismo mecanismo de compounding dia por dia que el benchmark ajustado por
+    exposicion de arriba, pero ponderado por el COMPLEMENTO de la exposicion
+    (1 - exposicion_hoy) en vez de la exposicion misma, y su crecimiento se
+    suma directamente al factor de equity de la estrategia (no es solo una
+    cifra de comparacion aparte: cambia strategy_cumulative_return_pct,
+    max_drawdown_pct y sharpe_ratio, ya que esos se calculan sobre
+    daily_equity).
+
+    Si vol_weighting_enabled esta activo (ver ScreenerConfig), cada operacion
+    pesa ~ 1/ATR_entrada en vez del mismo 1/top_n para todas (ver
+    _trade_weights) -- alinea el peso simulado de cada posicion con el
+    sizing por riesgo ATR que usa el sizing en vivo (rules.suggested_quantity),
+    en vez de equiponderar una cartera que en la realidad nunca se opera asi.
+
+    Si risk_based_sizing_enabled esta activo Y rules_config esta presente Y
+    TODAS las operaciones tienen stop_loss_pct definido (mismo criterio
+    "todo o nada" que vol_weighting_enabled con entry_atr_pct: una sola
+    operacion sin el dato, tipicamente sintetica de test, hace caer a
+    vol_weighting_enabled/equiponderado para el conjunto completo en vez de
+    mezclar criterios de sizing distintos dentro de la misma curva), el peso
+    de cada operacion NO se precalcula de una vez al principio: se calcula
+    recien al entrar, dentro del loop dia por dia de mas abajo (ver
+    _risk_based_trade_weight), porque depende de la equity simulada ACUMULADA
+    hasta ese punto -- algo que todavia no existe en el resto de los caminos
+    de ponderacion (1/top_n y 1/ATR son independientes de como vino
+    resultando el backtest hasta esa fecha).
+
+    Devuelve (equity_curve, equity_diaria_en_factor, avg_exposure_pct,
+    exposure_adjusted_benchmark_return_pct).
+    """
+    dynamic_sizing = (
+        risk_based_sizing_enabled
+        and rules_config is not None
+        and all(t.stop_loss_pct is not None and t.stop_loss_pct > 0 for t in all_trades)
+    )
+    weights: dict[int, float] = (
+        {} if dynamic_sizing else _trade_weights(all_trades, top_n, vol_weighting_enabled)
+    )
+    bench_close = bench_bars["Close"]
+    start, end = all_trades[0].entry_date, all_trades[-1].exit_date
+    calendar = sorted(
+        set(bench_bars.index[(bench_bars.index >= start) & (bench_bars.index <= end)])
+        | {t.entry_date for t in all_trades}
+        | {t.exit_date for t in all_trades}
+    )
+    pos_by_date = {d: i for i, d in enumerate(calendar)}
+
+    trades_by_entry = sorted(all_trades, key=lambda t: t.entry_date)
+    next_entry_idx = 0
+    open_trades: list[BacktestTrade] = []
+    closed_factor = 1.0
+    equity_curve: list[EquityCurvePoint] = []
+    daily_equity: list[float] = []
+    exposure_sum = 0.0
+    bench_factor = 1.0
+    idle_cash_factor = 1.0
+    prev_bench_price = None
+    # Equity simulada (en factor, 1.0 = capital inicial) al cierre del dia
+    # ANTERIOR al que esta procesando el loop. Solo se usa con dynamic_sizing:
+    # el peso de una operacion que recien entra hoy se calcula contra esto, no
+    # contra `equity` de hoy (que todavia no existe cuando la operacion entra
+    # a la apertura). Se actualiza al final de cada iteracion del loop.
+    prior_equity_factor = 1.0
+
+    for day_idx, date in enumerate(calendar):
+        while next_entry_idx < len(trades_by_entry) and trades_by_entry[next_entry_idx].entry_date <= date:
+            trade = trades_by_entry[next_entry_idx]
+            if dynamic_sizing:
+                weights[id(trade)] = _risk_based_trade_weight(
+                    trade, prior_equity_factor, assumed_capital_usd, rules_config
+                )
+            open_trades.append(trade)
+            next_entry_idx += 1
+
+        still_open = []
+        for t in open_trades:
+            if t.exit_date <= date:
+                closed_factor *= 1 + weights[id(t)] * t.return_pct / 100
+            else:
+                still_open.append(t)
+        open_trades = still_open
+
+        unrealized_pct = 0.0
+        for t in open_trades:
+            marks = marks_by_trade_id.get(id(t)) if marks_by_trade_id else None
+            factor = marks.get(date) if marks else None
+            if factor is None:
+                entry_pos, exit_pos = pos_by_date[t.entry_date], pos_by_date[t.exit_date]
+                frac = (day_idx - entry_pos) / (exit_pos - entry_pos) if exit_pos > entry_pos else 1.0
+                factor = 1 + t.return_pct / 100 * frac
+            unrealized_pct += weights[id(t)] * (factor - 1) * 100
+
+        exposure_today = sum(weights[id(t)] for t in open_trades)
+        exposure_sum += exposure_today
+
+        bench_price = bench_close.asof(date)
+        if prev_bench_price is not None and not pd.isna(bench_price) and prev_bench_price != 0:
+            bench_return_today = bench_price / prev_bench_price - 1
+            bench_factor *= 1 + exposure_today * bench_return_today
+            if invest_idle_cash_in_benchmark:
+                idle_cash_factor *= 1 + (1 - exposure_today) * bench_return_today
+        if not pd.isna(bench_price):
+            prev_bench_price = bench_price
+
+        equity = closed_factor * (1 + unrealized_pct / 100)
+        if invest_idle_cash_in_benchmark:
+            equity += idle_cash_factor - 1
+        daily_equity.append(equity)
+
+        equity_curve.append(EquityCurvePoint(date=date, equity_pct=round((equity - 1) * 100, 2)))
+        prior_equity_factor = equity
+
+    avg_exposure_pct = round(exposure_sum / len(calendar) * 100, 1)
+    exposure_adjusted_benchmark_return_pct = round((bench_factor - 1) * 100, 2)
+    return equity_curve, daily_equity, avg_exposure_pct, exposure_adjusted_benchmark_return_pct
+
+
+def _trade_alpha_pct(trade: BacktestTrade, bench_close: pd.Series) -> float | None:
+    """Alpha de una operacion individual: su return_pct menos lo que hizo el
+    benchmark close-a-close en la misma ventana exacta entry_date->exit_date
+    (no el periodo completo del backtest). Usa bench_close.asof (el ultimo
+    precio conocido en o antes de la fecha) en vez de exigir coincidencia
+    exacta de calendario, igual motivo que el resto del archivo: una accion
+    individual puede tener una fecha sin barra exacta en el benchmark.
+
+    None si el benchmark no tiene NINGUN precio conocido en o antes de alguna
+    de las dos fechas (asof devuelve NaN cuando la fecha pedida es anterior a
+    toda la historia disponible -- tipico de operaciones sinteticas en tests
+    que no comparten calendario con bench_bars) o si el precio de entrada del
+    benchmark es 0."""
+    entry_bench = bench_close.asof(trade.entry_date)
+    exit_bench = bench_close.asof(trade.exit_date)
+    if pd.isna(entry_bench) or pd.isna(exit_bench) or entry_bench == 0:
+        return None
+    bench_return_pct = (exit_bench / entry_bench - 1) * 100
+    return round(trade.return_pct - bench_return_pct, 2)
+
+
+def _compute_summary_stats(
+    all_trades: list[BacktestTrade],
+    top_n: int,
+    bench_bars: pd.DataFrame,
+    marks_by_trade_id: dict | None = None,
+    invest_idle_cash_in_benchmark: bool = False,
+    vol_weighting_enabled: bool = False,
+    deflated_sharpe_num_trials: int = 1,
+    risk_based_sizing_enabled: bool = False,
+    rules_config: RulesConfig | None = None,
+    assumed_capital_usd: float = 100_000.0,
+) -> BacktestSummary:
+    """Calcula las metricas resumen a partir de la lista final de operaciones
+    (ya filtrada por cap_concurrent_positions). Separado de run_backtest para
+    poder testearlo con operaciones sinteticas, sin pasar por todo el pipeline
+    de datos de mercado."""
+    returns = [t.return_pct for t in all_trades]
+    wins = [r for r in returns if r > 0]
+    losses = [r for r in returns if r < 0]
+    win_rate = len(wins) / len(returns) * 100
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+    gross_profit = sum(wins)
+    gross_loss = abs(sum(losses))
+    # gross_loss == 0 es ambiguo: puede ser "nunca hubo perdidas" (profit factor
+    # infinito, no representable en JSON estandar) o "no hubo ni ganancias ni
+    # perdidas" (indefinido). profit_factor_is_infinite distingue ambos casos
+    # para el frontend sin depender de float('inf').
+    profit_factor = (gross_profit / gross_loss) if gross_loss else None
+    profit_factor_is_infinite = gross_loss == 0 and gross_profit > 0
+    expectancy = sum(returns) / len(returns)
+
+    equity_curve, daily_equity, avg_exposure_pct, exposure_adjusted_benchmark_return_pct = _daily_equity_curve(
+        all_trades,
+        top_n,
+        bench_bars,
+        marks_by_trade_id,
+        invest_idle_cash_in_benchmark,
+        vol_weighting_enabled,
+        risk_based_sizing_enabled,
+        rules_config,
+        assumed_capital_usd,
+    )
+
+    bench_close = bench_bars["Close"]
+    trades_with_alpha = [t.model_copy(update={"alpha_pct": _trade_alpha_pct(t, bench_close)}) for t in all_trades]
+    alpha_values = [t.alpha_pct for t in trades_with_alpha if t.alpha_pct is not None]
+    avg_alpha_pct = round(sum(alpha_values) / len(alpha_values), 2) if alpha_values else None
+
+    peak = 1.0
+    max_drawdown = 0.0
+    for equity in daily_equity:
+        peak = max(peak, equity)
+        drawdown = (equity - peak) / peak * 100
+        max_drawdown = min(max_drawdown, drawdown)
+    cumulative_return = (daily_equity[-1] - 1) * 100
+
+    benchmark_cumulative = float(bench_bars["Close"].iloc[-1] / bench_bars["Close"].iloc[0] - 1) * 100
+
+    # Sharpe a partir de los retornos DIARIOS de la curva de equity (no de los
+    # retornos por operacion): asi es comparable con un Sharpe convencional
+    # (anualizado por sqrt(252), dias de trading/año), y no solo una
+    # aproximacion ad-hoc por "operaciones por año" inferidas del periodo. Con
+    # menos de 2 operaciones el resultado no es estadisticamente significativo
+    # sin importar cuantos puntos diarios genere esa unica operacion, asi que
+    # se exige el mismo minimo de 2 operaciones que antes.
+    sharpe_ratio = None
+    deflated_sharpe_ratio_pct = None
+    if len(all_trades) >= 2 and len(daily_equity) >= 3:
+        daily_returns = [daily_equity[i] / daily_equity[i - 1] - 1 for i in range(1, len(daily_equity))]
+        std_r = statistics.stdev(daily_returns)
+        if std_r > 0:
+            sharpe_ratio = (statistics.mean(daily_returns) / std_r) * (252 ** 0.5)
+        deflated_sharpe_ratio_pct = _deflated_sharpe_ratio_pct(daily_returns, deflated_sharpe_num_trials)
+
+    return BacktestSummary(
+        start_date=all_trades[0].entry_date,
+        end_date=all_trades[-1].exit_date,
+        total_trades=len(all_trades),
+        win_rate_pct=round(win_rate, 1),
+        avg_return_pct=round(expectancy, 2),
+        avg_win_pct=round(avg_win, 2),
+        avg_loss_pct=round(avg_loss, 2),
+        profit_factor=round(profit_factor, 2) if profit_factor is not None else None,
+        profit_factor_is_infinite=profit_factor_is_infinite,
+        expectancy_pct=round(expectancy, 2),
+        strategy_cumulative_return_pct=round(cumulative_return, 2),
+        benchmark_cumulative_return_pct=round(benchmark_cumulative, 2),
+        exposure_adjusted_benchmark_return_pct=exposure_adjusted_benchmark_return_pct,
+        avg_alpha_pct=avg_alpha_pct,
+        max_drawdown_pct=round(max_drawdown, 2),
+        sharpe_ratio=round(sharpe_ratio, 2) if sharpe_ratio is not None else None,
+        deflated_sharpe_ratio_pct=round(deflated_sharpe_ratio_pct, 1) if deflated_sharpe_ratio_pct is not None else None,
+        avg_exposure_pct=avg_exposure_pct,
+        exit_reason_counts=dict(Counter(t.exit_reason for t in all_trades)),
+        trades=trades_with_alpha[-50:],
+        equity_curve=equity_curve,
+    )
+
+
+def _build_walk_forward_result(
+    all_trades: list[BacktestTrade],
+    top_n: int,
+    bench_bars: pd.DataFrame,
+    marks_by_trade_id: dict,
+    n_folds: int,
+    invest_idle_cash_in_benchmark: bool = False,
+    vol_weighting_enabled: bool = False,
+    risk_based_sizing_enabled: bool = False,
+    rules_config: RulesConfig | None = None,
+    assumed_capital_usd: float = 100_000.0,
+) -> WalkForwardResult:
+    """Particiona [primera_entrada, ultima_salida] del benchmark en n_folds
+    ventanas consecutivas de igual duracion calendario (no de igual cantidad
+    de operaciones) y corre _compute_summary_stats por separado en cada una,
+    asignando cada operacion a un fold por su entry_date (nunca se parte una
+    operacion entre dos folds). Reusa all_trades/marks_by_trade_id/bench_bars
+    ya generados por _collect_momentum_trades / _collect_opportunistic_trades:
+    no vuelve a simular ni a pedir datos de mercado.
+
+    Un fold sin operaciones (o cuyo tramo de benchmark no tiene barras, en los
+    bordes) no puede pasar por _compute_summary_stats (asume al menos una
+    operacion); para esos casos devuelve un WalkForwardFold con total_trades=0
+    y el resto de las metricas en None en vez de fallar."""
+    full_start, full_end = bench_bars.index[0], bench_bars.index[-1]
+    total_seconds = (full_end - full_start).total_seconds()
+    bounds = [full_start + pd.Timedelta(seconds=total_seconds * i / n_folds) for i in range(n_folds + 1)]
+
+    folds: list[WalkForwardFold] = []
+    for i in range(n_folds):
+        fold_start, fold_end = bounds[i], bounds[i + 1]
+        is_last = i == n_folds - 1
+        fold_trades = [
+            t
+            for t in all_trades
+            if fold_start <= t.entry_date and (t.entry_date <= fold_end if is_last else t.entry_date < fold_end)
+        ]
+        fold_bench_bars = bench_bars.loc[fold_start:fold_end]
+        if not fold_trades or fold_bench_bars.empty:
+            folds.append(WalkForwardFold(start_date=fold_start, end_date=fold_end, total_trades=len(fold_trades)))
+            continue
+        summary = _compute_summary_stats(
+            fold_trades,
+            top_n,
+            fold_bench_bars,
+            marks_by_trade_id,
+            invest_idle_cash_in_benchmark,
+            vol_weighting_enabled,
+            risk_based_sizing_enabled=risk_based_sizing_enabled,
+            rules_config=rules_config,
+            assumed_capital_usd=assumed_capital_usd,
+        )
+        folds.append(
+            WalkForwardFold(
+                start_date=fold_start,
+                end_date=fold_end,
+                total_trades=summary.total_trades,
+                win_rate_pct=summary.win_rate_pct,
+                avg_return_pct=summary.avg_return_pct,
+                strategy_cumulative_return_pct=summary.strategy_cumulative_return_pct,
+                benchmark_cumulative_return_pct=summary.benchmark_cumulative_return_pct,
+                exposure_adjusted_benchmark_return_pct=summary.exposure_adjusted_benchmark_return_pct,
+                avg_alpha_pct=summary.avg_alpha_pct,
+                max_drawdown_pct=summary.max_drawdown_pct,
+                sharpe_ratio=summary.sharpe_ratio,
+            )
+        )
+    return WalkForwardResult(n_folds=n_folds, folds=folds)
+
+
+def _collect_momentum_trades(
+    cfg: ScreenerConfig, rules_config: RulesConfig | None = None
+) -> tuple[list[BacktestTrade], dict, pd.DataFrame]:
+    """Simula la estrategia Momentum sobre todo el universo configurado y
+    devuelve las operaciones resultantes (ya capadas a top_n posiciones
+    concurrentes), el dict de marcas diarias por operacion (ver
+    _trade_daily_marks) y la historia del benchmark. Separado de run_backtest
+    para que run_backtest_walk_forward pueda reusar la misma simulacion sin
+    volver a pedir datos de mercado.
+
+    Dos pasadas: primero se piden las barras de TODO el universo (con la
+    misma pausa anti-rate-limit que antes, ver scan_request_delay_seconds),
+    despues se calcula el panel de score cross-sectional dia por dia sobre
+    ese universo ya descargado (ver _cross_sectional_score_panel), y recien
+    despues se simula cada simbolo -- no se puede saber el percentil de un
+    simbolo en una fecha dada sin tener primero la historia de todos los
+    demas para esa misma fecha (a diferencia del scan en vivo, que solo
+    necesita el ranking de HOY)."""
+    history_days = int(cfg.backtest_years * 365)
+
+    try:
+        bench_bars = get_daily_bars(cfg.benchmark_symbol, history_days)
+    except MarketDataError as exc:
+        raise BacktestError(str(exc)) from exc
+
+    if cfg.regime_filter_enabled:
+        benchmark_regime_ok = market_regime_ok(
+            bench_bars["Close"], cfg.regime_sma_period, cfg.regime_slope_lookback_days,
+            cfg.regime_absolute_momentum_lookback_days,
+        )
+    else:
+        benchmark_regime_ok = pd.Series(True, index=bench_bars.index)
+
+    bars_by_symbol: dict[str, pd.DataFrame] = {}
+    delay = cfg.scan_request_delay_seconds
+    for i, symbol in enumerate(_backtest_universe(cfg)):
+        # Misma pausa anti-rate-limit que el scan en vivo (ver
+        # scan_request_delay_seconds): el backtest pega tantos pedidos como
+        # simbolos tenga el universo configurado, y con el S&P 500 completo
+        # eso son varios cientos de requests seguidos a la API gratuita. Salvo
+        # que el dato ya este cacheado (ver is_bars_cached), igual que en el
+        # scan en vivo: ahi no hay fetch real que espaciar.
+        if i > 0 and delay > 0 and not is_bars_cached(symbol, history_days):
+            time.sleep(delay)
+        try:
+            bars = get_daily_bars(symbol, history_days)
+        except MarketDataError:
+            continue
+        if len(bars) < max(cfg.sma_slow + cfg.momentum_lookback_days, cfg.momentum_12_1_lookback_days + 1):
+            continue
+        bars_by_symbol[symbol] = bars
+
+    # Sin esto, pd.concat sobre un dict vacio en _momentum_raw_components
+    # rompe con ValueError en vez de la misma BacktestError de "sin
+    # operaciones" que ya se usa mas abajo cuando ningun simbolo paso el
+    # filtro de entrada (caso equivalente: ningun simbolo tiene historia).
+    if not bars_by_symbol:
+        raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
+
+    raw_components = _momentum_raw_components(bars_by_symbol, cfg, bench_bars, history_days)
+    score_panel = _cross_sectional_score_panel(raw_components, {
+        "relative_strength": cfg.score_weight_relative_strength,
+        "momentum_12_1": cfg.score_weight_momentum_12_1,
+        "trend": cfg.score_weight_trend,
+        "rsi": cfg.score_weight_rsi,
+        "macd": cfg.score_weight_macd,
+        "bollinger": cfg.score_weight_bollinger,
+        "sector_relative_strength": cfg.score_weight_sector_relative_strength,
+    })
+
+    all_trades: list[BacktestTrade] = []
+    marks_by_trade_id: dict = {}
+    for symbol, bars in bars_by_symbol.items():
+        aligned_regime_ok = benchmark_regime_ok.reindex(bars.index, method="ffill").fillna(True)
+        all_trades.extend(
+            _simulate_symbol(symbol, bars, cfg, score_panel[symbol], aligned_regime_ok, marks_by_trade_id, rules_config)
+        )
+
+    if not all_trades:
+        raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
+
+    all_trades.sort(key=lambda t: t.entry_date)
+
+    # Cartera con top_n cupos concurrentes: antes se contaba CADA señal de cada
+    # simbolo como una operacion, pero la curva de equity ponderaba cada una
+    # como 1/top_n. Con mas de top_n posiciones abiertas a la vez eso
+    # subrepresentaba el capital realmente usado e inflaba el retorno. Ahora se
+    # descartan las operaciones que no tendrian cupo libre (ver
+    # cap_concurrent_positions), igual que en la operatoria real.
+    all_trades = cap_concurrent_positions(all_trades, cfg.top_n, cfg.max_concurrent_positions_per_sector)
+
+    if not all_trades:
+        raise BacktestError("No se generaron operaciones con estos parametros en el periodo analizado.")
+
+    return all_trades, marks_by_trade_id, bench_bars
+
+
+def run_backtest(cfg: ScreenerConfig, rules_config: RulesConfig | None = None) -> BacktestSummary:
+    """Backtest simplificado de la estrategia momentum sobre el universo configurado.
+
+    La curva de equity, el max_drawdown_pct y el sharpe_ratio se calculan dia
+    por dia sobre una cartera con cupo para top_n posiciones concurrentes (ver
+    _daily_equity_curve): una posicion abierta aporta su retorno no realizado
+    a la curva todos los dias que esta abierta (no solo en su cierre), usando
+    el cierre real de mercado de cada dia (ver _trade_daily_marks), asi que el
+    drawdown combinado de operaciones solapadas en el tiempo queda reflejado
+    con el camino de precio real, no una aproximacion. El sharpe_ratio se
+    anualiza con sqrt(252) sobre esos retornos diarios, igual que un Sharpe
+    convencional.
+
+    Simplificaciones explicitas que siguen sin modelarse (no es un backtester
+    de produccion): el universo de simbolos es el configurado HOY (sin
+    supervivencia historica -- una accion que quebro o fue excluida del
+    indice durante el periodo analizado no aparece, lo que tipicamente infla
+    el resultado frente a la realidad de esa epoca). Si modela comision/
+    slippage estimados y un fill de stop-loss realista (minimo intradiario, no
+    el cierre), y entra a la apertura del dia siguiente a la senal (no al
+    cierre del mismo dia, que seria mirar al futuro). Esto ultimo lo hace mas
+    conservador que el motor de auto-trading en vivo, que coloca la orden ya
+    con el ultimo cierre conocido en el mismo ciclo de scan. Sirve para
+    validar la direccion de la idea antes de arriesgar capital real, no como
+    promesa de resultados futuros.
+    """
+    all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg, rules_config)
+    return _compute_summary_stats(
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id,
+        cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
+        cfg.deflated_sharpe_num_trials,
+        risk_based_sizing_enabled=cfg.backtest_risk_based_sizing_enabled,
+        rules_config=rules_config,
+        assumed_capital_usd=cfg.backtest_assumed_capital_usd,
+    )
+
+
+def run_backtest_walk_forward(
+    cfg: ScreenerConfig, n_folds: int = 3, rules_config: RulesConfig | None = None
+) -> WalkForwardResult:
+    """Validacion out-of-sample de los thresholds configurados (RSI, SMAs,
+    ATR, filtros de regimen/52 semanas, etc.): particiona el periodo operado
+    en n_folds ventanas consecutivas de igual duracion calendario y calcula
+    las metricas resumen de cada una por separado (ver
+    _build_walk_forward_result), sin volver a pedir ni simular nada (reusa
+    las mismas operaciones que generaria run_backtest sobre todo el periodo).
+
+    Util para detectar si el resultado del backtest completo esta
+    concentrado en un tramo de tiempo favorable puntual (ej. un solo mercado
+    alcista) en vez de sostenerse a traves de distintos regimenes -- algo que
+    el resumen de todo el periodo de una sola vez no puede mostrar.
+
+    Importante: esto NO es walk-forward optimization en el sentido clasico.
+    No hay refitting de parametros por ventana -- los thresholds configurados
+    son siempre los mismos en todos los folds, porque esta herramienta no
+    hace optimizacion de parametros. "Out of sample" aca significa: ¿el mismo
+    set de reglas fijo (el que ya esta configurado) se sostiene en distintos
+    tramos de tiempo, o gano todo en un solo tramo favorable?
+
+    Mismo sesgo de supervivencia que run_backtest (ver su docstring): las
+    operaciones que particiona en folds vienen del mismo universo configurado
+    HOY, asi que ningun fold aisla ese efecto -- esta funcion valida
+    consistencia temporal de las reglas, no corrige el sesgo de universo."""
+    all_trades, marks_by_trade_id, bench_bars = _collect_momentum_trades(cfg, rules_config)
+    return _build_walk_forward_result(
+        all_trades, cfg.top_n, bench_bars, marks_by_trade_id, n_folds,
+        cfg.invest_idle_cash_in_benchmark, cfg.backtest_vol_weighting_enabled,
+        risk_based_sizing_enabled=cfg.backtest_risk_based_sizing_enabled,
+        rules_config=rules_config,
+        assumed_capital_usd=cfg.backtest_assumed_capital_usd,
+    )
