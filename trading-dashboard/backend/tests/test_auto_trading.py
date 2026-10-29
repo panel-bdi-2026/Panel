@@ -100,6 +100,12 @@ def reset_state(monkeypatch, tmp_path):
     # nueva por test evita que el binding se filtre entre tests.
     monkeypatch.setattr(main_module, "_funds_order_lock", asyncio.Lock())
     monkeypatch.setattr(main_module.broker, "get_position_qty", lambda symbol: 0)
+    monkeypatch.setattr(main_module.broker, "_open_orders_lock", asyncio.Lock())
+
+    async def no_pending_buys():
+        return {}
+
+    monkeypatch.setattr(main_module.broker, "get_pending_buy_orders", no_pending_buys)
 
     async def fake_get_account_summary():
         return make_account()
@@ -1937,3 +1943,103 @@ def test_health_alert_reminds_persistent_issue_every_24h(monkeypatch):
     asyncio.run(main_module._run_health_alert_cycle())
     assert sent[-1] == "✓ Resuelto: trading detenido (halted)"
     assert issue not in main_module._health_alert_last_sent
+
+
+# ---------------------------------------------------------------------------
+# Stops vivos sin posicion (abrieron un short en IT el 2026-10-28) y compras
+# pendientes que no descontaban cash (sobregasto del 2026-10-27).
+# ---------------------------------------------------------------------------
+
+class _IbPos:
+    def __init__(self, symbol, position):
+        self.contract = type("C", (), {"symbol": symbol})()
+        self.position = position
+
+
+def _patch_stops(monkeypatch, positions, stops):
+    monkeypatch.setattr(main_module.broker.ib, "positions", lambda: positions)
+
+    async def fake_stops():
+        return stops
+
+    cancelled = []
+
+    async def fake_cancel(order_id):
+        cancelled.append(order_id)
+        return True
+
+    monkeypatch.setattr(main_module.broker, "get_standalone_sell_stops", fake_stops)
+    monkeypatch.setattr(main_module.broker, "cancel_resting_order", fake_cancel)
+    return cancelled
+
+
+def test_cancel_stops_without_position_cancels_only_unheld_symbols(monkeypatch):
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    main_module.funds_store.record_fill(fund.id, "MSFT", main_module.Side.BUY, 1, 100)
+    cancelled = _patch_stops(
+        monkeypatch,
+        [_IbPos("ACN", 4.0)],
+        [("ACN", 1), ("AFL", 2), ("MSFT", 3), ("BF-B", 4)],
+    )
+    asyncio.run(main_module._cancel_stops_without_position())
+    assert cancelled == [2, 4]
+
+
+def test_cancel_stops_without_position_noop_when_positions_empty(monkeypatch):
+    cancelled = _patch_stops(monkeypatch, [], [("AFL", 2)])
+    asyncio.run(main_module._cancel_stops_without_position())
+    assert cancelled == []
+
+
+def test_reconcile_orphan_over_budget_cancels_stops_before_closing(monkeypatch):
+    _setup_orphan(monkeypatch, [_OrphanPos("TECH", 12, avg_cost=172.76)], {})
+    events = []
+
+    async def fake_live(symbol, side="SELL"):
+        return [501]
+
+    async def fake_cancel(order_id):
+        events.append(("cancel", order_id))
+        return True
+
+    async def fake_close(symbol, quantity):
+        events.append(("close", symbol, quantity))
+        return {"filled_qty": 0.0, "avg_fill_price": None}
+
+    monkeypatch.setattr(main_module.broker, "get_live_protective_stops", fake_live)
+    monkeypatch.setattr(main_module.broker, "cancel_resting_order", fake_cancel)
+    monkeypatch.setattr(main_module.broker, "close_orphan_long_position", fake_close)
+    asyncio.run(main_module._reconcile_unfilled_on_startup())
+    assert events == [("cancel", 501), ("close", "TECH", 12)]
+
+
+def test_auto_trade_entry_subtracts_cash_committed_to_pending_buys(monkeypatch):
+    fund = main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+    placed = []
+
+    async def fake_place(order):
+        placed.append(order.quantity)
+        return await _fake_place_order(order)
+
+    async def committed():
+        return {"MSFT": 9_950.0}
+
+    monkeypatch.setattr(main_module.broker, "place_order", fake_place)
+    monkeypatch.setattr(main_module.broker, "get_pending_buy_orders", committed)
+    asyncio.run(main_module._try_auto_trade_entry(make_signal(last_price=100.0, stop=95.0)))
+    assert placed == []
+    assert main_module.funds_store.get(fund.id).owned_quantity("AAPL") == 0
+
+
+def test_auto_trade_entry_skips_symbol_with_pending_buy(monkeypatch):
+    main_module.funds_store.create("Fondo", 10_000, auto_trading_enabled=True)
+
+    async def pending():
+        return {"AAPL": 300.0}
+
+    async def fail_place(order):
+        raise AssertionError("no debe recomprar un simbolo con compra pendiente")
+
+    monkeypatch.setattr(main_module.broker, "get_pending_buy_orders", pending)
+    monkeypatch.setattr(main_module.broker, "place_order", fail_place)
+    asyncio.run(main_module._try_auto_trade_entry(make_signal(last_price=100.0, stop=95.0)))

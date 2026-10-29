@@ -1237,3 +1237,62 @@ def test_place_order_sets_an_explicit_tif_on_parent_and_stop(broker, monkeypatch
     assert parent.tif == "DAY"
     # El stop hijo es GTC para que no expire al cierre (ver _STOP_TIF).
     assert stop.tif == "GTC"
+
+
+def test_open_trades_serializes_concurrent_requests(broker):
+    # ib_async guarda un solo future para openOrders: dos pedidos en paralelo
+    # dejaban uno colgado para siempre (watchdog, 2026-10-27).
+    active = {"n": 0, "max": 0}
+
+    async def fake_req_all():
+        active["n"] += 1
+        active["max"] = max(active["max"], active["n"])
+        await asyncio.sleep(0.01)
+        active["n"] -= 1
+        return []
+
+    broker.ib.reqAllOpenOrdersAsync = fake_req_all
+
+    async def run():
+        await asyncio.gather(*(broker._open_trades() for _ in range(5)))
+
+    asyncio.run(run())
+    assert active["max"] == 1
+
+
+def test_open_trades_times_out_instead_of_hanging(broker, monkeypatch):
+    async def never():
+        await asyncio.Event().wait()
+
+    broker.ib.reqAllOpenOrdersAsync = never
+    real_wait_for = asyncio.wait_for
+    monkeypatch.setattr(asyncio, "wait_for", lambda aw, timeout: real_wait_for(aw, 0.05))
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(broker._open_trades())
+
+
+def test_get_pending_buy_orders_sums_remaining_limit_notional(broker, monkeypatch):
+    t1 = _LiveStopTrade("TECH", order_id=1, action="BUY", order_type="LMT", status="Submitted")
+    t1.order.totalQuantity, t1.order.lmtPrice = 12.0, 72.5
+    t1.orderStatus.filled = 2.0
+    stop = _LiveStopTrade("TECH", order_id=2, action="BUY", order_type="STP", status="Submitted")
+    done = _LiveStopTrade("SO", order_id=3, action="BUY", order_type="LMT", status="Filled")
+    sell = _LiveStopTrade("AFL", order_id=4, action="SELL", order_type="LMT", status="Submitted")
+
+    async def fake_req_all():
+        return [t1, stop, done, sell]
+
+    monkeypatch.setattr(broker.ib, "reqAllOpenOrdersAsync", fake_req_all)
+    assert asyncio.run(broker.get_pending_buy_orders()) == {"TECH": 725.0}
+
+
+def test_get_standalone_sell_stops_excludes_bracket_children(broker, monkeypatch):
+    standalone = _LiveStopTrade("AFL", order_id=10, action="SELL", order_type="STP", status="PreSubmitted")
+    child = _LiveStopTrade("NTAP", order_id=11, action="SELL", order_type="STP", status="PreSubmitted")
+    child.order.parentId = 9
+
+    async def fake_req_all():
+        return [standalone, child]
+
+    monkeypatch.setattr(broker.ib, "reqAllOpenOrdersAsync", fake_req_all)
+    assert asyncio.run(broker.get_standalone_sell_stops()) == [("AFL", 10)]

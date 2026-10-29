@@ -152,6 +152,10 @@ class IBKRBroker:
         self.market_data_type = market_data_type
         self.account_id: str | None = None
         self.ib = IB()
+        # ib_async guarda UN solo future para 'openOrders': dos
+        # reqAllOpenOrdersAsync concurrentes pisan ese future y uno queda
+        # esperando para siempre (asi se colgo el watchdog el 2026-10-27).
+        self._open_orders_lock = asyncio.Lock()
         # Suscripciones de streaming persistente (Nivel 1) para el hot-set del
         # radar de oportunidades (ver _hot_set_loop en main.py): a diferencia
         # de get_reference_price/get_snapshot_prices (que ocupan una linea
@@ -417,6 +421,42 @@ class IBKRBroker:
                 return True
         return False
 
+    async def _open_trades(self) -> list:
+        async with self._open_orders_lock:
+            return await asyncio.wait_for(self.ib.reqAllOpenOrdersAsync(), timeout=15)
+
+    async def get_pending_buy_orders(self) -> "dict[str, float]":
+        """Monto comprometido (qty pendiente x precio limite) por simbolo en
+        ordenes BUY no-STOP vivas. Una compra que no lleno dentro del timeout
+        de _wait_for_fill no descuenta cash del fondo hasta que llena: sin
+        restar esto, el motor seguia comprando con cash ya comprometido."""
+        out: dict[str, float] = {}
+        for trade in await self._open_trades():
+            order = trade.order
+            if (
+                order.action != "BUY"
+                or order.orderType in ("STOP", "STP")
+                or trade.orderStatus.status in OrderStatus.DoneStates
+            ):
+                continue
+            remaining = max(order.totalQuantity - (trade.orderStatus.filled or 0.0), 0.0)
+            price = order.lmtPrice if order.lmtPrice and order.lmtPrice < 1e300 else 0.0
+            sym = _from_ib_symbol(trade.contract.symbol)
+            out[sym] = out.get(sym, 0.0) + remaining * price
+        return out
+
+    async def get_standalone_sell_stops(self) -> "list[tuple[str, int]]":
+        """(simbolo, orderId) de cada STOP SELL vivo sin orden padre. Los hijos
+        de un bracket se excluyen: su padre puede no haber llenado todavia."""
+        return [
+            (_from_ib_symbol(trade.contract.symbol), trade.order.orderId)
+            for trade in await self._open_trades()
+            if trade.order.action == "SELL"
+            and trade.order.orderType in ("STOP", "STP")
+            and not getattr(trade.order, "parentId", 0)
+            and trade.orderStatus.status not in OrderStatus.DoneStates
+        ]
+
     async def cancel_resting_order(self, order_id: int) -> bool:
         """Cancela una orden viva en IBKR por su order_id, via
         reqAllOpenOrdersAsync en vez de buscar en self.ib.trades().
@@ -435,7 +475,7 @@ class IBKRBroker:
         Best-effort: si la orden ya no esta viva (ya se ejecuto o cancelo),
         no hace nada y devuelve False -- es el resultado esperado la mayoria
         de las veces, no un error."""
-        for trade in await self.ib.reqAllOpenOrdersAsync():
+        for trade in await self._open_trades():
             if trade.order.orderId == order_id:
                 self.ib.cancelOrder(trade.order)
                 return True
@@ -448,7 +488,7 @@ class IBKRBroker:
         ib_symbol = _to_ib_symbol(symbol)
         return [
             trade.order.orderId
-            for trade in await self.ib.reqAllOpenOrdersAsync()
+            for trade in await self._open_trades()
             if trade.contract.symbol == ib_symbol
             and trade.order.action == side
             and trade.order.orderType not in ("STOP", "STP")
@@ -480,7 +520,7 @@ class IBKRBroker:
         stops para limpiarlos, y C1 del NUEVO_INFORME para la causa raiz)."""
         ib_symbol = _to_ib_symbol(symbol)
         result = []
-        for trade in await self.ib.reqAllOpenOrdersAsync():
+        for trade in await self._open_trades():
             if (
                 trade.contract.symbol == ib_symbol
                 and trade.order.action == side

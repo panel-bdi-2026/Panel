@@ -964,6 +964,15 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
         account_summary = await broker.get_account_summary()
         position_qty = broker.get_position_qty(symbol)
         current_positions = await broker.get_positions()
+        try:
+            pending_buys = await broker.get_pending_buy_orders()
+        except Exception as exc:
+            logger.warning("auto_trade: no se pudieron leer compras pendientes (%s) — se omite %s", exc, symbol)
+            return
+        if symbol in pending_buys:
+            return
+        # Sin atribucion por fondo: se resta a todos los candidatos (conservador).
+        committed_usd = sum(pending_buys.values())
         sector_exposure_usd = _compute_sector_exposure(current_positions, symbol)
         sector_position_count = _compute_sector_position_count(current_positions, symbol)
 
@@ -996,7 +1005,7 @@ async def _try_auto_trade_entry(result: SignalResult, strategy_id: str | None = 
             )
             if sizing.quantity <= 0:
                 continue
-            affordable_qty = math.floor(candidate.cash_usd / live_price)
+            affordable_qty = math.floor(max(candidate.cash_usd - committed_usd, 0.0) / live_price)
             qty = min(sizing.quantity, affordable_qty)
             if qty > 0 and qty * live_price >= rules_config.min_transaction_usd:
                 fund = candidate
@@ -2000,6 +2009,24 @@ async def _ensure_missing_protective_stops() -> None:
             await _ensure_protective_stop(fund.id, symbol, stop_px)
 
 
+async def _cancel_stops_without_position() -> None:
+    """Cancela stops SELL standalone de simbolos sin posicion ni en IBKR ni en
+    ningun fondo: si se disparan, abren un short (IT, 2026-10-28)."""
+    ibkr_positions = broker.ib.positions()
+    if not ibkr_positions:
+        # Tras un reconnect positions() puede venir vacio un rato: sin esta
+        # guarda se cancelarian todos los stops legitimos.
+        return
+    held = {_from_ib_symbol(p.contract.symbol) for p in ibkr_positions if p.position > 0}
+    held |= {s for f in funds_store.list() for s, p in f.positions.items() if p.quantity > 0}
+    for symbol, order_id in await broker.get_standalone_sell_stops():
+        if symbol in held:
+            continue
+        if await broker.cancel_resting_order(order_id):
+            audit.record("orphan_stop_cancelled", {"symbol": symbol, "order_id": order_id}, {})
+            logger.warning("reconcile_stops: stop %s de %s cancelado (sin posicion)", order_id, symbol)
+
+
 async def _reconcile_protective_stops_cycle() -> None:
     """Cancela stops protectores duplicados que hayan quedado de sesiones
     anteriores (ver C1 del NUEVO_INFORME): recorre todos los fondos con
@@ -2012,6 +2039,10 @@ async def _reconcile_protective_stops_cycle() -> None:
     deploy limpia los duplicados ya acumulados en produccion."""
     if state["mode"] != "paper" or not state["connected"]:
         return
+    try:
+        await _cancel_stops_without_position()
+    except Exception:
+        logger.exception("reconcile_stops: fallo la limpieza de stops sin posicion")
     for fund in funds_store.list():
         if not fund.auto_trading_enabled:
             continue
@@ -2648,6 +2679,15 @@ async def _reconcile_unfilled_on_startup() -> None:
                     auto_fund.cash_usd, estimated_cost,
                 )
                 try:
+                    # Cancelar los stops del simbolo ANTES de vender: si no,
+                    # quedan vivos sobre una posicion en cero y abren un short.
+                    # La parte cubierta por fondos recibe un stop nuevo via
+                    # _ensure_missing_protective_stops.
+                    for sid in await broker.get_live_protective_stops(sym, "SELL"):
+                        await broker.cancel_resting_order(sid)
+                    for f in all_funds:
+                        if f.owned_quantity(sym) > 0:
+                            funds_store.set_stop_order_id(f.id, sym, None)
                     close_result = await broker.close_orphan_long_position(sym, orphan_qty)
                     audit.record(
                         "auto_trade_close_orphan_over_budget",
